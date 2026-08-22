@@ -1,0 +1,53 @@
+@import "tailwindcss";
+
+/*
+ * RM Morning — direction visuelle : fond clair, cartes blanches, très peu de
+ * couleurs. Le vert, l'orange et le rouge ne servent qu'au statut, jamais à la
+ * décoration. Interface volontairement mono-thème (clair uniquement).
+ */
+@theme {
+  --color-canvas: #f6f7f9;
+  --color-surface: #ffffff;
+  --color-ink: #101418;
+  --color-ink-soft: #4a5560;
+  --color-ink-faint: #8a949e;
+  --color-line: #e7eaee;
+  --color-line-strong: #d6dbe1;
+
+  --color-positive: #0f7b56;
+  --color-positive-soft: #e8f4ef;
+  --color-warning: #b45309;
+  --color-warning-soft: #fdf3e7;
+  --color-danger: #b3261e;
+  --color-danger-soft: #fdecea;
+
+  /*
+   * Mise en évidence d'une valeur qui a changé depuis la dernière lecture.
+   *
+   * Bleu pâle et non jaune, délibérément : le jaune porte déjà, dans cette
+   * interface, le sens d'« à challenger » (fond des lignes Forecast) et
+   * d'avertissement. Une donnée modifiée n'est ni un problème ni une alerte —
+   * c'est une information nouvelle. Elle mérite d'être vue, pas redoutée.
+   */
+  --color-change: #1e4fa3;
+  --color-change-soft: #e9f0fb;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Chiffres alignés dans les tableaux de GMV. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
