@@ -195,6 +195,122 @@ const PROBES = {
   },
 
   /**
+   * Le résumé d'erreur conserve la CAUSE, pas seulement « Command failed », et
+   * masque tout ce qui ressemble à un secret. Éprouvé par l'orchestrateur réel,
+   * avec une étape qui échoue volontairement — pas en appelant une fonction
+   * privée.
+   */
+  async "erreur-lisible"() {
+    const { runGlobalSyncToCompletion } = await import("../src/lib/sync/orchestrator.ts");
+    const { getDb } = await import("../src/lib/db.ts");
+
+    const FAUX_JETON = "force://PlatformCLI::FAUX_JETON_DE_TEST@exemple.my.salesforce.com";
+    const run = await runGlobalSyncToCompletion("verify", [
+      {
+        key: "sonde",
+        label: "Étape en échec",
+        group: "Contrôle",
+        blocking: true,
+        timeoutMs: 30_000,
+        run: async () => {
+          throw new Error(
+            `Command failed: python scripts/exemple.py\n` +
+              `  File "/app/scripts/exemple.py", line 209, in reliability\n` +
+              `URL utilisée : ${FAUX_JETON}\n` +
+              `FileNotFoundError: [Errno 2] No such file or directory: '/data/absent.json'`,
+          );
+        },
+      },
+    ]);
+
+    const recorded = getDb()
+      .prepare("SELECT error FROM global_sync_step WHERE run_id = ? AND step_key = 'sonde'")
+      .get(run.id).error;
+
+    const gardeCause = recorded.includes("FileNotFoundError");
+    const gardePremiere = recorded.includes("Command failed");
+    const fuite = recorded.includes("FAUX_JETON_DE_TEST") || recorded.includes("force://");
+    const borne = recorded.length <= 600;
+
+    return gardeCause && gardePremiere && !fuite && borne
+      ? say(true, `cause conservée, secret masqué, ${recorded.length} caractères`)
+      : say(
+          false,
+          `cause=${gardeCause} première=${gardePremiere} fuite=${fuite} borné=${borne} · ${recorded.slice(0, 120)}`,
+        );
+  },
+
+  /**
+   * Le battement doit avancer PENDANT une étape longue, sinon le garde-fou
+   * déclare mort un run vivant — exactement l'incident du 23/08.
+   */
+  async "battement-pendant-etape"() {
+    const { startGlobalSync } = await import("../src/lib/sync/orchestrator.ts");
+    const { HEARTBEAT_INTERVAL_MS, HEARTBEAT_TIMEOUT_MS } = await import("../src/lib/sync/store.ts");
+    const { getDb } = await import("../src/lib/db.ts");
+
+    // L'étape dure plus de deux intervalles : le minuteur doit battre au moins
+    // une fois AVANT qu'elle ne se termine.
+    const attente = HEARTBEAT_INTERVAL_MS * 2 + 4_000;
+    const { run, done } = startGlobalSync("verify", [
+      {
+        key: "sonde-lente",
+        label: "Étape lente",
+        group: "Contrôle",
+        blocking: false,
+        timeoutMs: attente + 30_000,
+        run: async () => {
+          await new Promise((r) => setTimeout(r, attente));
+          return { detail: "terminée" };
+        },
+      },
+    ]);
+
+    const lire = () =>
+      getDb()
+        .prepare("SELECT r.heartbeat_at h, s.status st FROM global_sync_run r JOIN global_sync_step s ON s.run_id = r.id WHERE r.id = ?")
+        .get(run.id);
+
+    const depart = new Date(lire().h).getTime();
+
+    // Observation EN VOL : on relève le battement pendant que l'étape tourne
+    // encore. C'est le seul relevé qui prouve le minuteur — celui d'après
+    // l'étape serait produit de toute façon par le battement de fin.
+    await new Promise((r) => setTimeout(r, HEARTBEAT_INTERVAL_MS + 3_000));
+    const enVol = lire();
+    const avance = new Date(enVol.h).getTime() - depart;
+    const encoreEnCours = enVol.st === "running";
+
+    await done;
+
+    if (!encoreEnCours) return say(false, "l'étape était déjà finie : relevé non concluant");
+    return avance >= HEARTBEAT_INTERVAL_MS * 0.8 && HEARTBEAT_INTERVAL_MS < HEARTBEAT_TIMEOUT_MS
+      ? say(true, `battement avancé de ${(avance / 1000).toFixed(0)} s alors que l'étape tournait encore`)
+      : say(false, `battement figé (+${(avance / 1000).toFixed(0)} s) pendant l'étape — le minuteur n'a pas tourné`);
+  },
+
+  /** La CLI Salesforce doit être tuée à expiration, avec un message exploitable. */
+  async "timeout-salesforce"() {
+    const { ApiSalesforceSource, SalesforceAuthError } = await import(
+      "../src/lib/sources/api-salesforce.ts"
+    );
+    const t0 = Date.now();
+    try {
+      await new ApiSalesforceSource().fetch();
+      return say(false, "aucune erreur alors que le délai était fixé à 1 ms");
+    } catch (error) {
+      const ms = Date.now() - t0;
+      if (error instanceof SalesforceAuthError) {
+        return say(true, "CLI Salesforce absente ici — chemin non éprouvé, sans objet hors conteneur");
+      }
+      const bon = /n'a pas répondu en/.test(error.message);
+      return bon
+        ? say(true, `tuée et signalée en ${ms} ms — « ${error.message.slice(0, 70)}… »`)
+        : say(false, `message inattendu : ${error.message.slice(0, 140)}`);
+    }
+  },
+
+  /**
    * En développement, sans secrets configurés, le proxy doit être transparent.
    * Et en production sans secrets, il doit au contraire tout fermer : une erreur
    * de configuration ne doit jamais rendre l'application publique.
@@ -377,6 +493,25 @@ total += 1;
   );
 }
 
+// --- Variables de bridage de la CLI Salesforce ------------------------------
+//
+// Le nom exact importe : SF_AUTOUPDATE_DISABLE n'empêche PAS le processus
+// `sf update --autoupdate`, seul SF_DISABLE_AUTOUPDATE le fait. Les deux se
+// ressemblent assez pour être reconfondus un jour.
+total += 1;
+{
+  const dockerfile = readFileSync(path.resolve(process.cwd(), "Dockerfile"), "utf8");
+  const attendues = ["SF_DISABLE_TELEMETRY=true", "SF_DISABLE_AUTOUPDATE=true"];
+  const manquantes = attendues.filter(
+    (v) => !new RegExp(`^\\s*(ENV\\s+)?${v.replace("=", "=")}`, "m").test(dockerfile),
+  );
+  if (manquantes.length) failures += 1;
+  console.log(
+    `\n  CLI Salesforce\n  ${manquantes.length ? "ÉCHEC" : "ok   "} le Dockerfile bride télémétrie et autoupdate` +
+      (manquantes.length ? ` — manquant : ${manquantes.join(", ")}` : " — 2 variables déclarées"),
+  );
+}
+
 // --- Configuration ---------------------------------------------------------
 console.log("\n  Configuration");
 run("surcharges d'environnement actives", "config-overrides", {
@@ -385,6 +520,21 @@ run("surcharges d'environnement actives", "config-overrides", {
 });
 run("valeurs locales inchangées sans variables", "config-defaults", {});
 run("invariants métier intacts", "invariants", {});
+
+// --- Orchestration : robustesse ---------------------------------------------
+// Chaque sonde travaille sur une base neuve en dossier temporaire : aucune
+// écriture dans la base de travail, contrairement à `sync:verify`.
+console.log("\n  Orchestration");
+run("le résumé d'erreur garde la cause et masque les secrets", "erreur-lisible", {
+  RM_DB_PATH: path.join(tmp, "orch1.db"),
+});
+run("le battement avance pendant une étape longue", "battement-pendant-etape", {
+  RM_DB_PATH: path.join(tmp, "orch2.db"),
+});
+run("la CLI Salesforce est tuée à expiration", "timeout-salesforce", {
+  RM_DB_PATH: path.join(tmp, "orch3.db"),
+  RM_SF_CLI_TIMEOUT_MS: "1",
+});
 
 // --- Accès privé -----------------------------------------------------------
 console.log("\n  Accès privé");

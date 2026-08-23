@@ -79,6 +79,21 @@ function resolveCliEntry(): string {
 
 type CliResponse<T> = { status: number; result: T; message?: string; name?: string };
 
+/**
+ * Délai au-delà duquel une invocation de la CLI est abandonnée.
+ *
+ * C'était le seul `execFile` du projet sans délai. Le garde-fou de
+ * l'orchestrateur borne bien la DURÉE D'UNE ÉTAPE, mais son propre commentaire
+ * le dit : « la promesse sous-jacente n'est pas annulable : on l'abandonne ».
+ * Une CLI réellement figée survivait donc à l'étape, en processus orphelin, sans
+ * que rien ne la tue.
+ *
+ * Trois minutes : un appel normal prend une à huit secondes ; le pire cas
+ * observé sous bridage CPU reste très en deçà. Assez généreux pour ne pas
+ * inventer d'échec, assez court pour ne jamais faire attendre dix minutes.
+ */
+const CLI_TIMEOUT_MS = Number(process.env.RM_SF_CLI_TIMEOUT_MS ?? 180_000);
+
 async function runCli<T>(command: ReadOnlyCommand): Promise<T> {
   const entry = resolveCliEntry();
   const args = [entry, ...command, "--target-org", SALESFORCE_API.orgAlias, "--json"];
@@ -88,6 +103,12 @@ async function runCli<T>(command: ReadOnlyCommand): Promise<T> {
     ({ stdout } = await execFileAsync(process.execPath, args, {
       maxBuffer: 256 * 1024 * 1024,
       windowsHide: true,
+      timeout: CLI_TIMEOUT_MS,
+      // SIGKILL et non SIGTERM : la CLI est un processus Node avec ses propres
+      // gestionnaires de signaux, et l'objectif ici est la garantie qu'aucun
+      // orphelin ne subsiste. La commande est en lecture seule — la tuer net
+      // n'a aucun effet de bord.
+      killSignal: "SIGKILL",
       env: {
         ...process.env,
         // Next impose FORCE_COLOR à ses processus enfants ; la CLI colorise
@@ -97,8 +118,26 @@ async function runCli<T>(command: ReadOnlyCommand): Promise<T> {
       },
     }));
   } catch (error) {
+    const withOutput = error as {
+      stdout?: string;
+      message?: string;
+      killed?: boolean;
+      signal?: string;
+    };
+
+    // Délai dépassé : le processus a été tué. À traiter AVANT la reprise de
+    // `stdout`, qui ne contiendrait ici qu'un JSON tronqué — et donnerait un
+    // « réponse illisible » qui masquerait la vraie cause. Ce n'est pas une
+    // erreur d'authentification : ne pas envoyer l'utilisateur se reconnecter.
+    if (withOutput.killed || withOutput.signal === "SIGKILL") {
+      throw new Error(
+        `La CLI Salesforce n'a pas répondu en ${Math.round(CLI_TIMEOUT_MS / 1000)} s ` +
+          `(commande « ${command.slice(0, 2).join(" ")} ») et a été arrêtée. ` +
+          `Réessayez ; si cela persiste, vérifiez la disponibilité de Salesforce.`,
+      );
+    }
+
     // La CLI sort en code non nul mais écrit quand même un JSON exploitable.
-    const withOutput = error as { stdout?: string; message?: string };
     if (!withOutput.stdout) {
       throw new SalesforceAuthError(
         `Impossible d'exécuter la CLI Salesforce : ${withOutput.message ?? "erreur inconnue"}`,

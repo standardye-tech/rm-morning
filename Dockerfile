@@ -84,6 +84,36 @@ ENV NODE_ENV=production \
     GOOGLE_SERVICE_ACCOUNT_FILE=/run/secrets/google-service-account.json \
     SF_USE_GENERIC_UNIX_KEYCHAIN=true
 
+# CLI Salesforce : silence radio.
+#
+# Trois variables, trois effets distincts, chacun mesuré le 23/08 sur la machine
+# de production, cache vidé entre chaque essai pour que le test discrimine :
+#
+#   SF_DISABLE_TELEMETRY   — supprime le processus DÉTACHÉ d'envoi de télémétrie
+#                            lancé à chaque invocation. 1 orphelin par appel sans
+#                            elle, 0 avec.
+#
+#   SF_DISABLE_AUTOUPDATE  — LE correctif. Sans elle, le premier `sf` du conteneur
+#                            lance `sf update --autoupdate`, un processus qui
+#                            DORT UNE HEURE puis tente de remplacer la CLI dans
+#                            le conteneur en production — possiblement en pleine
+#                            actualisation. Nom exact lu dans le code :
+#                            `scopedEnvVarTrue('DISABLE_AUTOUPDATE')` de
+#                            @oclif/plugin-update 4.7.57. Attention au piège :
+#                            SF_AUTOUPDATE_DISABLE, mots inversés, ne l'empêche
+#                            pas — vérifié, 1 processus contre 0.
+#
+#   SF_AUTOUPDATE_DISABLE  — n'a PAS cet effet, mais étouffe l'avertissement
+#                            « update available » écrit sur stderr. Utile : ce
+#                            flux nourrit désormais le résumé d'erreur de
+#                            l'orchestrateur, où la bannière masquerait la cause.
+#
+# SF_SKIP_NEW_VERSION_CHECK a été retirée : aucun effet démontrable, ni sur les
+# processus ni sur stderr.
+ENV SF_DISABLE_TELEMETRY=true \
+    SF_DISABLE_AUTOUPDATE=true \
+    SF_AUTOUPDATE_DISABLE=true
+
 EXPOSE 3001
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]

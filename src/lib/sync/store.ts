@@ -72,11 +72,25 @@ export type SyncRunState = {
 /**
  * Au-delà de ce silence, un run « en cours » est considéré mort.
  *
- * Le battement est réécrit à chaque changement d'étape. La plus longue étape
- * observée est l'import des opportunités ; cinq minutes laissent une marge
- * confortable sans transformer un plantage en verrou permanent.
+ * Cinq minutes laissent une marge confortable sans transformer un plantage en
+ * verrou permanent.
  */
 export const HEARTBEAT_TIMEOUT_MS = 5 * 60 * 1000;
+
+/**
+ * Cadence du battement PENDANT une étape.
+ *
+ * Le battement n'était autrefois réécrit qu'aux changements d'étape, en
+ * supposant qu'aucune étape ne dépasse cinq minutes. Le 23/08 cette hypothèse a
+ * cédé : la machine étant bridée par son quota CPU, « Pistes Salesforce » a duré
+ * 347 s, et le garde-fou a déclaré mort un run parfaitement vivant — qui s'est
+ * d'ailleurs terminé avec succès quatre minutes plus tard.
+ *
+ * Le battement mesure désormais la vitalité réelle du processus, et non la
+ * granularité des étapes. Quinze secondes : vingt fois moins que le seuil, pour
+ * une écriture SQLite négligeable.
+ */
+export const HEARTBEAT_INTERVAL_MS = 15 * 1000;
 
 type RunRow = {
   id: number;

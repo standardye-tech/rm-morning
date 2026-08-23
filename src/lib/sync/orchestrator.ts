@@ -23,6 +23,7 @@ import {
   getRun,
   mergeSources,
   startStep,
+  HEARTBEAT_INTERVAL_MS,
   type SyncRunState,
 } from "./store";
 import { buildSteps, type SyncStep } from "./steps";
@@ -85,6 +86,11 @@ async function execute(runId: number, steps: SyncStep[]): Promise<void> {
       continue;
     }
     startStep(runId, step.key);
+    // Battement pendant l'étape, et pas seulement à ses bornes : sans lui, une
+    // étape plus longue que HEARTBEAT_TIMEOUT_MS fait passer un run vivant pour
+    // mort. `unref` pour que ce minuteur ne retienne jamais le processus.
+    const pulse = setInterval(() => beat(runId, step.key), HEARTBEAT_INTERVAL_MS);
+    pulse.unref();
     try {
       const outcome = await withTimeout(step.run(), step.timeoutMs, step.label);
       if (outcome.sources) mergeSources(runId, outcome.sources);
@@ -101,6 +107,8 @@ async function execute(runId: number, steps: SyncStep[]): Promise<void> {
       finishStep(runId, step.key, "failed", null, message);
       if (step.blocking) blockingFailure = `${step.label} : ${message}`;
       else warnings.push(`${step.label} non actualisé — ${message}`);
+    } finally {
+      clearInterval(pulse);
     }
     beat(runId, step.key);
   }
@@ -137,11 +145,40 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 }
 
 /**
+ * Motifs masqués avant toute journalisation d'une sortie de processus enfant.
+ *
+ * La CLI Salesforce recopie parfois son URL d'authentification dans un message
+ * d'erreur, et cette URL porte un jeton de rafraîchissement. Les traces Python
+ * peuvent exposer une clé d'API. Rien de tout cela ne doit atterrir en base ni à
+ * l'écran : le résumé d'erreur est utile, pas au prix d'une fuite.
+ */
+const SECRETS = [
+  /force:\/\/\S+/g,
+  /sk-ant-[A-Za-z0-9_-]+/g,
+  /GOCSPX-[A-Za-z0-9_-]+/g,
+  /\b(?:Bearer|access_token|refresh_token)[=:\s]+\S+/gi,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+];
+
+function redact(text: string): string {
+  return SECRETS.reduce((t, re) => t.replace(re, "[masqué]"), text);
+}
+
+/**
  * Message d'erreur lisible par un manager.
  *
- * Les erreurs des connecteurs sont verbeuses — sortie JSON de la CLI Salesforce,
- * traces Python. On garde la première ligne utile et on nomme la cause quand elle
- * est reconnaissable.
+ * On nomme la cause quand elle est reconnaissable. Sinon on garde la première
+ * ligne — celle qui dit QUOI a échoué — ET les dernières lignes utiles, celles
+ * qui disent POURQUOI.
+ *
+ * Ce second morceau a été ajouté après l'incident du 23/08 : `execFile` produit
+ * « Command failed: <commande> » en première ligne et le vrai message en
+ * dernière. Ne garder que la première ligne réduisait un FileNotFoundError
+ * parfaitement explicite à un « Command failed » inexploitable, et obligeait à
+ * rejouer la commande à la main pour savoir ce qui s'était passé.
+ *
+ * Ce n'est pas un dump : trois lignes au plus, 600 caractères au plus, et tout
+ * ce qui ressemble à un secret est masqué.
  */
 function readable(error: unknown): string {
   if (error instanceof Error) {
@@ -153,8 +190,23 @@ function readable(error: unknown): string {
     if (name === "ForecastAuthError" || name === "ForecastAccessError") {
       return "Google Sheet Perspective inaccessible";
     }
-    const first = error.message.split("\n").find((l) => l.trim().length > 0) ?? error.message;
-    return first.trim().slice(0, 300);
+
+    const lines = redact(error.message)
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    if (lines.length === 0) return error.message.slice(0, 300);
+
+    const first = lines[0].slice(0, 300);
+    // Les tracebacks placent la cause réelle en dernier. On prend les deux
+    // dernières lignes distinctes de la première, sans jamais tout recopier.
+    const tail = lines
+      .slice(1)
+      .filter((l) => l !== lines[0])
+      .slice(-2)
+      .map((l) => l.slice(0, 200));
+
+    return [first, ...tail].join(" · ").slice(0, 600);
   }
-  return String(error).slice(0, 300);
+  return redact(String(error)).slice(0, 300);
 }
