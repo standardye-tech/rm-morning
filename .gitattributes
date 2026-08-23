@@ -1,0 +1,16 @@
+# Fins de ligne des fichiers exécutés dans le conteneur Linux.
+#
+# Le poste de développement est sous Windows avec `core.autocrlf = true` : sans
+# ces règles, un clone frais réécrirait `docker-entrypoint.sh` en CRLF, et Linux
+# refuserait de l'exécuter — `/bin/sh^M: bad interpreter`. Le conteneur ne
+# démarrerait pas, avec un message qui n'oriente vers rien.
+#
+# Le problème est invisible aujourd'hui parce que `fly deploy` construit depuis
+# la copie de travail, encore en LF. Il apparaîtrait au premier clone : machine
+# neuve, autre poste, ou déploiement continu depuis GitHub Actions.
+
+*.sh             text eol=lf
+Dockerfile       text eol=lf
+.dockerignore    text eol=lf
+fly.toml         text eol=lf
+requirements.txt text eol=lf
