@@ -1,0 +1,39 @@
+# Ce qui ne doit JAMAIS entrer dans l'image.
+#
+# `data/` en tête, et c'est la règle la plus importante du fichier : le dossier
+# contient la base, le jeton de rafraîchissement Gmail et la clé du compte de
+# service Google. Une image Docker se pousse, se copie et se conserve — un secret
+# qui y entre est réputé diffusé.
+
+data/
+.env
+.env.*
+*.pem
+
+# Artefacts de construction — reconstruits dans l'image.
+.next/
+out/
+build/
+node_modules/
+tsconfig.tsbuildinfo
+next-env.d.ts
+
+# Exports et données de travail.
+forecast-exports/
+*.xls
+*.xlsx
+*.csv
+
+# Outillage local, sans usage à l'exécution.
+.git/
+.github/
+.gitignore
+.claude/
+.vercel/
+scripts/__pycache__/
+coverage/
+npm-debug.log*
+.DS_Store
+
+# Infrastructure : lue par Fly, pas par l'application.
+fly.toml

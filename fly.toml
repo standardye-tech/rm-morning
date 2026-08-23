@@ -1,0 +1,81 @@
+# RM Morning — configuration Fly.io.
+#
+# UNE SEULE MACHINE, ET CE N'EST PAS NÉGOCIABLE tant que SQLite est la base :
+# un volume Fly ne s'attache qu'à une machine, et SQLite n'admet qu'un écrivain.
+# Ne jamais lancer `fly scale count 2` : la seconde machine démarrerait sans
+# volume, donc sur une base vide. La garde de `docker-entrypoint.sh` l'en
+# empêcherait, mais mieux vaut ne pas en arriver là.
+
+app = "rm-morning"
+primary_region = "cdg"
+
+# Swap. Absorbe le pic du scoring Python (scikit-learn + pandas, 350 à 450 Mo)
+# qui se superpose au serveur Next (150 à 250 Mo) une à trois minutes par jour.
+# Ce n'est PAS un substitut de RAM : c'est un filet pour une pointe brève et
+# prévisible. Si les logs montrent un OOM-kill, la réponse est `fly scale memory
+# 2048`, pas plus de swap.
+# Partition créée par Fly au démarrage de la machine, sur son disque racine
+# éphémère — jamais sur le volume `/data`, qui n'est donc pas entamé.
+swap_size_mb = 1024
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Variables NON SENSIBLES uniquement. Tout secret passe par `fly secrets set`,
+# jamais ici : ce fichier est suivi par Git.
+[env]
+  NODE_ENV = "production"
+  PORT = "3001"
+  RM_DATA_DIR = "/data"
+  RM_DB_PATH = "/data/rm-morning.db"
+  RM_REQUIRE_DB = "1"
+  # Origine publique, sans barre finale. Sert à construire l'URI de redirection
+  # OAuth de Google, qui doit être déclarée à l'identique dans la console Google
+  # Cloud. Ce n'est pas un secret.
+  RM_PUBLIC_URL = "https://rm-morning.fly.dev"
+  GOOGLE_SERVICE_ACCOUNT_FILE = "/run/secrets/google-service-account.json"
+  SF_ORG_ALIAS = "rm-morning"
+  SF_USE_GENERIC_UNIX_KEYCHAIN = "true"
+
+[[mounts]]
+  source = "rm_data"
+  destination = "/data"
+  initial_size = "3gb"
+  # Sauvegarde de niveau 1. Fly photographie le volume chaque jour ; 14 jours de
+  # rétention couvrent large, et les 10 premiers Go de snapshots sont offerts.
+  # La sauvegarde de niveau 2 — `VACUUM INTO` daté, cohérent — sera posée en
+  # Phase 3, une fois l'application en service.
+  scheduled_snapshots = true
+  snapshot_retention = 14
+
+[http_service]
+  internal_port = 3001
+  force_https = true
+  # Une application consultée trois fois par jour ne doit pas s'endormir : le
+  # réveil ajouterait quelques secondes à chaque ouverture, et l'actualisation
+  # planifiée manquerait sa fenêtre.
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    path = "/api/health"
+    method = "GET"
+    interval = "30s"
+    timeout = "10s"
+    # Le temps que Node démarre et que le premier accès SQLite aboutisse.
+    grace_period = "45s"
+
+[deploy]
+  # `canary` et `bluegreen` sont INTERDITS avec un volume : ils démarrent une
+  # seconde machine, qui ne pourrait pas l'attacher. `rolling` remplace la
+  # machine unique en respectant le healthcheck — un déploiement cassé est donc
+  # détecté au lieu d'être servi.
+  strategy = "rolling"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
+  cpus = 1
+  cpu_kind = "shared"

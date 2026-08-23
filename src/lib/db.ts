@@ -4,7 +4,7 @@
  */
 
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 
 import { DB_PATH } from "./config";
@@ -936,10 +936,36 @@ export function getDb(): DatabaseSync {
 
   // Chemin résolu à l'exécution : base locale, jamais empaquetée.
   const file = path.resolve(/* turbopackIgnore: true */ process.cwd(), DB_PATH);
+
+  // GARDE ANTI-BASE VIDE.
+  //
+  // `new DatabaseSync(file)` crée le fichier s'il n'existe pas, et `db.exec(SCHEMA)`
+  // le peuple de tables vides. En local c'est exactement ce qu'on veut : la
+  // première exécution amorce la base. En production, où la base vit sur un
+  // volume monté, c'est un piège — un montage raté donnerait une application qui
+  // démarre normalement, affiche zéro partout, et que la première actualisation
+  // remplirait de données fraîches. Il y aurait alors deux bases divergentes, et
+  // rien pour le signaler.
+  //
+  // `RM_REQUIRE_DB=1` interdit ce cas. La variable n'est posée que dans l'image
+  // de production : en développement, le comportement d'amorçage est inchangé.
+  if (process.env.RM_REQUIRE_DB === "1" && !existsSync(file)) {
+    throw new Error(
+      `Base introuvable : ${file}. RM_REQUIRE_DB=1 interdit d'en créer une vide. ` +
+        `Vérifiez que le volume est monté et que la base de production y a bien été déposée.`,
+    );
+  }
+
   mkdirSync(path.dirname(file), { recursive: true });
 
   const db = new DatabaseSync(file);
   db.exec("PRAGMA journal_mode = WAL;");
+  // Le serveur Next et les scripts Python de scoring écrivent dans la même base,
+  // et l'application est désormais ouverte depuis plusieurs appareils. Sans délai
+  // d'attente, une écriture qui tombe pendant une transaction concurrente reçoit
+  // SQLITE_BUSY immédiatement au lieu de patienter. Cinq secondes couvrent très
+  // largement les transactions du projet, toutes courtes.
+  db.exec("PRAGMA busy_timeout = 5000;");
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec(SCHEMA);
   migrate(db);

@@ -42,7 +42,8 @@
     "morning:triage-audit": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/audit-morning-triage.mjs",
     "morning:triage-verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/verify-morning-triage.mjs",
     "morning:intent-verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/verify-morning-intent.mjs",
-    "audit:v1": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/audit-v1.mjs"
+    "audit:v1": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/audit-v1.mjs",
+    "cloud:verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs scripts/verify-cloud.mjs"
   },
   "dependencies": {
     "next": "16.3.1",

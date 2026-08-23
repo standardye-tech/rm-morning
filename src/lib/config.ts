@@ -208,8 +208,15 @@ export const SALESFORCE_LOGIN_COMMAND = `sf org login web --alias ${SALESFORCE_A
  * « Lecteur » avec l'adresse du compte de service. Lecture seule stricte.
  */
 export const GOOGLE_SHEETS = {
-  /** Clé JSON du compte de service. Dans `data/`, ignoré par Git. */
-  keyFile: "data/google-service-account.json",
+  /**
+   * Clé JSON du compte de service. En local, dans `data/`, ignoré par Git.
+   *
+   * En production, `GOOGLE_SERVICE_ACCOUNT_FILE` la détourne vers un emplacement
+   * ÉPHÉMÈRE hors du volume, que l'entrypoint reconstruit au démarrage depuis un
+   * secret Fly. La clé ne touche donc ni l'image, ni le disque persistant, ni les
+   * sauvegardes. `path.resolve` honore un chemin absolu tel quel.
+   */
+  keyFile: process.env.GOOGLE_SERVICE_ACCOUNT_FILE ?? "data/google-service-account.json",
 
   /** Seul scope demandé. Ni Drive, ni Gmail, ni écriture. */
   scope: "https://www.googleapis.com/auth/spreadsheets.readonly",
@@ -609,8 +616,19 @@ export const GOOGLE_OAUTH = {
   /** Scope unique. Aucune permission d'écriture n'est demandée. */
   scope: "https://www.googleapis.com/auth/gmail.readonly",
 
-  /** Port fixe : Horizon-2031 occupe le 3000. */
-  redirectUri: "http://localhost:3001/api/google/callback",
+  /**
+   * URI de redirection OAuth.
+   *
+   * En local, port fixe : Horizon-2031 occupe le 3000. En production, l'URI doit
+   * être celle du serveur — Google refuse toute redirection non déclarée, et une
+   * valeur figée sur `localhost` rendrait la reconnexion de Gmail impossible
+   * depuis le conteneur. `RM_PUBLIC_URL` porte l'origine publique, sans barre
+   * finale ; le chemin, lui, ne change jamais.
+   *
+   * L'origine renseignée ici doit être déclarée à l'identique dans la console
+   * Google Cloud, sur l'ID client OAuth du projet `rm-morning`.
+   */
+  redirectUri: `${process.env.RM_PUBLIC_URL ?? "http://localhost:3001"}/api/google/callback`,
 
   authUri: "https://accounts.google.com/o/oauth2/auth",
   tokenUri: "https://oauth2.googleapis.com/token",

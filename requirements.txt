@@ -1,0 +1,14 @@
+# Pile de scoring Expected GMV / projection M+1.
+#
+# Versions ÉPINGLÉES À L'IDENTIQUE du poste de développement. Ce n'est pas de la
+# prudence excessive : les modèles figés `data/expected-gmv/*.joblib` ont été
+# sérialisés avec ces versions exactes. Un scikit-learn différent peut les charger
+# sans erreur visible et produire des scores légèrement différents — c'est-à-dire
+# changer une règle métier sans que rien ne le signale.
+#
+# Relevé le 22/08/2026 sur Python 3.14.7.
+numpy==2.5.2
+pandas==3.0.5
+scikit-learn==1.9.0
+scipy==1.18.0
+joblib==1.5.3
