@@ -159,9 +159,15 @@ const PROBES = {
       problems.push(`PERFORMANCE_MODEL_VERSION=${c.PERFORMANCE_MODEL_VERSION}`);
     }
     if (c.DB_PATH !== "data/rm-morning.db") problems.push(`DB_PATH=${c.DB_PATH}`);
-    if (c.TEAM.length !== 13) problems.push(`TEAM=${c.TEAM.length} membres`);
+    // Le périmètre commercial n'est plus une constante : il se règle depuis
+    // l'écran Données et vit en base. On vérifie donc qu'il existe, pas qu'il
+    // compte un nombre figé de membres — sinon toute évolution d'équipe
+    // ferait échouer le contrôle de déploiement.
+    const { loadTeam } = await import("../src/lib/team-store.ts");
+    const team = loadTeam();
+    if (team.length === 0) problems.push("périmètre commercial vide");
     return problems.length === 0
-      ? say(true, `PERFORMANCE_MODEL_VERSION=v3-ytd · ${c.TEAM.length} commerciaux suivis`)
+      ? say(true, `PERFORMANCE_MODEL_VERSION=v3-ytd · ${team.length} commerciaux suivis`)
       : say(false, problems.join(" · "));
   },
 

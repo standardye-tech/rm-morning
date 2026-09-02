@@ -11,8 +11,9 @@ import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 
 import { FORECAST_SHEET } from "../config";
-import { parseForecastSheet } from "./forecast-sheet-parser";
+import { parseForecastSheet, type SheetRowIssue } from "./forecast-sheet-parser";
 import type {
+  ForecastCurrentLine,
   ForecastFetchResult,
   ForecastSnapshotLine,
   ForecastSnapshotSource,
@@ -28,6 +29,10 @@ export class ManualForecastSnapshotSource implements ForecastSnapshotSource {
     const root = path.resolve(/* turbopackIgnore: true */ process.cwd(), this.dir);
     const lines: ForecastSnapshotLine[] = [];
     const issues: ParseIssue[] = [];
+    const rowIssues: SheetRowIssue[] = [];
+    const currentLines: ForecastCurrentLine[] = [];
+    const currentMonths: string[] = [];
+    const updatedAts = new Set<string>();
     const readMonths: string[] = [];
     const snapshotDates = new Set<string>();
 
@@ -43,6 +48,10 @@ export class ManualForecastSnapshotSource implements ForecastSnapshotSource {
         snapshotDates: [],
         lines: [],
         issues: [{ message: `Dossier ${root} introuvable : aucun CSV de forecast à lire.` }],
+        rowIssues: [],
+        currentMonths: [],
+        currentUpdatedAt: null,
+        currentLines: [],
       };
     }
 
@@ -66,6 +75,12 @@ export class ManualForecastSnapshotSource implements ForecastSnapshotSource {
       if (parsed.lines.length > 0) readMonths.push(month);
       lines.push(...parsed.lines);
       issues.push(...parsed.issues);
+      rowIssues.push(...parsed.rowIssues);
+      currentLines.push(...parsed.currentLines);
+      if (parsed.currentUpdatedAt !== null || parsed.currentLines.length > 0) {
+        currentMonths.push(month);
+      }
+      if (parsed.currentUpdatedAt) updatedAts.add(parsed.currentUpdatedAt);
       for (const date of parsed.snapshotDates) snapshotDates.add(date);
     }
 
@@ -76,7 +91,11 @@ export class ManualForecastSnapshotSource implements ForecastSnapshotSource {
       months: readMonths,
       snapshotDates: [...snapshotDates].sort(),
       lines,
+      currentMonths,
+      currentUpdatedAt: [...updatedAts].sort().pop() ?? null,
+      currentLines,
       issues,
+      rowIssues,
     };
   }
 }

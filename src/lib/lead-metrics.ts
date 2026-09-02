@@ -10,7 +10,8 @@
  * présence systématique du volume traité à côté de chaque compteur.
  */
 
-import { LEAD_MONITORING, TEAM } from "./config";
+import { LEAD_MONITORING } from "./config";
+import { loadTeam } from "./team-store";
 import { ANOMALY_STATUSES, type LeadOperationalStatus } from "./lead-rules";
 import type { StoredLead } from "./lead-store";
 
@@ -130,7 +131,7 @@ export function computeLeadMetrics(
   const inPeriod = leads.filter((l) => new Date(l.createdAt).getTime() >= from);
   const now = reference.getTime();
 
-  const owners: OwnerLeadMetrics[] = TEAM.map((member) => {
+  const owners: OwnerLeadMetrics[] = loadTeam().map((member) => {
     const mine = inPeriod.filter((l) => l.owner === member.name);
     // Les anomalies se comptent sur le stock ouvert, pas sur la seule période :
     // une piste de mars encore en retard reste un problème aujourd'hui.

@@ -29,6 +29,8 @@ export type SyncSources = {
   leadImportedAt?: string | null;
   travauxImportedAt?: string | null;
   perspectiveSnapshotDate?: string | null;
+  /** « MAJ le » du bloc « EN COURS », la fraîcheur réelle de la Perspective. */
+  perspectiveCurrentUpdatedAt?: string | null;
   gmailCursorAt?: string | null;
   gmailLastMessageAt?: string | null;
   expectedScoredAt?: string | null;

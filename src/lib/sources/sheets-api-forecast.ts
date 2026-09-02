@@ -18,8 +18,9 @@ import { createSign } from "node:crypto";
 import path from "node:path";
 
 import { FORECAST_SHEET, GOOGLE_SHEETS } from "../config";
-import { parseForecastGrid } from "./forecast-sheet-parser";
+import { parseForecastGrid, type SheetRowIssue } from "./forecast-sheet-parser";
 import type {
+  ForecastCurrentLine,
   ForecastFetchResult,
   ForecastSnapshotLine,
   ForecastSnapshotSource,
@@ -185,8 +186,12 @@ export class SheetsApiForecastSnapshotSource implements ForecastSnapshotSource {
     );
 
     const lines: ForecastSnapshotLine[] = [];
+    const currentLines: ForecastCurrentLine[] = [];
+    const rowIssues: SheetRowIssue[] = [];
     const readMonths: string[] = [];
+    const currentMonths: string[] = [];
     const snapshotDates = new Set<string>();
+    const updatedAts = new Set<string>();
 
     tabs.forEach((tab, index) => {
       const grid = values.valueRanges?.[index]?.values ?? [];
@@ -195,10 +200,19 @@ export class SheetsApiForecastSnapshotSource implements ForecastSnapshotSource {
         return;
       }
       const parsed = parseForecastGrid(grid, tab);
-      if (parsed.lines.length > 0) readMonths.push(tab);
+      if (parsed.lines.length > 0 || parsed.currentLines.length > 0) readMonths.push(tab);
+      // Le mois est déclaré « courant » dès que son bloc EN COURS a été LU,
+      // même s'il ne porte aucune ligne : c'est ce qui permet de vider l'état
+      // courant d'un mois qui s'est vidé, au lieu de laisser traîner l'ancien.
+      if (parsed.currentUpdatedAt !== null || parsed.currentLines.length > 0) {
+        currentMonths.push(tab);
+      }
       lines.push(...parsed.lines);
+      currentLines.push(...parsed.currentLines);
       issues.push(...parsed.issues);
+      rowIssues.push(...parsed.rowIssues);
       for (const date of parsed.snapshotDates) snapshotDates.add(date);
+      if (parsed.currentUpdatedAt) updatedAts.add(parsed.currentUpdatedAt);
     });
 
     return {
@@ -207,8 +221,12 @@ export class SheetsApiForecastSnapshotSource implements ForecastSnapshotSource {
       fetchedAt: new Date(),
       months: readMonths,
       snapshotDates: [...snapshotDates].sort(),
+      currentMonths,
+      currentUpdatedAt: [...updatedAts].sort().pop() ?? null,
       lines,
+      currentLines,
       issues,
+      rowIssues,
     };
   }
 }

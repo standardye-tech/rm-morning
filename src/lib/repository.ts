@@ -263,6 +263,34 @@ export function loadForecastSnapshot(
   ).map(toForecastLine);
 }
 
+/**
+ * ÉTAT COURANT du forecast pour un mois — bloc « EN COURS » du classeur.
+ *
+ * Rendu dans la même forme qu'un snapshot pour être interchangeable côté
+ * appelant, avec `snapshotDate` porté à la DATE du « MAJ le ». Ce n'est pas une
+ * date de snapshot et rien ne l'écrit dans `forecast_snapshot` : c'est
+ * uniquement la date à laquelle cet état a été constaté.
+ */
+export function loadForecastCurrent(forecastMonth: string): ForecastLine[] {
+  return queryAll<Row>(
+    "SELECT * FROM forecast_current WHERE forecast_month = ?",
+    forecastMonth,
+  ).map((row) => ({
+    ...toForecastLine({ ...row, snapshot_date: String(row.updated_at ?? "").slice(0, 10) }),
+  }));
+}
+
+/** Fraîcheur annoncée par le classeur pour l'état courant d'un mois. */
+export function forecastCurrentUpdatedAt(forecastMonth?: string): string | null {
+  const row = forecastMonth
+    ? queryOne<Row>(
+        "SELECT MAX(updated_at) AS at FROM forecast_current WHERE forecast_month = ?",
+        forecastMonth,
+      )
+    : queryOne<Row>("SELECT MAX(updated_at) AS at FROM forecast_current");
+  return row?.at ? String(row.at) : null;
+}
+
 export type ForecastImportInfo = {
   source: string;
   importedAt: string;

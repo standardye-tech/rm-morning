@@ -62,10 +62,17 @@ export function ForecastSummary({ board }: { board: ForecastMonthBoard }) {
         <Stat
           label="Perspective"
           value={kEur(board.region.perspectiveGmv)}
+          /*
+            Le libellé DIT d'où vient le chiffre. « snapshot du 31/08 » alors
+            qu'on affiche l'état du 02/09 ferait croire la donnée plus vieille
+            qu'elle ne l'est — et inversement.
+          */
           hint={
-            board.perspectiveDate
-              ? `snapshot du ${new Date(board.perspectiveDate).toLocaleDateString("fr-FR")}`
-              : "aucun snapshot"
+            board.perspectiveSource === "courant"
+              ? `état courant du ${new Date(board.perspectiveDate!).toLocaleDateString("fr-FR")}`
+              : board.perspectiveDate
+                ? `snapshot du ${new Date(board.perspectiveDate).toLocaleDateString("fr-FR")}`
+                : "aucune Perspective"
           }
         />
         <Stat label="Expected GMV" value="—" hint="prévision statistique à venir" />
@@ -182,7 +189,8 @@ export function ForecastTable({
         title={`Forecast ${board.monthLabel}`}
         aside={
           board.perspectiveDate
-            ? `Perspective au ${new Date(board.perspectiveDate).toLocaleDateString("fr-FR")}`
+            ? `Perspective ${board.perspectiveSource === "courant" ? "en cours au" : "au"} ` +
+              `${new Date(board.perspectiveDate).toLocaleDateString("fr-FR")}`
             : "sans Perspective"
         }
       />
@@ -234,8 +242,9 @@ export function ForecastTable({
       )}
       <p className="border-t border-line px-4 md:px-6 py-3 text-xs leading-relaxed text-ink-faint">
         « Projection Kanban » est le déclaratif actuel du commercial dans Salesforce.
-        « Perspective » est la dernière photographie hebdomadaire de ce déclaratif — les deux ne
-        sont jamais confondus. « Expected GMV » est une prévision statistique qui n&apos;existe pas
+        « Perspective » est ce même déclaratif tel que le classeur le porte : son bloc « en cours »,
+        rafraîchi chaque jour, ou à défaut la dernière photographie hebdomadaire. Les deux ne sont
+        jamais confondus, et le bloc en cours n&apos;écrase jamais une photographie. « Expected GMV » est une prévision statistique qui n&apos;existe pas
         encore : rien n&apos;est simulé à sa place.
       </p>
     </Card>

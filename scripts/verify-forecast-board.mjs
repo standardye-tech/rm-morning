@@ -16,7 +16,8 @@ import { pathToFileURL } from "node:url";
 
 const lib = (n) => pathToFileURL(path.resolve(process.cwd(), `src/lib/${n}.ts`)).href;
 const { buildForecastBoard, shiftMonth, MOVEMENT_LABEL } = await import(lib("forecast-board"));
-const { TEAM } = await import(lib("config"));
+const { loadTeam } = await import(lib("team-store"));
+const TEAM = loadTeam();
 const { loadOpportunities } = await import(lib("repository"));
 
 const eur = (v) => `${Math.round((v ?? 0) / 1000)} k€`;
@@ -99,13 +100,24 @@ console.log(
 
 // 7. Total Google Sheet
 const db = new DatabaseSync(path.resolve(process.cwd(), "data/rm-morning.db"), { readOnly: true });
-const sheet = M.perspectiveDate
-  ? db.prepare("SELECT COUNT(*) n, SUM(projected_gmv) g FROM forecast_snapshot WHERE forecast_month=? AND snapshot_date=?").get(M.month, M.perspectiveDate)
-  : null;
+// La Perspective affichee vient soit du bloc « EN COURS » (etat du jour), soit
+// du dernier snapshot hebdomadaire. On interroge la table correspondante.
+const sheet =
+  M.perspectiveSource === "courant"
+    ? db
+        .prepare("SELECT COUNT(*) n, SUM(projected_gmv) g FROM forecast_current WHERE forecast_month=?")
+        .get(M.month)
+    : M.perspectiveDate
+      ? db
+          .prepare(
+            "SELECT COUNT(*) n, SUM(projected_gmv) g FROM forecast_snapshot WHERE forecast_month=? AND snapshot_date=?",
+          )
+          .get(M.month, M.perspectiveDate)
+      : null;
 db.close();
 if (sheet) {
   console.log(
-    `  info  7. Sheet ${M.perspectiveDate} : ${sheet.n} lignes · ${eur(sheet.g)} projeté — RM Morning n'en retient que les ${matched} lignes rattachées à une opportunité encore projetée sur ${M.month} (${eur(M.region.perspectiveGmv)}). L'écart est la part non rattachée ou sortie du mois.`,
+    `  info  7. Sheet ${M.perspectiveSource ?? "?"} ${M.perspectiveDate} : ${sheet.n} lignes · ${eur(sheet.g)} projeté — RM Morning n'en retient que les ${matched} lignes rattachées à une opportunité encore projetée sur ${M.month} (${eur(M.region.perspectiveGmv)}). L'écart est la part non rattachée ou sortie du mois.`,
   );
 }
 

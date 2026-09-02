@@ -51,9 +51,21 @@ export function freshnessReport(): FreshnessReport {
   const travaux = one<{ at: string; n: number }>(
     "SELECT MAX(last_import_at) at, COUNT(*) n FROM travaux",
   );
-  const perspective = one<{ at: string; n: number }>(
+  // La fraîcheur RÉELLE de la Perspective est celle du bloc « EN COURS », qui
+  // est rafraîchi tous les jours — pas celle du dernier lundi consolidé.
+  // Afficher la date du snapshot faisait paraître périmée une source qui ne
+  // l'était pas. On retient donc la plus récente des deux.
+  const perspectiveSnapshot = one<{ at: string; n: number }>(
     "SELECT MAX(snapshot_date) at, COUNT(*) n FROM forecast_snapshot",
   );
+  const perspectiveCurrent = one<{ at: string; n: number }>(
+    "SELECT MAX(updated_at) at, COUNT(*) n FROM forecast_current",
+  );
+  const currentDay = perspectiveCurrent?.at ? String(perspectiveCurrent.at).slice(0, 10) : null;
+  const perspective =
+    currentDay && (!perspectiveSnapshot?.at || currentDay >= String(perspectiveSnapshot.at))
+      ? { at: currentDay, n: perspectiveCurrent!.n }
+      : perspectiveSnapshot;
   const mail = latestSync();
   const snap = buildExpectedGmvSnapshot();
   const m1 = buildExpectedM1();
@@ -102,7 +114,9 @@ export function freshnessReport(): FreshnessReport {
       volume: perspective ? `${perspective.n} ligne(s)` : null,
       // La Perspective est hebdomadaire : une date de plusieurs jours n'est pas
       // une panne, c'est sa cadence. On l'énonce sans la qualifier.
-      note: "Photographie hebdomadaire du déclaratif — sa date est celle du Sheet.",
+      note: currentDay
+        ? "État courant du classeur, rafraîchi chaque jour — sa date est celle du Sheet."
+        : "Photographie hebdomadaire du déclaratif — sa date est celle du Sheet.",
     },
     {
       key: "emails",

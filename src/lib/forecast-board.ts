@@ -18,11 +18,18 @@
  * Aucun total n'est calculé par un autre chemin.
  */
 
-import { TEAM } from "./config";
 import { matchTeamMember } from "./normalize";
+import { loadTeam } from "./team-store";
 import { clientLabel } from "./vocabulary";
 import { loadMilestoneOpportunities } from "./opportunity-metrics";
-import { latestImport, forecastSnapshotDates, loadForecastSnapshot, loadOpportunities } from "./repository";
+import {
+  latestImport,
+  forecastCurrentUpdatedAt,
+  forecastSnapshotDates,
+  loadForecastCurrent,
+  loadForecastSnapshot,
+  loadOpportunities,
+} from "./repository";
 import type { Opportunity } from "./types";
 import {
   MILESTONE_LABEL,
@@ -129,8 +136,17 @@ export type ForecastMonthBoard = {
   monthLabel: string;
   isCurrentMonth: boolean;
   updatedAt: string | null;
-  /** Date du dernier snapshot Perspective utilisé pour ce mois. */
+  /** Date de la Perspective utilisée pour ce mois (snapshot OU état courant). */
   perspectiveDate: string | null;
+  /**
+   * D'où vient la Perspective affichée :
+   *   « courant »   — bloc « EN COURS » du classeur, la donnée la plus fraîche ;
+   *   « snapshot »  — dernière photographie hebdomadaire figée ;
+   *   null          — aucune Perspective pour ce mois.
+   */
+  perspectiveSource: "courant" | "snapshot" | null;
+  /** « MAJ le » du classeur quand la Perspective vient de l'état courant. */
+  perspectiveUpdatedAt: string | null;
   region: ForecastRegionTotals;
   salespeople: ForecastSalespersonBlock[];
   /** Présentes dans la dernière Perspective du mois, plus projetées dessus. */
@@ -183,19 +199,53 @@ export function buildForecastBoard(monthOffset = 0, objective: number | null = n
   const opportunities = loadOpportunities();
   const issues: string[] = [];
 
-  // --- Dernière Perspective disponible pour ce mois.
-  const dates = forecastSnapshotDates(month, reference);
-  const perspectiveDate = dates[0] ?? null;
-  const perspectiveLines = perspectiveDate ? loadForecastSnapshot(month, perspectiveDate) : [];
+  // --- Perspective LA PLUS FRAÎCHE disponible pour ce mois.
+  //
+  // Cet écran décrit l'état ACTUEL du forecast déclaré : il prend donc le bloc
+  // « EN COURS », rafraîchi quotidiennement par le classeur, et ne retombe sur
+  // la dernière photographie hebdomadaire que si l'état courant est absent.
+  //
+  // Un mois qui vient d'être ouvert — novembre au 02/09 — n'a encore aucun
+  // snapshot figé mais possède déjà un bloc courant : il reste donc exploitable,
+  // au lieu de paraître vide.
+  //
+  // La comparaison de deux photographies dans le temps, elle, reste
+  // exclusivement historique : voir `forecast.ts`, qui n'utilise pas l'état
+  // courant, sans quoi le mouvement « depuis la semaine dernière » comparerait
+  // des choses de natures différentes.
+  const freshest = (targetMonth: MonthKey) => {
+    const current = loadForecastCurrent(targetMonth);
+    if (current.length > 0) {
+      return {
+        lines: current,
+        date: forecastCurrentUpdatedAt(targetMonth)?.slice(0, 10) ?? null,
+        updatedAt: forecastCurrentUpdatedAt(targetMonth),
+        source: "courant" as const,
+      };
+    }
+    const dates = forecastSnapshotDates(targetMonth, reference);
+    const date = dates[0] ?? null;
+    return {
+      lines: date ? loadForecastSnapshot(targetMonth, date) : [],
+      date,
+      updatedAt: null,
+      source: date ? ("snapshot" as const) : null,
+    };
+  };
+
+  const perspective = freshest(month);
+  const perspectiveLines = perspective.lines;
+  const perspectiveDate = perspective.date;
+  const perspectiveSource = perspective.source;
+  const perspectiveUpdatedAt = perspective.updatedAt;
   const perspectiveById = new Map(
-    perspectiveLines.filter((l) => l.opportunityId).map((l) => [l.opportunityId as string, l]),
+    perspective.lines.filter((l) => l.opportunityId).map((l) => [l.opportunityId as string, l]),
   );
 
   // La Perspective du mois suivant sert à qualifier les glissements.
-  const nextDates = forecastSnapshotDates(nextMonth, reference);
   const nextPerspectiveById = new Map(
-    (nextDates[0] ? loadForecastSnapshot(nextMonth, nextDates[0]) : [])
-      .filter((l) => l.opportunityId)
+    freshest(nextMonth)
+      .lines.filter((l) => l.opportunityId)
       .map((l) => [l.opportunityId as string, l]),
   );
 
@@ -287,7 +337,8 @@ export function buildForecastBoard(monthOffset = 0, objective: number | null = n
     signedByOwner.set(o.owner, [...(signedByOwner.get(o.owner) ?? []), o]);
   }
 
-  const salespeople: ForecastSalespersonBlock[] = TEAM.map((member) => {
+  const team = loadTeam();
+  const salespeople: ForecastSalespersonBlock[] = team.map((member) => {
     const mine = rows.filter((r) => r.owner === member.name);
     const mySigned = signedByOwner.get(member.name) ?? [];
     return {
@@ -309,7 +360,7 @@ export function buildForecastBoard(monthOffset = 0, objective: number | null = n
   }).filter((s) => s.count > 0 || s.signedCount > 0);
 
   // Un commercial hors équipe ne doit jamais entrer dans les totaux.
-  const outsiders = rows.filter((r) => !TEAM.some((m) => m.name === r.owner));
+  const outsiders = rows.filter((r) => !team.some((m) => m.name === r.owner));
   if (outsiders.length > 0) {
     issues.push(`${outsiders.length} opportunité(s) portée(s) par un commercial hors équipe`);
   }
@@ -397,6 +448,8 @@ export function buildForecastBoard(monthOffset = 0, objective: number | null = n
     isCurrentMonth: monthOffset === 0,
     updatedAt: lastImport?.importedAt ?? null,
     perspectiveDate,
+    perspectiveSource,
+    perspectiveUpdatedAt,
     region,
     salespeople,
     exits,

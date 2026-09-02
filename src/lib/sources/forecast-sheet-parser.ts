@@ -4,21 +4,28 @@
  * C'est le seul fichier qui connaît la disposition du classeur. Les deux
  * sources (HTTP et fichier local) lui passent le même CSV.
  *
- * Disposition constatée lors de l'audit du 16/08/2026 :
+ * Disposition constatée lors de l'audit du 16/08/2026, revue le 02/09/2026 :
  *   — un en-tête de tableau repérable par la cellule « ID Opp » ;
- *   — juste au-dessus, une ligne d'étiquettes fusionnées « Snapshot 5 — 2026-08-10 » ;
+ *   — juste au-dessus, une ligne d'étiquettes fusionnées, de DEUX natures :
+ *       « Snapshot 5 — 2026-08-10 »            photographie hebdomadaire figée,
+ *       « EN COURS — MAJ le 02/09/2026 08:00 » état du jour, rafraîchi chaque jour ;
  *   — 7 colonnes fixes : ID Opp, DR, Sales, Opportunité, Apporteur, Canal, LeadSource ;
- *   — puis, par snapshot, 6 colonnes : Confiance, GMV, CA, GMV × conf., CA × conf., État.
+ *   — puis, par bloc, 6 à 7 colonnes : Confiance, GMV, CA, GMV × conf.,
+ *     CA × conf., État, et depuis le remaniement d'août 2026 Commentaire.
  *
  * On ne suppose ni le nombre de colonnes fixes, ni la largeur des blocs : les
  * blocs sont repérés par les occurrences de « Confiance » dans l'en-tête, et
  * chaque sous-colonne par son libellé. Un onglet qui gagnerait une colonne
- * continuerait donc d'être lu correctement.
+ * continuerait donc d'être lu correctement — c'est ce qui a permis d'absorber
+ * « Commentaire » sans rien changer.
+ *
+ * Le parseur rend les deux natures SÉPARÉMENT : `lines` pour l'historique figé,
+ * `currentLines` pour l'état du jour. Rien ne les mélange.
  */
 
 import { normalizeKey, parseFrenchNumber } from "../normalize";
 import type { ParseIssue } from "./salesforce";
-import type { ForecastSnapshotLine } from "./forecast-snapshot";
+import type { ForecastCurrentLine, ForecastSnapshotLine } from "./forecast-snapshot";
 
 /** Découpe un CSV (RFC 4180 : guillemets, virgules et sauts de ligne échappés). */
 export function parseCsv(text: string): string[][] {
@@ -122,11 +129,67 @@ export function normalizeOpportunityId(raw: string | null): string | null {
   return text.slice(0, 15);
 }
 
-export type SheetParseResult = {
-  lines: ForecastSnapshotLine[];
-  snapshotDates: string[];
-  issues: ParseIssue[];
+/**
+ * Anomalie CANDIDATE portant sur une ligne précise.
+ *
+ * Elle n'est pas encore une anomalie : le parseur ne sait pas si la ligne est
+ * dans le périmètre. C'est l'import qui tranche, une fois le commercial et le
+ * territoire connus — voir `forecast-import.ts`. Une ligne hors équipe ou hors
+ * territoire est écartée sans jamais être signalée.
+ */
+export type SheetRowIssue = {
+  /** Numéro de ligne dans l'onglet, tel qu'affiché par le tableur. */
+  row: number;
+  forecastMonth: string;
+  salespersonRaw: string | null;
+  opportunityId: string | null;
+  opportunityLabel: string | null;
+  message: string;
 };
+
+export type SheetParseResult = {
+  /** Snapshots hebdomadaires figés. */
+  lines: ForecastSnapshotLine[];
+  /** État courant, issu du bloc « EN COURS ». Jamais mélangé aux snapshots. */
+  currentLines: ForecastCurrentLine[];
+  snapshotDates: string[];
+  /** « MAJ le » le plus récent rencontré, ou null. */
+  currentUpdatedAt: string | null;
+  /** Anomalies de STRUCTURE de l'onglet : toujours réelles, jamais filtrées. */
+  issues: ParseIssue[];
+  /** Anomalies de ligne, à confirmer par l'import une fois le périmètre connu. */
+  rowIssues: SheetRowIssue[];
+};
+
+/**
+ * DEUX NATURES DE BLOC, qu'il ne faut jamais confondre.
+ *
+ *   HISTORIQUE — « Snapshot 4 — 2026-08-31 »
+ *     Photographie hebdomadaire FIGÉE. Elle ne bouge plus jamais.
+ *
+ *   COURANT — « EN COURS — MAJ le 02/09/2026 08:00 »
+ *     L'état du jour, rafraîchi quotidiennement par le classeur. C'est la
+ *     donnée la plus fraîche dont on dispose, et elle DOIT être exploitée —
+ *     mais ce n'est pas un snapshot : demain elle est remplacée, alors qu'un
+ *     snapshot du 31/08 reste celui du 31/08 pour toujours.
+ *
+ * Le bloc courant est donc lu, daté par son propre « MAJ le », et rangé à part
+ * (table `forecast_current`). Il ne peut ni hériter de la date d'un snapshot
+ * voisin, ni en écraser un.
+ */
+const CURRENT_BLOCK_PATTERN = /^EN\s+COURS\b/i;
+
+/** « MAJ le 02/09/2026 08:00 » → « 2026-09-02T08:00 », trié comme du texte. */
+const UPDATED_AT_PATTERN =
+  /MAJ\s+le\s+(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{1,2})[:h](\d{2}))?/i;
+
+function parseUpdatedAt(label: string): string | null {
+  const match = label.match(UPDATED_AT_PATTERN);
+  if (!match) return null;
+  const [, day, month, year, hour, minute] = match;
+  const time = hour ? `T${hour.padStart(2, "0")}:${minute}` : "T00:00";
+  return `${year}-${month}-${day}${time}`;
+}
 
 /**
  * Lit un onglet mensuel au format CSV et produit une ligne par
@@ -144,13 +207,18 @@ export function parseForecastGrid(grid: string[][], forecastMonth: string): Shee
   const issues: ParseIssue[] = [];
 
   // 1. Ligne d'en-tête : celle qui porte « ID Opp ».
+  // `normalizeKey(c)` et non `c` : l'API Sheets peut rendre des lignes courtes,
+  // et un rendu tiers une cellule absente. On ne veut pas planter sur un trou.
   const headerRow = grid.findIndex((row) =>
-    row.some((c) => normalizeKey(c) === "idopp"),
+    row.some((c) => normalizeKey(c ?? "") === "idopp"),
   );
   if (headerRow < 0) {
     return {
       lines: [],
+      currentLines: [],
       snapshotDates: [],
+      currentUpdatedAt: null,
+      rowIssues: [],
       issues: [
         { message: `Onglet ${forecastMonth} : en-tête « ID Opp » introuvable, onglet ignoré.` },
       ],
@@ -167,7 +235,10 @@ export function parseForecastGrid(grid: string[][], forecastMonth: string): Shee
   if (blockStarts.length === 0) {
     return {
       lines: [],
+      currentLines: [],
       snapshotDates: [],
+      currentUpdatedAt: null,
+      rowIssues: [],
       issues: [
         { message: `Onglet ${forecastMonth} : aucun bloc de snapshot (colonne « Confiance »).` },
       ],
@@ -184,20 +255,25 @@ export function parseForecastGrid(grid: string[][], forecastMonth: string): Shee
     issues.push({ message: `Onglet ${forecastMonth} : colonne « ID Opp » non localisée.` });
   }
 
-  // 4. Date de chaque bloc : étiquette fusionnée la plus proche à gauche, sur la
-  //    ligne au-dessus de l'en-tête. En CSV, une fusion n'écrit la valeur qu'une
-  //    fois ; dans d'autres rendus elle est répétée. Les deux cas fonctionnent.
+  // 4. Étiquette de chaque bloc, sur la ligne au-dessus de l'en-tête.
+  //
+  //    ELLE EST CHERCHÉE DANS LES SEULES COLONNES DU BLOC. Le balayage allait
+  //    autrefois jusqu'à la colonne A : un bloc dépourvu d'étiquette héritait
+  //    silencieusement de la date du bloc précédent. C'est exactement ce qui
+  //    arrivait au bloc « EN COURS » de 2026-09 et 2026-10, importé sous la date
+  //    du dernier lundi — et qui, la clé étant (date, mois, ligne), ÉCRASAIT le
+  //    vrai snapshot de ce lundi par des valeurs de milieu de semaine.
+  //
+  //    En CSV, une fusion n'écrit la valeur qu'une fois, à sa première colonne ;
+  //    dans d'autres rendus elle est répétée. Les deux cas fonctionnent.
   const labelRow = headerRow - 1;
   const datePattern = /Snapshot\s*\d*\s*[—–-]?\s*(\d{4}-\d{2}-\d{2})/i;
 
   const blocks = blockStarts.map((start, index) => {
     const end = blockStarts[index + 1] ?? width;
 
-    let snapshotDate: string | null = null;
-    for (let c = end - 1; c >= 0 && snapshotDate === null; c--) {
-      const match = cell(grid, labelRow, c).match(datePattern);
-      if (match) snapshotDate = match[1];
-    }
+    let label = "";
+    for (let c = start; c < end && !label; c++) label = cell(grid, labelRow, c);
 
     const columns: BlockIndexes = {};
     for (let c = start; c < end; c++) {
@@ -205,20 +281,37 @@ export function parseForecastGrid(grid: string[][], forecastMonth: string): Shee
       if (key && columns[key] === undefined) columns[key] = c;
     }
 
-    return { start, end, snapshotDate, columns };
+    const current = CURRENT_BLOCK_PATTERN.test(label);
+    return {
+      start,
+      end,
+      label,
+      /** « snapshot » = photographie figée ; « current » = état du jour. */
+      kind: current ? ("current" as const) : ("snapshot" as const),
+      snapshotDate: current ? null : (label.match(datePattern)?.[1] ?? null),
+      /** Horodatage du bloc courant. Null si le classeur ne l'a pas écrit. */
+      updatedAt: current ? parseUpdatedAt(label) : null,
+      columns,
+    };
   });
 
   for (const block of blocks) {
-    if (!block.snapshotDate) {
-      issues.push({
-        message: `Onglet ${forecastMonth} : bloc en colonne ${block.start + 1} sans date de snapshot, ignoré.`,
-      });
-    }
+    // Un bloc courant est exploitable même sans « MAJ le » lisible : l'import
+    // le datera de l'heure de lecture. Ce n'est donc pas une anomalie.
+    if (block.kind === "current" || block.snapshotDate) continue;
+    issues.push({
+      message:
+        `Onglet ${forecastMonth} : bloc en colonne ${block.start + 1} sans date de snapshot` +
+        `${block.label ? ` (« ${block.label} »)` : ""}, ignoré.`,
+    });
   }
 
   // 5. Lignes d'opportunités.
   const lines: ForecastSnapshotLine[] = [];
+  const currentLines: ForecastCurrentLine[] = [];
+  const rowIssues: SheetRowIssue[] = [];
   const snapshotDates = new Set<string>();
+  const currentUpdatedAt = new Set<string>();
 
   for (let r = headerRow + 1; r < grid.length; r++) {
     const rawId = fixed.id === undefined ? "" : cell(grid, r, fixed.id);
@@ -230,15 +323,23 @@ export function parseForecastGrid(grid: string[][], forecastMonth: string): Shee
 
     const opportunityId = normalizeOpportunityId(rawId);
     if (rawId && !opportunityId) {
-      issues.push({
+      // CANDIDATE, pas encore une anomalie : l'import ne la retiendra que si la
+      // ligne appartient bien au périmètre RM Morning.
+      rowIssues.push({
         row: r + 1,
-        message: `Onglet ${forecastMonth} : identifiant inattendu « ${rawId} », ligne rattachée par libellé.`,
+        forecastMonth,
+        salespersonRaw: salesperson || null,
+        opportunityId: null,
+        opportunityLabel: labelText || null,
+        message: `identifiant inattendu « ${rawId} », ligne rattachée par libellé`,
       });
     }
     const rowKey = opportunityId ?? `label:${normalizeKey(labelText) || `ligne-${r}`}`;
 
     for (const block of blocks) {
-      if (!block.snapshotDate) continue;
+      // Un bloc historique sans date reste inexploitable ; un bloc courant, lui,
+      // est toujours exploitable — c'est l'état du jour.
+      if (block.kind === "snapshot" && !block.snapshotDate) continue;
 
       const at = (key: keyof BlockIndexes): string =>
         block.columns[key] === undefined ? "" : cell(grid, r, block.columns[key]!);
@@ -253,9 +354,7 @@ export function parseForecastGrid(grid: string[][], forecastMonth: string): Shee
       // à ce snapshot : on ne crée pas de ligne fantôme.
       if (confidence === null && gmv === null && projectedGmv === null && !state) continue;
 
-      snapshotDates.add(block.snapshotDate);
-      lines.push({
-        snapshotDate: block.snapshotDate,
+      const common = {
         forecastMonth,
         opportunityId,
         rowKey,
@@ -267,11 +366,29 @@ export function parseForecastGrid(grid: string[][], forecastMonth: string): Shee
         ca,
         projectedGmv: projectedGmv ?? (gmv !== null && confidence !== null ? gmv * confidence : null),
         state,
-      });
+      };
+
+      // ÉTAT COURANT — rangé à part, jamais daté d'un lundi qu'il ne décrit pas.
+      if (block.kind === "current") {
+        currentLines.push({ ...common, updatedAt: block.updatedAt });
+        if (block.updatedAt) currentUpdatedAt.add(block.updatedAt);
+        continue;
+      }
+
+      // SNAPSHOT HISTORIQUE — figé, et daté par sa seule étiquette.
+      snapshotDates.add(block.snapshotDate!);
+      lines.push({ ...common, snapshotDate: block.snapshotDate! });
     }
   }
 
-  return { lines, snapshotDates: [...snapshotDates].sort(), issues };
+  return {
+    lines,
+    currentLines,
+    snapshotDates: [...snapshotDates].sort(),
+    currentUpdatedAt: [...currentUpdatedAt].sort().pop() ?? null,
+    issues,
+    rowIssues,
+  };
 }
 
 /** Fenêtre d'onglets mensuels à lire, centrée sur le mois de `referenceDate`. */

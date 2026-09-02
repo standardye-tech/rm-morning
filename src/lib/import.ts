@@ -14,6 +14,8 @@ import {
   todayIso,
 } from "./normalize";
 import type { SalesforceSource } from "./sources/salesforce";
+import { loadTeam, recordTeamCandidates } from "./team-store";
+import { isInTerritoryScope } from "./territory";
 import type { Opportunity } from "./types";
 
 export type ImportSummary = {
@@ -26,6 +28,8 @@ export type ImportSummary = {
   signedRows: number;
   standbyRows: number;
   ignoredRows: number;
+  /** Affaires écartées parce que le chantier relève d'un autre DR. */
+  outOfTerritoryRows: number;
   /** Affaires sorties du périmètre source à cet import (abandon, annulation…). */
   departedRows: number;
   /** Affaires réapparues dans la source depuis leur disparition. */
@@ -61,15 +65,35 @@ export async function importFromSource(
   const today = options.referenceDate ?? todayIso();
   const db = getDb();
 
+  // Le périmètre est relu à chaque import : un ajout ou un retrait fait dans
+  // l'interface prend effet à l'actualisation suivante, sans redéploiement.
+  loadTeam();
+  // Tous les propriétaires vus, équipe ou non, alimentent la liste de choix de
+  // l'écran d'équipe. Être vu ici n'entre personne dans le périmètre.
+  recordTeamCandidates("salesforce", result.rows.map((r) => r.ownerName));
+
   const opportunities: Opportunity[] = [];
   const issues = [...result.issues];
   let ignoredRows = 0;
+  let outOfTerritoryRows = 0;
+  /** Affaires publiées par la source mais écartées par NOTRE périmètre, et pourquoi. */
+  const outOfScopeReason = new Map<string, string>();
 
   for (const raw of result.rows) {
+    // ORDRE : équipe, puis territoire, puis SEULEMENT ENSUITE la validation
+    // métier. Une affaire écartée par le périmètre ne doit jamais produire
+    // d'anomalie — elle ne nous concerne pas.
     const member = matchTeamMember(raw.ownerName);
+    const rowId = raw.opportunityId?.trim();
     if (!member) {
       ignoredRows++;
+      if (rowId) outOfScopeReason.set(rowId, "reprise par un commercial hors équipe");
       continue; // Commercial hors périmètre : volontairement non importé.
+    }
+    if (!isInTerritoryScope(member.territory ?? null, raw.postalCode)) {
+      outOfTerritoryRows++;
+      if (rowId) outOfScopeReason.set(rowId, "chantier hors Île-de-France : relève d'un autre DR");
+      continue; // Chantier relevant d'un autre DR : volontairement non importé.
     }
 
     const opportunityId = raw.opportunityId?.trim();
@@ -250,16 +274,38 @@ export async function importFromSource(
   // On ne devine pas POURQUOI elle est sortie : on enregistre qu'elle n'est
   // plus publiée, à partir de quand, et on la retire du pipe actif. Sa dernière
   // étape connue est conservée telle quelle, jamais réécrite.
-  const fetchedIds = new Set(
-    result.rows.map((r) => r.opportunityId?.trim()).filter((id): id is string => Boolean(id)),
-  );
   const keptIds = new Set(opportunities.map((o) => o.opportunityId));
   const known = db
     .prepare("SELECT opportunity_id, is_terminal, absent_since FROM opportunity")
     .all() as { opportunity_id: string; is_terminal: number; absent_since: string | null }[];
 
+  // DEUX SORTIES DE PIPE, qui n'ont pas la même nature — et que le garde-fou
+  // ci-dessous ne doit surtout pas confondre :
+  //
+  //   — SORTIE DE PÉRIMÈTRE : l'affaire est toujours publiée par Salesforce,
+  //     mais notre périmètre ne la retient plus (commercial retiré de l'équipe,
+  //     chantier relevant d'un autre DR). C'est une décision, pas un incident :
+  //     elle est appliquée SANS condition. La soumettre au garde-fou créait un
+  //     blocage définitif — retirer un commercial faisait franchir le seuil, le
+  //     seuil refusait la réconciliation, et les affaires du commercial retiré
+  //     restaient dans le pipe à chaque actualisation suivante ;
+  //
+  //   — DISPARITION : l'affaire n'est plus publiée du tout. Là, on ne sait pas
+  //     si elle est close ou si la source est tronquée, et c'est exactement ce
+  //     que le garde-fou protège.
+  const outOfScope = known.filter(
+    (k) =>
+      !keptIds.has(k.opportunity_id) &&
+      k.absent_since === null &&
+      Number(k.is_terminal) === 0 &&
+      outOfScopeReason.has(k.opportunity_id),
+  );
   const departures = known.filter(
-    (k) => !keptIds.has(k.opportunity_id) && k.absent_since === null && Number(k.is_terminal) === 0,
+    (k) =>
+      !keptIds.has(k.opportunity_id) &&
+      k.absent_since === null &&
+      Number(k.is_terminal) === 0 &&
+      !outOfScopeReason.has(k.opportunity_id),
   );
   const returned = known.filter((k) => keptIds.has(k.opportunity_id) && k.absent_since !== null);
   const stillActive = known.filter((k) => Number(k.is_terminal) === 0).length;
@@ -305,13 +351,15 @@ export async function importFromSource(
         o.lastActivityAt, o.standbyUntil, bool(o.isStandby), bool(o.isSigned), bool(o.isActive),
       );
     }
+    // Sorties de périmètre : toujours appliquées, avec leur motif exact.
+    for (const o of outOfScope) {
+      markAbsent.run(today, outOfScopeReason.get(o.opportunity_id)!, o.opportunity_id);
+    }
     if (reconcile) {
       for (const d of departures) {
         markAbsent.run(
           today,
-          fetchedIds.has(d.opportunity_id)
-            ? "reprise par un commercial hors équipe"
-            : "absente de la source : abandon, annulation ou étape hors périmètre",
+          "absente de la source : abandon, annulation ou étape hors périmètre",
           d.opportunity_id,
         );
       }
@@ -332,7 +380,8 @@ export async function importFromSource(
     signedRows,
     standbyRows,
     ignoredRows,
-    departedRows: reconcile ? departures.length : 0,
+    outOfTerritoryRows,
+    departedRows: (reconcile ? departures.length : 0) + outOfScope.length,
     returnedRows: returned.length,
     detectedFields: result.detectedFields,
     missingFields: result.missingFields,

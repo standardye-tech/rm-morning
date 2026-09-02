@@ -6,7 +6,8 @@
  * et réutilisable pour une autre direction régionale.
  */
 
-import { LEAD_MONITORING, TEAM } from "./config";
+import { LEAD_MONITORING } from "./config";
+import { loadTeam } from "./team-store";
 import { getDb } from "./db";
 import { evaluateLead, type LeadThresholds } from "./lead-rules";
 import {
@@ -42,7 +43,7 @@ export type LeadImportSummary = {
 /** Résout le nom Salesforce vers le nom canonique de l'équipe. */
 function canonicalOwner(raw: string): string | null {
   const target = normalizeKey(raw);
-  for (const member of TEAM) {
+  for (const member of loadTeam()) {
     if (normalizeKey(member.name) === target) return member.name;
     if ((member.aliases ?? []).some((a) => normalizeKey(a) === target)) return member.name;
   }
@@ -54,7 +55,9 @@ export async function importLeads(now = new Date()): Promise<LeadImportSummary> 
   const snapshotDate = now.toISOString().slice(0, 10);
   const observedAt = now.toISOString();
 
-  const raw = await fetchLeads(salesforceOwnerNames(TEAM));
+  // Le périmètre est relu ici : la requête Salesforce ne demande que les
+  // pistes des commerciaux actuellement dans l'équipe.
+  const raw = await fetchLeads(salesforceOwnerNames(loadTeam()));
 
   // Le premier import pose la frontière : tout ce qui est déjà en anomalie à
   // cet instant est de la dette héritée, pas un manquement observé.

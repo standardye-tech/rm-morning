@@ -18,8 +18,22 @@ export type TeamMember = {
    * On n'y met que les vraies divergences de patronyme.
    */
   aliases?: string[];
+  /**
+   * Restriction territoriale, quand le commercial porte aussi des affaires qui
+   * relèvent d'un autre DR. « idf » ne garde que les chantiers franciliens ;
+   * absent, tout est dans le périmètre. Voir `territory.ts` pour le champ utilisé.
+   */
+  territory?: "idf";
 };
 
+/**
+ * GRAINE du périmètre commercial — ce n'est PLUS la source de vérité.
+ *
+ * La liste qui fait foi vit en base (`team_member`) et se gère depuis l'écran
+ * Données ; voir `team-store.ts`. Cette table ne sert qu'à initialiser la base
+ * au premier démarrage, et de repli pour un script qui n'ouvrirait pas SQLite.
+ * Ajouter ou retirer un commercial se fait dans l'interface, pas ici.
+ */
 export const TEAM: TeamMember[] = [
   { name: "Anthony Ramaherison", firstName: "Anthony" },
   { name: "Mahery Raza", firstName: "Mahery", aliases: ["Mahery RAZAFINDRAZAKA"] },
@@ -31,10 +45,20 @@ export const TEAM: TeamMember[] = [
   { name: "Vincent Da Silva", firstName: "Vincent D." },
   { name: "David Bernstein", firstName: "David" },
   { name: "Stéphane Strat", firstName: "Stéphane" },
-  { name: "Valentin Marion", firstName: "Valentin" },
+  // Porte une dizaine de dossiers bretons, qui relèvent d'un autre DR.
+  { name: "Valentin Marion", firstName: "Valentin", territory: "idf" },
   { name: "Guillaume Huc", firstName: "Guillaume H." },
   { name: "Sami Lazari", firstName: "Sami" },
 ];
+
+/**
+ * Membres de la graine INACTIFS au premier amorçage.
+ *
+ * Mahery Raza figurait dans la V1 mais ne fait plus partie de l'équipe suivie.
+ * Il est amorcé désactivé plutôt que supprimé : ses données Salesforce restent
+ * intactes, et un clic dans l'écran Données le fait revenir avec son historique.
+ */
+export const TEAM_SEED_INACTIVE = ["Mahery Raza"];
 
 /**
  * Étapes considérées comme terminées : l'opportunité est conservée et historisée

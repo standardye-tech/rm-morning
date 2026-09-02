@@ -28,6 +28,9 @@ const lib = (n) => pathToFileURL(path.resolve(process.cwd(), `src/lib/${n}.ts`))
 const { buildTodayFeatures, PREDICTIVE_STAGES } = await import(lib("expected-gmv-dataset"));
 const { getDb } = await import(lib("db"));
 const { matchTeamMember } = await import(lib("normalize"));
+// Le périmètre commercial vit en base : il doit être chargé avant tout filtrage.
+const { loadTeam } = await import(lib("team-store"));
+loadTeam();
 
 const args = process.argv.slice(2);
 const asOfArg = args.includes("--as-of") ? args[args.indexOf("--as-of") + 1] : null;

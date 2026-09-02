@@ -1,5 +1,6 @@
 import { GmailSyncButton } from "@/components/gmail-sync-button";
 import { ImportButton } from "@/components/import-button";
+import { TeamScope } from "@/components/team-scope";
 import { Card, EmptyState, SectionTitle, Stat } from "@/components/ui";
 import { latestSync, mailSignalCount } from "@/lib/mail-store";
 import { latestMilestoneCoverage } from "@/lib/lead-store";
@@ -15,6 +16,7 @@ import { outOfScopeSummary } from "@/lib/morning-events";
 import { freshnessReport } from "@/lib/sync/freshness";
 import { RUN_STATUS_LABEL, humanDateTime, humanDuration } from "@/lib/sync/labels";
 import { recentRuns } from "@/lib/sync/store";
+import { allTeamMembers, teamCandidates } from "@/lib/team-store";
 
 export const dynamic = "force-dynamic";
 
@@ -47,6 +49,8 @@ export default async function DonneesPage({
   const fresh = freshnessReport();
   const outOfScope = outOfScopeSummary();
   const runs = recentRuns(20);
+  const team = allTeamMembers();
+  const candidates = teamCandidates();
   // Trois sondes de connexion, lancées EN PARALLÈLE.
   //
   // Elles étaient enchaînées, et la page mettait douze secondes à s'ouvrir :
@@ -283,6 +287,22 @@ export default async function DonneesPage({
         plus quoi regarder. Elles sont regroupées ici, sans qu'aucune
         information ne disparaisse.
       */}
+      {/*
+        Le périmètre commercial est une DONNÉE, pas un réglage technique : il
+        commande ce que Salesforce, Perspective, Forecast et Performance
+        retiennent. Il est donc visible d'emblée, et non replié avec le reste.
+      */}
+      <Card className="mt-6">
+        <SectionTitle
+          eyebrow="Périmètre"
+          title="Équipe RM Morning"
+          aside={`${team.filter((m) => m.active).length} commerciaux suivis`}
+        />
+        <div className="px-4 py-4 md:px-6">
+          <TeamScope members={team} candidates={candidates} />
+        </div>
+      </Card>
+
       <details className="group mt-6 rounded-xl border border-line bg-surface">
         <summary className="cursor-pointer list-none px-4 py-3.5 text-sm font-medium hover:bg-canvas md:px-6 md:py-3">
           Détails techniques des sources

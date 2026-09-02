@@ -19,7 +19,8 @@ import { pathToFileURL } from "node:url";
 
 const run = promisify(execFile);
 const lib = (n) => pathToFileURL(path.resolve(process.cwd(), `src/lib/${n}.ts`)).href;
-const { TEAM, EXPECTED_GMV_DATASET } = await import(lib("config"));
+const { EXPECTED_GMV_DATASET } = await import(lib("config"));
+const { loadTeam } = await import(lib("team-store"));
 const { buildObservations } = await import(lib("expected-gmv-dataset"));
 const { getDb } = await import(lib("db"));
 
@@ -55,7 +56,7 @@ async function cached(name, fetcher) {
 }
 
 const quote = (ids) => ids.map((i) => `'${i}'`).join(",");
-const ownerNames = TEAM.flatMap((m) => [m.name, ...(m.aliases ?? [])]);
+const ownerNames = loadTeam().flatMap((m) => [m.name, ...(m.aliases ?? [])]);
 const startedAt = Date.now();
 
 // --- 1. Opportunités du scope équipe sur la fenêtre.

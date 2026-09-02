@@ -191,10 +191,40 @@ export function kanbanPeriodLabel(month: number | null, year: number | null): st
 
 // --- Équipe --------------------------------------------------------------
 
-const TEAM_INDEX = new Map<string, TeamMember>();
-for (const member of TEAM) {
-  TEAM_INDEX.set(normalizeKey(member.name), member);
-  for (const alias of member.aliases ?? []) TEAM_INDEX.set(normalizeKey(alias), member);
+/**
+ * Le périmètre commercial ACTIF.
+ *
+ * `TEAM` de `config.ts` n'est plus que la GRAINE : la liste qui fait foi vit en
+ * base, dans `team_member`, et se gère depuis l'interface (voir `team-store.ts`).
+ * Ce module reste volontairement ignorant de SQLite — il est importé par des
+ * composants client pour ses formateurs, et une dépendance à `node:sqlite`
+ * casserait le bundle du navigateur. Le magasin s'annonce donc ici, côté
+ * serveur, via `setActiveTeam`.
+ *
+ * Tant que personne ne l'a fait, la graine s'applique : le comportement d'un
+ * script lancé sans passer par le magasin reste exactement celui d'avant.
+ */
+let activeTeam: readonly TeamMember[] = TEAM;
+let teamIndex = buildTeamIndex(TEAM);
+
+function buildTeamIndex(members: readonly TeamMember[]): Map<string, TeamMember> {
+  const index = new Map<string, TeamMember>();
+  for (const member of members) {
+    index.set(normalizeKey(member.name), member);
+    for (const alias of member.aliases ?? []) index.set(normalizeKey(alias), member);
+  }
+  return index;
+}
+
+/** Installe le périmètre lu en base. Appelé par `team-store.ts`, et par lui seul. */
+export function setActiveTeam(members: readonly TeamMember[]): void {
+  activeTeam = members;
+  teamIndex = buildTeamIndex(members);
+}
+
+/** Le périmètre en vigueur. À préférer partout à `TEAM`, qui n'est que la graine. */
+export function activeTeamMembers(): readonly TeamMember[] {
+  return activeTeam;
 }
 
 /**
@@ -205,7 +235,7 @@ for (const member of TEAM) {
  */
 export function matchTeamMember(ownerRaw: string | null): TeamMember | null {
   if (!ownerRaw) return null;
-  return TEAM_INDEX.get(normalizeKey(ownerRaw)) ?? null;
+  return teamIndex.get(normalizeKey(ownerRaw)) ?? null;
 }
 
 // --- Étapes --------------------------------------------------------------

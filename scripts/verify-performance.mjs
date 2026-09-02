@@ -36,7 +36,12 @@ const {
   ranksAt,
   historyOf,
 } = await import(lib("performance-store"));
-const { PERFORMANCE, PERFORMANCE_MODEL_VERSION, TEAM } = await import(lib("config"));
+const { PERFORMANCE, PERFORMANCE_MODEL_VERSION } = await import(lib("config"));
+// Le périmètre commercial fait foi depuis la base, plus depuis la graine de
+// config.ts : le contrôle doit interroger la MÊME source que le classement,
+// sinon il échouerait au premier ajout ou retrait fait dans l'interface.
+const { loadTeam } = await import(lib("team-store"));
+const TEAM = loadTeam();
 const { dynamicWindows, yearToDateMonths } = await import(lib("performance"));
 const { snapshotVersions } = await import(lib("performance-store"));
 const { buildSteps } = await import(lib("sync/steps"));
@@ -58,7 +63,11 @@ const rows = board.salespeople;
 
 section("P1 — Périmètre");
 
-check("les 13 commerciaux du périmètre sont classés", rows.length === 13, `${rows.length} lignes`);
+check(
+  "tous les commerciaux du périmètre sont classés",
+  rows.length === TEAM.length,
+  `${rows.length} lignes pour ${TEAM.length} membres actifs`,
+);
 check(
   "aucun commercial hors équipe n'est ajouté",
   rows.every((r) => TEAM.some((m) => m.name === r.salesperson)),
@@ -242,7 +251,7 @@ for (const r of rows) {
 check(
   `aucune phrase positive ou négative sous n = ${minC}`,
   phraseFragile === null,
-  phraseFragile ?? "vérifié sur les 13 commerciaux",
+  phraseFragile ?? `vérifié sur les ${TEAM.length} commerciaux`,
 );
 check(
   "le cas mesuré à l'audit ne produit plus de phrase — 1 piste, 1 opportunité",

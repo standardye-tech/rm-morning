@@ -18,7 +18,8 @@ import { pathToFileURL } from "node:url";
 const lib = (n) => pathToFileURL(path.resolve(process.cwd(), `src/lib/${n}.ts`)).href;
 const { getDb } = await import(lib("db"));
 const { triage } = await import(lib("morning-events"));
-const { TEAM } = await import(lib("config"));
+const { loadTeam } = await import(lib("team-store"));
+const TEAM = loadTeam();
 const { GMAIL_SYNC } = await import(lib("config"));
 
 const db = getDb();

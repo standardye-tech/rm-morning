@@ -68,7 +68,9 @@ type SfTask = {
 const quote = (values: readonly string[]) => values.map((v) => `'${v.replace(/'/g, "\\'")}'`).join(",");
 
 /** Noms d'agents Salesforce du périmètre, alias compris. */
-export function salesforceOwnerNames(team: { name: string; aliases?: string[] }[]): string[] {
+export function salesforceOwnerNames(
+  team: readonly { name: string; aliases?: string[] }[],
+): string[] {
   return team.flatMap((m) => [m.name, ...(m.aliases ?? [])]);
 }
 

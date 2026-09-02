@@ -16,7 +16,8 @@ import { pathToFileURL } from "node:url";
 
 const lib = (n) => pathToFileURL(path.resolve(process.cwd(), `src/lib/${n}.ts`)).href;
 const { buildExpectedGmvSnapshot } = await import(lib("expected-gmv-live"));
-const { TEAM } = await import(lib("config"));
+const { loadTeam } = await import(lib("team-store"));
+const TEAM = loadTeam();
 
 const eur = (v) => `${(v ?? 0).toFixed(2)} €`;
 const kEur = (v) => `${Math.round((v ?? 0) / 1000).toLocaleString("fr-FR")} k€`;

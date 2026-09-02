@@ -22,7 +22,10 @@ const { buildExpectedGmvSnapshot } = await import(lib("expected-gmv-live"));
 const { buildExpectedM1 } = await import(lib("expected-m1"));
 const { buildForecastV2 } = await import(lib("forecast-v2"));
 const { loadMorningEvents } = await import(lib("morning-events"));
-const { TEAM } = await import(lib("config"));
+const { loadTeam } = await import(lib("team-store"));
+// Le périmètre AUDITÉ est celui qui fait foi : la table team_member, pas la
+// graine de config.ts, qu'un retrait dans l'interface a pu rendre obsolète.
+const TEAM = loadTeam();
 const { matchTeamMember } = await import(lib("normalize"));
 
 const db = getDb();
@@ -254,7 +257,7 @@ console.log("\n──── 23. MONTANTS ────\n");
 
 console.log("\n──── 25. COMMERCIAUX ────\n");
 {
-  check("13 membres configurés", TEAM.length === 13, `${TEAM.length}`);
+  check("périmètre commercial non vide", TEAM.length > 0, `${TEAM.length} membres actifs`);
   const names = TEAM.map((t) => t.name);
   check("aucun doublon dans l'équipe", new Set(names).size === names.length);
   const owners = new Set(

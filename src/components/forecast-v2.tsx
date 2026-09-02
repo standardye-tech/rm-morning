@@ -60,9 +60,9 @@ export function ForecastV2Totals({ board }: { board: ForecastV2Board }) {
       <Total label="Signé" value={kEur(r.signedGmvActual)} />
       <Total label={LABEL.kanban} value={kEur(r.kanbanGmv)} hint={`${r.count} affaire(s)`} />
       {/*
-        La Perspective est une PHOTOGRAPHIE : on affiche le total du snapshot tel
-        qu'il a été lu, jamais recalculé sur le Salesforce du jour. La part encore
-        ouverte est une autre lecture, et elle porte son propre nom.
+        La Perspective est LUE, jamais recalculée sur le Salesforce du jour : on affiche le total
+        du classeur tel quel — bloc « en cours » s'il existe, dernière photographie sinon. La part
+        encore ouverte est une autre lecture, et elle porte son propre nom.
       */}
       <Total
         label={LABEL.perspective}
@@ -172,12 +172,14 @@ export function ForecastV2Scopes({ board }: { board: ForecastV2Board }) {
         </div>
         <div>
           <dt className="font-medium">
-            {LABEL.perspective} — photo du{" "}
+            {LABEL.perspective} —{" "}
+            {board.perspectiveSource === "courant" ? "état courant du" : "photo du"}{" "}
             {board.perspectiveDate ? formatFrenchDate(board.perspectiveDate) : "—"}
           </dt>
           <dd className="text-ink-soft">
-            Le total du classeur Perspective de cette semaine, tel qu&apos;il a été lu : une
-            photographie, qui ne se réécrit jamais en fonction de l&apos;état actuel de Salesforce.
+            Le total du classeur Perspective tel qu&apos;il a été lu — son bloc « en cours »,
+            rafraîchi chaque jour, ou à défaut la dernière photographie hebdomadaire. Dans les deux
+            cas, il ne se réécrit jamais en fonction de l&apos;état actuel de Salesforce.
             La mention « encore au pipe » indique la part de ces affaires toujours ouvertes
             aujourd&apos;hui — une affaire depuis signée ou perdue en sort, sans que la photo change.
           </dd>

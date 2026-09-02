@@ -758,6 +758,65 @@ CREATE TABLE IF NOT EXISTS mail_sync (
   errors            TEXT NOT NULL DEFAULT '[]'
 );
 
+-- ÉTAT COURANT du forecast déclaré — bloc « EN COURS » du classeur.
+--
+-- Table SÉPARÉE de forecast_snapshot, et c'est tout l'intérêt : l'historique
+-- hebdomadaire est immuable, alors que cet état-ci est remplacé à chaque
+-- lecture. Les mélanger revenait à fabriquer chaque jour un faux snapshot, ou
+-- à écraser le vrai snapshot du lundi par des valeurs de milieu de semaine.
+--
+-- La clé ne porte donc PAS de date : une ligne par (mois, opportunité), et
+-- updated_at dit de quand date la fraîcheur annoncée par le classeur.
+CREATE TABLE IF NOT EXISTS forecast_current (
+  forecast_month    TEXT NOT NULL,
+  row_key           TEXT NOT NULL,
+  opportunity_id    TEXT,
+  salesperson       TEXT,
+  salesperson_raw   TEXT,
+  region            TEXT,
+  opportunity_label TEXT,
+  confidence        REAL,
+  gmv               REAL,
+  ca                REAL,
+  projected_gmv     REAL,
+  state             TEXT,
+  -- « MAJ le 02/09/2026 08:00 » tel qu'annoncé par le classeur.
+  updated_at        TEXT,
+  source            TEXT NOT NULL,
+  imported_at       TEXT NOT NULL,
+  PRIMARY KEY (forecast_month, row_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_forecast_current_opp ON forecast_current (opportunity_id);
+
+-- PÉRIMÈTRE COMMERCIAL — source de vérité unique de l'équipe RM Morning.
+--
+-- Amorcée depuis la graine TEAM de config.ts au premier démarrage, puis gérée
+-- depuis l'écran Données. Retirer un commercial met active à 0 : la ligne est
+-- conservée, aucune donnée Salesforce n'est touchée, et le réactiver fait
+-- revenir son historique tel quel.
+CREATE TABLE IF NOT EXISTS team_member (
+  member_key   TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  first_name   TEXT NOT NULL,
+  aliases      TEXT NOT NULL DEFAULT '[]',
+  -- 'idf' restreint le périmètre aux chantiers franciliens ; NULL = aucune
+  -- restriction. Le champ utilisé est le code postal (voir territory.ts).
+  territory    TEXT,
+  active       INTEGER NOT NULL DEFAULT 1,
+  updated_at   TEXT NOT NULL
+);
+
+-- Commerciaux RENCONTRÉS dans les sources, en équipe ou non. Alimente la liste
+-- de choix de l'écran d'équipe, pour n'avoir jamais à saisir un nom à la main.
+-- Purement indicatif : aucune ligne ici n'entre dans le périmètre.
+CREATE TABLE IF NOT EXISTS team_candidate (
+  member_key   TEXT PRIMARY KEY,
+  display_name TEXT NOT NULL,
+  sources      TEXT NOT NULL DEFAULT '[]',
+  last_seen_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_forecast_month ON forecast_snapshot (forecast_month, snapshot_date);
 CREATE INDEX IF NOT EXISTS idx_forecast_opp ON forecast_snapshot (opportunity_id);
 

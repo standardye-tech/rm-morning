@@ -22,6 +22,8 @@ const lib = (n) => pathToFileURL(path.resolve(process.cwd(), `src/lib/${n}.ts`))
 const { officialSignedGmv } = await import(lib("official-signed"));
 const { TRAVAUX } = await import(lib("config"));
 const { matchTeamMember } = await import(lib("normalize"));
+const { loadTeam } = await import(lib("team-store"));
+loadTeam();
 
 const CLI = path.join(process.env.APPDATA ?? "", "npm/node_modules/@salesforce/cli/bin/run.js");
 

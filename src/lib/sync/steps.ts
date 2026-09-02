@@ -23,9 +23,10 @@
  *   échec rend une PARTIE de l'application moins fraîche, mais ne rend aucun
  *   chiffre faux :
  *     — les pistes n'alimentent que Monitoring Pistes ;
- *     — la Perspective est un déclaratif hebdomadaire : sa cadence naturelle est
- *       la semaine, et l'écran affiche sa date réelle. Un Sheet non mis à jour
- *       n'est pas une panne ;
+ *     — la Perspective est un déclaratif : son bloc « EN COURS » est rafraîchi
+ *       chaque jour, ses snapshots consolidés chaque lundi, et l'écran affiche
+ *       la date réelle de ce qu'il montre. Un Sheet non mis à jour n'est pas
+ *       une panne ;
  *     — les emails : le bloc Gmail du Morning vieillit, tous les montants restent
  *       justes ;
  *     — le journal des signatures ne sert qu'aux modèles futurs.
@@ -100,6 +101,22 @@ async function runScript(
   return stdout;
 }
 
+/**
+ * Rend une liste d'anomalies lisible dans le bandeau d'actualisation.
+ *
+ * « 1 ligne(s) non exploitable(s) » ne disait ni où chercher, ni s'il fallait
+ * agir. Une anomalie unique est donc énoncée en entier ; au-delà, seul le
+ * compte tient dans le statut, le détail restant dans le panneau de l'étape.
+ *
+ * Les lignes hors équipe et hors territoire n'arrivent jamais ici : elles sont
+ * écartées en amont, et ne sont pas des anomalies.
+ */
+function describeIssues(issues: { message: string }[]): string | undefined {
+  if (issues.length === 0) return undefined;
+  if (issues.length === 1) return issues[0].message;
+  return `${issues.length} anomalies dans le périmètre — ${issues[0].message}`;
+}
+
 const NODE_TS = [
   "--experimental-strip-types",
   "--experimental-loader",
@@ -127,12 +144,19 @@ export function buildSteps(): SyncStep[] {
             // remarques : une affaire qui quitte le pipe est un mouvement de
             // pilotage, pas un détail technique d'import.
             (s.departedRows > 0 ? ` · ${s.departedRows} sortie(s) du périmètre` : "") +
-            (s.returnedRows > 0 ? ` · ${s.returnedRows} revenue(s)` : ""),
+            (s.returnedRows > 0 ? ` · ${s.returnedRows} revenue(s)` : "") +
+            // Exclusion territoriale : dite, mais jamais comptée comme anomalie.
+            (s.outOfTerritoryRows > 0
+              ? ` · ${s.outOfTerritoryRows} hors territoire (autre DR)`
+              : ""),
           sources: {
             opportunityImportId: s.importId,
             opportunityImportedAt: run?.importedAt ?? null,
           },
-          warning: s.issues.length > 0 ? `${s.issues.length} remarque(s) à l'import` : undefined,
+          // Comme pour Perspective : une remarque unique est énoncée, plutôt
+          // que comptée. « 1 remarque(s) à l'import » n'indiquait ni quoi
+          // regarder, ni s'il fallait agir.
+          warning: describeIssues(s.issues),
         };
       },
     },
@@ -217,13 +241,30 @@ export function buildSteps(): SyncStep[] {
         // Le Sheet peut légitimement n'avoir pas bougé : sa cadence est
         // hebdomadaire. On publie la date réellement lue, sans la commenter.
         const latest = s.snapshotDates.slice().sort().pop() ?? null;
+        // Deux natures de donnée, dites séparément : l'historique figé, et
+        // l'état courant du classeur, qui est la donnée réellement fraîche.
+        const current = s.currentUpdatedAt
+          ? `état courant du ${s.currentUpdatedAt.replace("T", " à ")} · ${s.currentLines} ligne(s)`
+          : "aucun état courant";
         return {
           detail:
-            `snapshot ${latest ?? "—"} · ${s.teamLines} ligne(s) d'équipe sur ${s.totalLines} lues` +
-            ` · ${s.months.length} mois`,
-          sources: { perspectiveSnapshotDate: latest },
-          warning:
-            s.issues.length > 0 ? `${s.issues.length} ligne(s) non exploitable(s)` : undefined,
+            `${current} · snapshot ${latest ?? "—"} · ` +
+            `${s.teamLines} ligne(s) d'équipe sur ${s.totalLines} lues` +
+            ` · ${s.months.length} mois` +
+            // Les exclusions de périmètre sont DITES, mais dans le détail, pas
+            // dans l'avertissement : ce sont des lignes qui ne nous concernent
+            // pas, et non des anomalies à traiter.
+            ` · ${s.ignoredLines} hors équipe` +
+            (s.outOfTerritoryLines > 0 ? `, ${s.outOfTerritoryLines} hors territoire` : "") +
+            " (exclues)",
+          sources: {
+            perspectiveSnapshotDate: latest,
+            perspectiveCurrentUpdatedAt: s.currentUpdatedAt,
+          },
+          // Un avertissement nomme désormais ce qu'il faut aller regarder. Une
+          // anomalie unique est décrite en toutes lettres ; au-delà, le nombre
+          // suffit au statut compact et le détail vit dans le panneau.
+          warning: describeIssues(s.issues),
         };
       },
     },

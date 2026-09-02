@@ -55,7 +55,8 @@
  * piliers ni de seconde liste de mesures.
  */
 
-import { PERFORMANCE, PERFORMANCE_MODEL_VERSION, TEAM } from "./config";
+import { PERFORMANCE, PERFORMANCE_MODEL_VERSION } from "./config";
+import { loadTeam } from "./team-store";
 import { buildExpectedGmvSnapshot } from "./expected-gmv-live";
 import { buildExpectedM1 } from "./expected-m1";
 import { monthKey, shiftMonth, monthLabel } from "./forecast-board";
@@ -665,7 +666,7 @@ function collectRawMetrics(now: Date): {
   const byOwner = new Map<string, RawMetrics>();
   const samples = new Map<string, RawSamples>();
 
-  for (const member of TEAM) {
+  for (const member of loadTeam()) {
     const name = member.name;
     const signed = signedByOwner.get(name);
     const open = openByOwner.get(name) ?? 0;
@@ -779,7 +780,7 @@ function collectRawMetrics(now: Date): {
   }
 
   const presence = new Map<string, string | null>(
-    TEAM.map((m) => [m.name, firstSeen.get(m.name) ?? null]),
+    loadTeam().map((m) => [m.name, firstSeen.get(m.name) ?? null]),
   );
 
   return { byOwner, samples, presence, months, notes };
@@ -898,7 +899,7 @@ export function buildDynamicScores(now: Date): {
     };
   };
 
-  const raw = TEAM.map((member) => ({
+  const raw = loadTeam().map((member) => ({
     owner: member.name,
     recent: measure(member.name, recent),
     previous: measure(member.name, previous),
@@ -992,7 +993,7 @@ export function buildPerformanceBoard(
     return (value * den + k * (pooled.get(key) ?? 0)) / (den + k);
   };
 
-  const rows: Pick<PerformanceRow, "salesperson" | "firstName" | "score" | "pillars">[] = TEAM.map(
+  const rows: Pick<PerformanceRow, "salesperson" | "firstName" | "score" | "pillars">[] = loadTeam().map(
     (member) => {
       const raw = byOwner.get(member.name) ?? {};
       const pillars = {} as Record<PillarKey, PillarResult>;

@@ -12,6 +12,7 @@
  */
 
 import type { ParseIssue } from "./salesforce";
+import type { SheetRowIssue } from "./forecast-sheet-parser";
 
 /** États déclarés dans le Sheet. Conservés tels quels, jamais réinterprétés. */
 export const FORECAST_STATES = ["Gagnée", "Perdue", "Repoussée", "Nouvelle"] as const;
@@ -44,6 +45,19 @@ export type ForecastSnapshotLine = {
   state: string | null;
 };
 
+/**
+ * ÉTAT COURANT d'une ligne, lu dans le bloc « EN COURS » du classeur.
+ *
+ * Même forme qu'un snapshot, à une différence près, et elle est essentielle :
+ * pas de `snapshotDate`. Cette ligne ne décrit pas un lundi, elle décrit
+ * AUJOURD'HUI. Elle est remplacée à chaque import, jamais accumulée, et ne
+ * touche jamais l'historique figé.
+ */
+export type ForecastCurrentLine = Omit<ForecastSnapshotLine, "snapshotDate"> & {
+  /** Horodatage « MAJ le … » lu dans l'étiquette. Null si le classeur l'omet. */
+  updatedAt: string | null;
+};
+
 export type ForecastFetchResult = {
   sourceKind: string;
   sourceLabel: string;
@@ -52,8 +66,21 @@ export type ForecastFetchResult = {
   months: string[];
   /** Dates de snapshot rencontrées, toutes onglets confondus. */
   snapshotDates: string[];
+  /** Onglets dont le bloc courant a été lu : ceux-là seuls sont remplacés. */
+  currentMonths: string[];
+  /** « MAJ le » le plus récent, toutes onglets confondus. */
+  currentUpdatedAt: string | null;
   lines: ForecastSnapshotLine[];
+  /** État courant, tenu à part de l'historique. */
+  currentLines: ForecastCurrentLine[];
+  /** Anomalies de STRUCTURE : toujours réelles, indépendantes du périmètre. */
   issues: ParseIssue[];
+  /**
+   * Anomalies de ligne CANDIDATES. L'import ne retient que celles dont la ligne
+   * appartient au périmètre RM Morning : une ligne hors équipe ou hors
+   * territoire est écartée sans être signalée.
+   */
+  rowIssues: SheetRowIssue[];
 };
 
 export interface ForecastSnapshotSource {
@@ -73,8 +100,12 @@ export class NoForecastSnapshotSource implements ForecastSnapshotSource {
       fetchedAt: new Date(),
       months: [],
       snapshotDates: [],
+      currentMonths: [],
+      currentUpdatedAt: null,
       lines: [],
+      currentLines: [],
       issues: [],
+      rowIssues: [],
     };
   }
 }
