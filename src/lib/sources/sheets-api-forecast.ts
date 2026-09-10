@@ -18,7 +18,11 @@ import { createSign } from "node:crypto";
 import path from "node:path";
 
 import { FORECAST_SHEET, GOOGLE_SHEETS } from "../config";
-import { parseForecastGrid, type SheetRowIssue } from "./forecast-sheet-parser";
+import {
+  parseForecastGrid,
+  type SheetColumnGap,
+  type SheetRowIssue,
+} from "./forecast-sheet-parser";
 import type {
   ForecastCurrentLine,
   ForecastFetchResult,
@@ -188,6 +192,7 @@ export class SheetsApiForecastSnapshotSource implements ForecastSnapshotSource {
     const lines: ForecastSnapshotLine[] = [];
     const currentLines: ForecastCurrentLine[] = [];
     const rowIssues: SheetRowIssue[] = [];
+    const columnGaps: SheetColumnGap[] = [];
     const readMonths: string[] = [];
     const currentMonths: string[] = [];
     const snapshotDates = new Set<string>();
@@ -211,6 +216,7 @@ export class SheetsApiForecastSnapshotSource implements ForecastSnapshotSource {
       currentLines.push(...parsed.currentLines);
       issues.push(...parsed.issues);
       rowIssues.push(...parsed.rowIssues);
+      columnGaps.push(...parsed.columnGaps);
       for (const date of parsed.snapshotDates) snapshotDates.add(date);
       if (parsed.currentUpdatedAt) updatedAts.add(parsed.currentUpdatedAt);
     });
@@ -227,6 +233,7 @@ export class SheetsApiForecastSnapshotSource implements ForecastSnapshotSource {
       currentLines,
       issues,
       rowIssues,
+      columnGaps,
     };
   }
 }

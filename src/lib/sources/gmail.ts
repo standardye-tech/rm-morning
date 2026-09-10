@@ -47,7 +47,101 @@ import type { MailSignal, MailSource } from "./mail";
 
 // --- Appels HTTP ------------------------------------------------------------
 
+/**
+ * Erreur Gmail, avec le code HTTP conservé : c'est lui qui dit si l'échec est
+ * PASSAGER ou DÉFINITIF, et donc s'il vaut la peine d'être rejoué.
+ */
+class GmailHttpError extends Error {
+  // Champ déclaré puis affecté, et NON une propriété de paramètre : les harnais
+  // de validation tournent sous `--experimental-strip-types`, qui retire les
+  // types sans les compiler et rejette `constructor(readonly status: number)`.
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "GmailHttpError";
+    this.status = status;
+  }
+}
+
+/**
+ * L'échec est-il passager ?
+ *
+ *   429 / 5xx        surcharge ou panne momentanée de Google ;
+ *   403 « quota »    limite PAR MINUTE atteinte — elle se rouvre d'elle-même.
+ *
+ * Un 403 de PERMISSION, lui, est définitif : rejouer ne ferait que consommer
+ * du quota pour rien. On distingue les deux sur le message de Google, seul
+ * élément qui les sépare.
+ *
+ * 404 est définitif aussi : le message a disparu entre la liste et la lecture.
+ */
+const TRANSIENT_403 = /quota|rate limit|rateLimitExceeded|userRateLimitExceeded|backend/i;
+
+function isTransient(error: unknown): boolean {
+  if (error instanceof GmailHttpError) {
+    if (error.status === 429 || error.status >= 500) return true;
+    return error.status === 403 && TRANSIENT_403.test(error.message);
+  }
+  // Coupure réseau, DNS, socket fermée : rien de définitif là-dedans.
+  return error instanceof TypeError;
+}
+
+/**
+ * REPRISE BORNÉE, ET SURTOUT COLLECTIVE.
+ *
+ * La limite que l'on rencontre en pratique n'est pas par requête : c'est
+ * « Units per minute per user », une enveloppe PARTAGÉE par tous les appels du
+ * compte. Un rattrapage de huit jours lit ~600 messages puis relit ~450 fils ;
+ * à huit lectures en parallèle, la cadence dépasse l'enveloppe et Google
+ * répond 403.
+ *
+ * Rejouer chacun dans son coin ne suffit donc pas — les sept autres continuent
+ * de tirer pendant qu'un seul patiente, et l'enveloppe ne se rouvre jamais.
+ * D'où une PAUSE PARTAGÉE : dès qu'un appel se voit refuser pour quota, tous
+ * les appels suivants attendent la même échéance. La cadence retombe d'un coup,
+ * la fenêtre se rouvre, et les tentatives suivantes passent.
+ *
+ * Bornée dans les deux sens : quatre reprises au plus, attentes plafonnées à
+ * 20 s, soit une quarantaine de secondes dans le pire des cas — très en deçà
+ * du délai de l'étape. Le bruit ajouté évite que les huit lectures ne
+ * repartent exactement à l'unisson.
+ *
+ * Hors saturation, ce mécanisme est totalement inerte : aucune attente n'est
+ * introduite tant qu'aucun 403 de quota n'est survenu.
+ */
+const GMAIL_RETRY = { attempts: 5, baseDelayMs: 2000, maxDelayMs: 20_000 } as const;
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Échéance avant laquelle plus aucun appel Gmail ne doit partir. */
+let quotaPauseUntil = 0;
+
 async function gmailGet<T>(pathAndQuery: string): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= GMAIL_RETRY.attempts; attempt++) {
+    // Une saturation constatée par UN appel freine TOUS les autres.
+    const pause = quotaPauseUntil - Date.now();
+    if (pause > 0) await wait(pause);
+
+    try {
+      return await gmailGetOnce<T>(pathAndQuery);
+    } catch (error) {
+      lastError = error;
+      if (!isTransient(error) || attempt === GMAIL_RETRY.attempts) break;
+      const backoff =
+        Math.min(GMAIL_RETRY.baseDelayMs * 2 ** (attempt - 1), GMAIL_RETRY.maxDelayMs) +
+        Math.random() * GMAIL_RETRY.baseDelayMs;
+      // `Math.max` : on ne raccourcit jamais une pause déjà décidée par un
+      // appel plus malchanceux, on ne fait que la prolonger si besoin.
+      quotaPauseUntil = Math.max(quotaPauseUntil, Date.now() + backoff);
+      await wait(backoff);
+    }
+  }
+  throw lastError;
+}
+
+async function gmailGetOnce<T>(pathAndQuery: string): Promise<T> {
   const token = await getAccessToken();
   const response = await fetch(`${GOOGLE_OAUTH.gmailApi}/users/me/${pathAndQuery}`, {
     headers: { authorization: `Bearer ${token}` },
@@ -56,7 +150,10 @@ async function gmailGet<T>(pathAndQuery: string): Promise<T> {
     const detail = (await response.json().catch(() => null)) as {
       error?: { message?: string };
     } | null;
-    throw new Error(`Gmail ${response.status} — ${detail?.error?.message ?? "erreur"}`);
+    throw new GmailHttpError(
+      response.status,
+      `Gmail ${response.status} — ${detail?.error?.message ?? "erreur"}`,
+    );
   }
   return (await response.json()) as T;
 }
@@ -237,6 +334,14 @@ function loadMatchable(): MatchableOpportunity[] {
 
 // --- Synchronisation --------------------------------------------------------
 
+/** Un échec d'appel Gmail, rattaché à ce sur quoi il portait. */
+export type MailFailure = {
+  /** Identifiant du message ou du fil concerné. */
+  id: string;
+  /** Message d'erreur de Google, tel quel. Jamais de contenu de message. */
+  reason: string;
+};
+
 export type SyncReport = {
   syncId: number;
   windowStart: string;
@@ -252,6 +357,38 @@ export type SyncReport = {
   matchedUncertain: number;
   /** Détail des règles ayant écarté des messages, pour l'audit. */
   exclusionsByRule: Record<string, number>;
+
+  /**
+   * TROIS NATURES D'ÉCHEC, QU'IL NE FAUT PAS CONFONDRE.
+   *
+   * Elles étaient autrefois versées dans un seul tableau, résumé à l'écran par
+   * « N message(s) illisible(s) ignoré(s) ». Le libellé était faux deux fois sur
+   * trois : aucun de ces échecs ne vient d'un contenu illisible — ni HTML
+   * particulier, ni encodage, ni pièce jointe — mais toujours d'un refus de
+   * l'API Gmail, et un fil non classé n'est pas un message perdu.
+   */
+
+  /** Messages JAMAIS LUS : le signal est absent de la base. Impact réel. */
+  unreadMessages: MailFailure[];
+  /**
+   * Fils dont la relecture a échoué : les messages SONT stockés, seule leur
+   * qualification manque. Impact moindre, mais réel — d'où un libellé distinct.
+   */
+  unclassifiedThreads: MailFailure[];
+  /** Panne de la passe de lecture entière. Rien n'a pu être fait. */
+  failure: string | null;
+  /**
+   * Messages sans expéditeur exploitable, écartés à la lecture. AUCUN impact :
+   * sans adresse, aucune règle ni aucun rattachement n'est possible. Compté
+   * pour la visibilité, jamais remonté en avertissement.
+   */
+  withoutSender: number;
+
+  /**
+   * Union des trois, sous forme de texte : c'est ce que conserve `mail_sync`
+   * et ce qu'affiche l'écran « Données ». Le détail technique reste donc
+   * accessible pour diagnostiquer, même quand rien n'est remonté à l'écran.
+   */
   errors: string[];
   durationMs: number;
   /** Classification : combien de fils, et par quel chemin. */
@@ -291,14 +428,26 @@ export class GmailSource implements MailSource {
   async readWindow(
     start: Date,
     end: Date,
-    onError?: (message: string) => void,
+    watch: {
+      /** Le message n'a pas pu être lu : signal absent de la base. */
+      onUnread?: (failure: MailFailure) => void;
+      /** Le message a été lu, mais sans expéditeur exploitable : sans portée. */
+      onWithoutSender?: (id: string) => void;
+    } = {},
   ): Promise<{ message: MailMessage; fromName: string }[]> {
     const ids = await listMessageIds(start, end);
     const fetched = await mapLimited(ids, GMAIL_SYNC.concurrency, async (id) => {
       try {
-        return await fetchMessage(id);
+        const message = await fetchMessage(id);
+        // `null` n'est pas un échec : Gmail a répondu, l'en-tête `From` ne
+        // porte simplement aucune adresse. Rien n'est perdu, rien à signaler.
+        if (message === null) watch.onWithoutSender?.(id);
+        return message;
       } catch (cause) {
-        onError?.(cause instanceof Error ? cause.message : String(cause));
+        watch.onUnread?.({
+          id,
+          reason: cause instanceof Error ? cause.message : String(cause),
+        });
         return null;
       }
     });
@@ -314,7 +463,10 @@ export class GmailSource implements MailSource {
     const { start, end, bootstrap } = nextWindow(now);
     const syncId = startSync(start.toISOString(), end.toISOString());
 
-    const errors: string[] = [];
+    const unreadMessages: MailFailure[] = [];
+    const unclassifiedThreads: MailFailure[] = [];
+    let withoutSender = 0;
+    let failure: string | null = null;
     const exclusionsByRule: Record<string, number> = {};
     let seen = 0;
     let excluded = 0;
@@ -335,7 +487,12 @@ export class GmailSource implements MailSource {
     };
 
     try {
-      const fetched = await this.readWindow(start, end, (message) => errors.push(message));
+      const fetched = await this.readWindow(start, end, {
+        onUnread: (f) => unreadMessages.push(f),
+        onWithoutSender: () => {
+          withoutSender++;
+        },
+      });
       seen = fetched.length;
 
       const index = buildOpportunityIndex(loadMatchable());
@@ -459,7 +616,7 @@ export class GmailSource implements MailSource {
         touchedThreads.set(message.threadId, opportunity?.stage ?? null);
       }
     } catch (cause) {
-      errors.push(cause instanceof Error ? cause.message : String(cause));
+      failure = cause instanceof Error ? cause.message : String(cause);
     }
 
     // --- Classification hybride bridée des fils touchés.
@@ -485,13 +642,28 @@ export class GmailSource implements MailSource {
         outputTokens += result.outputTokens;
       } catch (cause) {
         // Une classification qui échoue n'invalide pas la synchronisation :
-        // le message reste stocké, simplement `non_classifie`.
-        errors.push(
-          `classification ${threadId.slice(-6)} : ${cause instanceof Error ? cause.message : cause}`,
-        );
+        // le message reste stocké, simplement `non_classifie`. Ce n'est donc
+        // PAS un message illisible, et ce compteur-ci le dit.
+        //
+        // `classifyHybrid` ne lève jamais — tout échec du modèle rend la main
+        // aux règles. Ce qui atterrit ici vient forcément de la relecture du
+        // fil auprès de Gmail.
+        unclassifiedThreads.push({
+          id: threadId,
+          reason: cause instanceof Error ? cause.message : String(cause),
+        });
       }
     });
     const classifyMs = Date.now() - classifyStart;
+
+    // Trace technique unique, conservée en base et affichée par l'écran
+    // « Données ». Chaque ligne est PRÉFIXÉE de sa nature : c'est ce qui permet
+    // de diagnostiquer plus tard sans relire le code.
+    const errors: string[] = [
+      ...(failure ? [`lecture : ${failure}`] : []),
+      ...unreadMessages.map((f) => `message ${f.id} non lu : ${f.reason}`),
+      ...unclassifiedThreads.map((f) => `fil ${f.id} non classé : ${f.reason}`),
+    ];
 
     finishSync(syncId, {
       seen,
@@ -517,6 +689,10 @@ export class GmailSource implements MailSource {
       matchedProbable: levels.B,
       matchedUncertain: levels.C,
       exclusionsByRule,
+      unreadMessages,
+      unclassifiedThreads,
+      failure,
+      withoutSender,
       errors,
       durationMs: Date.now() - startedAt,
       classified,

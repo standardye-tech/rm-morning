@@ -11,7 +11,11 @@ import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 
 import { FORECAST_SHEET } from "../config";
-import { parseForecastSheet, type SheetRowIssue } from "./forecast-sheet-parser";
+import {
+  parseForecastSheet,
+  type SheetColumnGap,
+  type SheetRowIssue,
+} from "./forecast-sheet-parser";
 import type {
   ForecastCurrentLine,
   ForecastFetchResult,
@@ -30,6 +34,7 @@ export class ManualForecastSnapshotSource implements ForecastSnapshotSource {
     const lines: ForecastSnapshotLine[] = [];
     const issues: ParseIssue[] = [];
     const rowIssues: SheetRowIssue[] = [];
+    const columnGaps: SheetColumnGap[] = [];
     const currentLines: ForecastCurrentLine[] = [];
     const currentMonths: string[] = [];
     const updatedAts = new Set<string>();
@@ -49,6 +54,7 @@ export class ManualForecastSnapshotSource implements ForecastSnapshotSource {
         lines: [],
         issues: [{ message: `Dossier ${root} introuvable : aucun CSV de forecast à lire.` }],
         rowIssues: [],
+        columnGaps: [],
         currentMonths: [],
         currentUpdatedAt: null,
         currentLines: [],
@@ -76,6 +82,7 @@ export class ManualForecastSnapshotSource implements ForecastSnapshotSource {
       lines.push(...parsed.lines);
       issues.push(...parsed.issues);
       rowIssues.push(...parsed.rowIssues);
+      columnGaps.push(...parsed.columnGaps);
       currentLines.push(...parsed.currentLines);
       if (parsed.currentUpdatedAt !== null || parsed.currentLines.length > 0) {
         currentMonths.push(month);
@@ -96,6 +103,7 @@ export class ManualForecastSnapshotSource implements ForecastSnapshotSource {
       currentLines,
       issues,
       rowIssues,
+      columnGaps,
     };
   }
 }

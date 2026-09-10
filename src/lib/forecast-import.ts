@@ -23,7 +23,10 @@
 import { getDb } from "./db";
 import { matchTeamMember, todayIso } from "./normalize";
 import { FORECAST_SHEET } from "./config";
-import { forecastMonthsAround } from "./sources/forecast-sheet-parser";
+import {
+  forecastMonthsAround,
+  type SheetColumnGap,
+} from "./sources/forecast-sheet-parser";
 import type { ForecastSnapshotSource } from "./sources/forecast-snapshot";
 import { loadTeam, recordTeamCandidates } from "./team-store";
 import { isInTerritoryScope } from "./territory";
@@ -57,6 +60,12 @@ export type ForecastImportSummary = {
   /** Mois dont l'état courant a été remplacé à cet import. */
   currentMonths: string[];
   issues: ForecastIssue[];
+  /**
+   * Sous-colonnes disparues du classeur. NON comptées dans `issues` : aucun
+   * chiffre affiché n'en dépend, et une actualisation ne doit pas passer au
+   * rouge pour un libellé. Elles vivent dans le détail de l'étape.
+   */
+  columnGaps: SheetColumnGap[];
   durationMs: number;
 };
 
@@ -254,6 +263,7 @@ export async function importForecastSnapshots(
     currentUpdatedAt: result.currentUpdatedAt,
     currentMonths: result.currentMonths,
     issues,
+    columnGaps: result.columnGaps,
     durationMs: Date.now() - startedAt,
   };
 }

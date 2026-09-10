@@ -112,6 +112,19 @@ type BlockIndexes = {
   state?: number;
 };
 
+/**
+ * Libellé d'origine de chaque sous-colonne, pour pouvoir NOMMER celles que le
+ * classeur ne présente plus. `confidence` n'y figure pas : un bloc est défini
+ * par elle, elle ne peut donc pas manquer.
+ */
+const BLOCK_COLUMN_LABELS: [Exclude<keyof BlockIndexes, "confidence">, string][] = [
+  ["gmv", "GMV"],
+  ["ca", "CA"],
+  ["projectedGmv", "GMV × conf."],
+  ["projectedCa", "CA × conf."],
+  ["state", "État"],
+];
+
 /** « 30% » → 0.3 ; « 0,3 » → 0.3 ; « 30 » → 0.3. */
 function parseConfidence(raw: string): number | null {
   const text = raw.trim();
@@ -147,6 +160,35 @@ export type SheetRowIssue = {
   message: string;
 };
 
+/**
+ * Sous-colonnes canoniques absentes de TOUS les blocs d'un onglet.
+ *
+ * Ce n'est PAS une anomalie : le classeur a changé d'étiquette, et RM Morning
+ * continue de lire ce dont il a besoin. On le consigne pour garder la visibilité
+ * sur le problème à la source, sans dégrader le statut de l'actualisation.
+ */
+export type SheetColumnGap = {
+  forecastMonth: string;
+  /** Libellés d'origine, dans l'ordre du classeur. */
+  columns: string[];
+};
+
+/**
+ * Une phrase pour le DÉTAIL de l'étape — jamais pour un avertissement. Les mois
+ * qui présentent le même manque sont regroupés, pour tenir en une ligne.
+ */
+export function describeColumnGaps(gaps: SheetColumnGap[]): string | null {
+  if (gaps.length === 0) return null;
+  const byColumns = new Map<string, string[]>();
+  for (const gap of gaps) {
+    const key = gap.columns.join(", ");
+    byColumns.set(key, [...(byColumns.get(key) ?? []), gap.forecastMonth]);
+  }
+  return [...byColumns]
+    .map(([columns, months]) => `sous-colonne(s) ${columns} non reconnue(s) sur ${months.join(" / ")}`)
+    .join(" · ");
+}
+
 export type SheetParseResult = {
   /** Snapshots hebdomadaires figés. */
   lines: ForecastSnapshotLine[];
@@ -159,6 +201,8 @@ export type SheetParseResult = {
   issues: ParseIssue[];
   /** Anomalies de ligne, à confirmer par l'import une fois le périmètre connu. */
   rowIssues: SheetRowIssue[];
+  /** Sous-colonnes disparues : consignées, jamais transformées en anomalie. */
+  columnGaps: SheetColumnGap[];
 };
 
 /**
@@ -206,12 +250,28 @@ export function parseForecastSheet(csv: string, forecastMonth: string): SheetPar
 export function parseForecastGrid(grid: string[][], forecastMonth: string): SheetParseResult {
   const issues: ParseIssue[] = [];
 
-  // 1. Ligne d'en-tête : celle qui porte « ID Opp ».
+  // 1. Ligne d'en-tête : celle qui porte « ID Opp » ET « Confiance ».
+  //
+  //    DEUX REPÈRES, ET NON UN SEUL. « ID Opp » ne suffit pas : le classeur
+  //    recopie les étiquettes du tableau dans son bandeau de synthèse, tout en
+  //    haut de l'onglet. En septembre 2026, l'étiquette de la sous-colonne « CA »
+  //    y est devenue « ID Opp » — et le parseur, qui prenait la PREMIÈRE ligne
+  //    portant « ID Opp », verrouillait ce bandeau au lieu du vrai en-tête. Le
+  //    bandeau ne porte aucune « Confiance » : les onglets 2026-09, 2026-10 et
+  //    2026-11 étaient déclarés « sans bloc de snapshot » et abandonnés en
+  //    entier, alors que leurs données étaient intactes.
+  //
+  //    Le repli sur « ID Opp » seul est CONSERVÉ : sans lui, un onglet réellement
+  //    dépourvu de bloc de snapshot passerait de l'anomalie au silence.
+  //
   // `normalizeKey(c)` et non `c` : l'API Sheets peut rendre des lignes courtes,
   // et un rendu tiers une cellule absente. On ne veut pas planter sur un trou.
-  const headerRow = grid.findIndex((row) =>
-    row.some((c) => normalizeKey(c ?? "") === "idopp"),
-  );
+  const carries = (row: string[], key: string): boolean =>
+    row.some((c) => normalizeKey(c ?? "") === key);
+  const headerRow = (() => {
+    const complete = grid.findIndex((row) => carries(row, "idopp") && carries(row, "confiance"));
+    return complete >= 0 ? complete : grid.findIndex((row) => carries(row, "idopp"));
+  })();
   if (headerRow < 0) {
     return {
       lines: [],
@@ -219,6 +279,7 @@ export function parseForecastGrid(grid: string[][], forecastMonth: string): Shee
       snapshotDates: [],
       currentUpdatedAt: null,
       rowIssues: [],
+      columnGaps: [],
       issues: [
         { message: `Onglet ${forecastMonth} : en-tête « ID Opp » introuvable, onglet ignoré.` },
       ],
@@ -239,6 +300,7 @@ export function parseForecastGrid(grid: string[][], forecastMonth: string): Shee
       snapshotDates: [],
       currentUpdatedAt: null,
       rowIssues: [],
+      columnGaps: [],
       issues: [
         { message: `Onglet ${forecastMonth} : aucun bloc de snapshot (colonne « Confiance »).` },
       ],
@@ -305,6 +367,22 @@ export function parseForecastGrid(grid: string[][], forecastMonth: string): Shee
         `${block.label ? ` (« ${block.label} »)` : ""}, ignoré.`,
     });
   }
+
+  // 4 bis. Sous-colonnes que le classeur ne présente plus SUR AUCUN BLOC.
+  //
+  //    Constaté en septembre 2026 : « CA », « GMV × conf. » et « CA × conf. »
+  //    ont perdu leur étiquette sur trois onglets. Aucun chiffre affiché n'en
+  //    dépend — `ca` n'est exploité par aucun écran, et `GMV × conf.` est
+  //    reconstruit plus bas par `gmv × confiance`. Ce n'est donc PAS une
+  //    anomalie : on le consigne pour garder la visibilité sur le classeur.
+  //
+  //    « Sur aucun bloc », et non « sur un bloc » : un bloc étroit en fin de
+  //    tableau ne doit pas suffire à faire parler le parseur.
+  const missingColumns = BLOCK_COLUMN_LABELS.filter(([key]) =>
+    blocks.every((block) => block.columns[key] === undefined),
+  ).map(([, label]) => label);
+  const columnGaps: SheetColumnGap[] =
+    missingColumns.length > 0 ? [{ forecastMonth, columns: missingColumns }] : [];
 
   // 5. Lignes d'opportunités.
   const lines: ForecastSnapshotLine[] = [];
@@ -388,6 +466,7 @@ export function parseForecastGrid(grid: string[][], forecastMonth: string): Shee
     currentUpdatedAt: [...currentUpdatedAt].sort().pop() ?? null,
     issues,
     rowIssues,
+    columnGaps,
   };
 }
 

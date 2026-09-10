@@ -7,7 +7,11 @@
  */
 
 import { forecastSheetCsvUrl } from "../config";
-import { parseForecastSheet, type SheetRowIssue } from "./forecast-sheet-parser";
+import {
+  parseForecastSheet,
+  type SheetColumnGap,
+  type SheetRowIssue,
+} from "./forecast-sheet-parser";
 import type {
   ForecastCurrentLine,
   ForecastFetchResult,
@@ -34,6 +38,7 @@ export class HttpForecastSnapshotSource implements ForecastSnapshotSource {
     const lines: ForecastSnapshotLine[] = [];
     const issues: ParseIssue[] = [];
     const rowIssues: SheetRowIssue[] = [];
+    const columnGaps: SheetColumnGap[] = [];
     const currentLines: ForecastCurrentLine[] = [];
     const currentMonths: string[] = [];
     const updatedAts = new Set<string>();
@@ -80,6 +85,7 @@ export class HttpForecastSnapshotSource implements ForecastSnapshotSource {
       lines.push(...parsed.lines);
       issues.push(...parsed.issues);
       rowIssues.push(...parsed.rowIssues);
+      columnGaps.push(...parsed.columnGaps);
       currentLines.push(...parsed.currentLines);
       if (parsed.currentUpdatedAt !== null || parsed.currentLines.length > 0) {
         currentMonths.push(month);
@@ -106,6 +112,7 @@ export class HttpForecastSnapshotSource implements ForecastSnapshotSource {
       currentLines,
       issues,
       rowIssues,
+      columnGaps,
     };
   }
 }

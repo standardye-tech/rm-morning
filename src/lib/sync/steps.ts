@@ -53,6 +53,7 @@ import { latestImport } from "../repository";
 import { recordSignatureEvents } from "../signature-record";
 import { ApiSalesforceSource } from "../sources/api-salesforce";
 import { GmailSource } from "../sources/gmail";
+import { describeColumnGaps } from "../sources/forecast-sheet-parser";
 import { SheetsApiForecastSnapshotSource } from "../sources/sheets-api-forecast";
 import { importTravaux } from "../travaux-import";
 import type { SyncSources } from "./store";
@@ -115,6 +116,42 @@ function describeIssues(issues: { message: string }[]): string | undefined {
   if (issues.length === 0) return undefined;
   if (issues.length === 1) return issues[0].message;
   return `${issues.length} anomalies dans le périmètre — ${issues[0].message}`;
+}
+
+/**
+ * Ce qui mérite un « ! » côté Emails — et rien d'autre.
+ *
+ * RÈGLE : un avertissement décrit un IMPACT SUR LA DONNÉE AFFICHÉE, jamais un
+ * incident technique déjà absorbé. Les refus passagers de Gmail (quota par
+ * minute, 429, 5xx) sont rejoués par `gmailGet` ; ce qui arrive ici a donc
+ * survécu à la reprise, et prive réellement le Morning Brief de quelque chose.
+ *
+ * Les deux natures sont NOMMÉES séparément, parce qu'elles ne coûtent pas la
+ * même chose : un message non lu est un signal absent ; un fil non classé est
+ * un signal présent mais non qualifié. « Message illisible » ne décrivait ni
+ * l'un ni l'autre.
+ *
+ * Un message sans expéditeur exploitable ne figure pas ici : il ne pouvait
+ * porter aucun rattachement. Il vit dans le détail de l'étape.
+ */
+function describeMailImpact(report: {
+  failure: string | null;
+  unreadMessages: { id: string }[];
+  unclassifiedThreads: { id: string }[];
+}): string | undefined {
+  if (report.failure) return `Lecture Gmail interrompue : ${report.failure}`;
+  const parts: string[] = [];
+  if (report.unreadMessages.length > 0) {
+    parts.push(
+      `${report.unreadMessages.length} message(s) non lu(s) après reprise : signal absent`,
+    );
+  }
+  if (report.unclassifiedThreads.length > 0) {
+    parts.push(
+      `${report.unclassifiedThreads.length} fil(s) non classé(s) : messages stockés, non qualifiés`,
+    );
+  }
+  return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 
 const NODE_TS = [
@@ -238,6 +275,7 @@ export function buildSteps(): SyncStep[] {
       timeoutMs: 5 * MINUTE,
       async run() {
         const s = await importForecastSnapshots(new SheetsApiForecastSnapshotSource());
+        const gaps = describeColumnGaps(s.columnGaps);
         // Le Sheet peut légitimement n'avoir pas bougé : sa cadence est
         // hebdomadaire. On publie la date réellement lue, sans la commenter.
         const latest = s.snapshotDates.slice().sort().pop() ?? null;
@@ -256,7 +294,11 @@ export function buildSteps(): SyncStep[] {
             // pas, et non des anomalies à traiter.
             ` · ${s.ignoredLines} hors équipe` +
             (s.outOfTerritoryLines > 0 ? `, ${s.outOfTerritoryLines} hors territoire` : "") +
-            " (exclues)",
+            " (exclues)" +
+            // Le classeur a changé un libellé, RM Morning continue de lire ce
+            // dont il a besoin. Dit ici et NULLE PART AILLEURS : ce n'est pas
+            // une anomalie, et cela ne doit pas dégrader le statut.
+            (gaps ? ` · ${gaps} — non utilisée(s) par RM Morning` : ""),
           sources: {
             perspectiveSnapshotDate: latest,
             perspectiveCurrentUpdatedAt: s.currentUpdatedAt,
@@ -303,15 +345,25 @@ export function buildSteps(): SyncStep[] {
           detail:
             `${report.inserted} nouveau(x) message(s) sur ${report.seen} vus · ` +
             `${report.classified} fil(s) classé(s) · ${resolved} adresse(s) résolue(s) · ` +
-            `${events.created} nouvel(le)(s) alerte(s) Morning`,
+            `${events.created} nouvel(le)(s) alerte(s) Morning` +
+            // Consigné SANS avertir : un message sans expéditeur exploitable ne
+            // pouvait de toute façon ni être filtré, ni être rattaché.
+            (report.withoutSender > 0
+              ? ` · ${report.withoutSender} message(s) sans expéditeur exploitable (écartés)`
+              : "") +
+            // Les échecs qui subsistent APRÈS reprise sont dits ici aussi, pour
+            // que le panneau porte le chiffre exact que résume l'avertissement.
+            (report.unreadMessages.length > 0
+              ? ` · ${report.unreadMessages.length} message(s) non lu(s)`
+              : "") +
+            (report.unclassifiedThreads.length > 0
+              ? ` · ${report.unclassifiedThreads.length} fil(s) non classé(s)`
+              : ""),
           sources: {
             gmailCursorAt: report.windowEnd,
             gmailLastMessageAt: report.windowEnd,
           },
-          warning:
-            report.errors.length > 0
-              ? `${report.errors.length} message(s) illisible(s) ignoré(s)`
-              : undefined,
+          warning: describeMailImpact(report),
         };
       },
     },

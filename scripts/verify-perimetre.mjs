@@ -12,7 +12,9 @@ import { pathToFileURL } from "node:url";
 
 const lib = (n) => pathToFileURL(path.resolve(process.cwd(), `src/lib/${n}.ts`)).href;
 
-const { parseForecastGrid } = await import(lib("sources/forecast-sheet-parser"));
+const { parseForecastGrid, describeColumnGaps } = await import(
+  lib("sources/forecast-sheet-parser")
+);
 const { territoryOfPostalCode, isInTerritoryScope } = await import(lib("territory"));
 const { matchTeamMember } = await import(lib("normalize"));
 const { loadTeam, allTeamMembers, addTeamMember, removeTeamMember, teamCandidates } = await import(
@@ -111,6 +113,46 @@ const anonymous = parseForecastGrid(
 check("un bloc sans étiquette du tout reste signalé", anonymous.issues.length === 1,
   anonymous.issues.map((i) => i.message).join(" | ") || "aucune");
 
+// --- Le bandeau de synthèse ne doit JAMAIS être pris pour l'en-tête ---------
+//
+// Cas réel du 10/09/2026 : le classeur a remplacé l'étiquette « CA » par
+// « ID Opp », dans le tableau ET dans le bandeau de synthèse du haut d'onglet.
+// Le parseur, qui retenait la PREMIÈRE ligne portant « ID Opp », verrouillait
+// le bandeau — lequel ne porte aucune « Confiance ». Résultat : 2026-09, 2026-10
+// et 2026-11 étaient déclarés « sans bloc de snapshot » et perdus en entier.
+const brokenHeader = header.map((c) => (c === "CA" ? "ID Opp" : c));
+const summaryBand = [];
+summaryBand[8] = "GMV";
+summaryBand[9] = "ID Opp"; // l'étiquette parasite, exactement comme dans le Sheet
+summaryBand[10] = "0 €";
+const decoyed = parseForecastGrid(
+  [grid[0], grid[1], summaryBand, ["Σ (lignes visibles) →"], [], labels, brokenHeader, grid[4]],
+  "2026-09",
+);
+check("un « ID Opp » égaré au-dessus ne détourne plus l'en-tête",
+  decoyed.lines.length === 1 && decoyed.currentLines.length === 1,
+  `${decoyed.lines.length} snapshot(s), ${decoyed.currentLines.length} courante(s)`);
+check("aucune fausse anomalie « aucun bloc de snapshot »", decoyed.issues.length === 0,
+  decoyed.issues.map((i) => i.message).join(" | ") || "aucune");
+check("les chiffres lus restent ceux du bon en-tête",
+  decoyed.lines[0]?.gmv === 100000 && decoyed.lines[0]?.snapshotDate === "2026-08-31",
+  `gmv=${decoyed.lines[0]?.gmv} date=${decoyed.lines[0]?.snapshotDate}`);
+// La sous-colonne perdue est CONSIGNÉE, et surtout pas comptée en anomalie.
+check("la sous-colonne « CA » disparue est consignée, pas signalée",
+  decoyed.columnGaps.length === 1 && decoyed.columnGaps[0].columns.join(",") === "CA",
+  describeColumnGaps(decoyed.columnGaps) ?? "aucune");
+
+// LE CONTRÔLE RESTE ARMÉ : un onglet réellement dépourvu de « Confiance » doit
+// continuer de lever l'anomalie. C'est la contrepartie du repli, et elle se
+// vérifie ici pour qu'aucune correction future ne la fasse disparaître.
+const noBlocks = parseForecastGrid(
+  [grid[0], grid[1], [], ["ID Opp", "DR", "Sales", "Opportunité"], ["006Sb00000aZDAX", "IDF", "X", "Y"]],
+  "2026-09",
+);
+check("un onglet réellement sans « Confiance » déclenche toujours l'anomalie",
+  noBlocks.issues.length === 1 && /aucun bloc de snapshot/.test(noBlocks.issues[0].message),
+  noBlocks.issues.map((i) => i.message).join(" | ") || "aucune");
+
 // --- Le territoire ---------------------------------------------------------
 
 console.log("\nTERRITOIRE — champ retenu : le code postal du compte");
@@ -169,10 +211,26 @@ const histQuery = `SELECT forecast_month, snapshot_date, count(*) n,
        coalesce(round(sum(coalesce(gmv,0)), 2), 0) gmv
   FROM forecast_snapshot GROUP BY 1, 2 ORDER BY 1, 2`;
 const fingerprint = () =>
-  db.prepare(histQuery).all()
-    .map((r) => `${r.forecast_month}|${r.snapshot_date}|${r.n}|${r.gmv}`).join("~");
+  new Map(
+    db.prepare(histQuery).all()
+      .map((r) => [`${r.forecast_month}|${r.snapshot_date}`, `${r.n}|${r.gmv}`]),
+  );
 // IMMUABILITE : empreinte de l'historique AVANT import, comparee apres.
+//
+// GROUPE PAR GROUPE, et non par une chaine unique. Ce qui est garanti, c'est
+// qu'un snapshot deja consolide ne soit JAMAIS reecrit ni efface — pas que le
+// classeur cesse de vivre. Le lundi suivant ajoute legitimement un groupe, et
+// une empreinte globale le denoncait comme une reecriture.
 const historyBefore = fingerprint();
+const historyDrift = () => {
+  const after = fingerprint();
+  const drift = [];
+  for (const [key, value] of historyBefore) {
+    if (!after.has(key)) drift.push(`${key} disparu`);
+    else if (after.get(key) !== value) drift.push(`${key} : ${value} -> ${after.get(key)}`);
+  }
+  return drift;
+};
 
 const summary = await importForecastSnapshots(new SheetsApiForecastSnapshotSource());
 console.log(
@@ -213,11 +271,39 @@ const delphine = db
 check("CAS 1 — aucune ligne de Delphine LE MOINE en base", delphine === 0, `${delphine}`);
 
 console.log("\nETAT COURANT - exploite, et cloisonne de l'historique");
-check("5. les snapshots historiques sont restes IDENTIQUES", historyBefore === fingerprint(),
-  historyBefore === fingerprint() ? "aucun octet modifie" : "l'historique a bouge");
-check("1. aucun snapshot fabrique apres le dernier lundi consolide",
-  db.prepare("SELECT count(*) n FROM forecast_snapshot WHERE snapshot_date > ?")
-    .get("2026-08-31").n === 0);
+const drift = historyDrift();
+const afterImport = fingerprint();
+const addedGroups = [...afterImport.keys()].filter((k) => !historyBefore.has(k));
+check("5. les snapshots historiques sont restes IDENTIQUES", drift.length === 0,
+  drift.length === 0
+    ? `aucun groupe modifie${addedGroups.length > 0 ? ` (${addedGroups.length} nouveau(x) lundi)` : ""}`
+    : drift.join(" | "));
+// CONTREPARTIE du controle groupe par groupe : celui-ci ne dit plus rien des
+// groupes CREES, alors que l'empreinte globale, elle, les denoncait. Un import
+// qui fabriquerait un snapshot a une date inventee — anterieure au dernier
+// lundi, donc invisible du controle 1 — passerait sans bruit. On exige donc que
+// toute date apparue soit une date que le classeur DECLARE.
+const declaredDates = new Set(summary.snapshotDates);
+const invented = addedGroups.filter((k) => !declaredDates.has(k.split("|")[1]));
+check("5. tout snapshot cree porte une date declaree par le classeur", invented.length === 0,
+  invented.join(" | ") || `${addedGroups.length} groupe(s) cree(s), toutes dates declarees`);
+// La borne est celle que DECLARE le classeur, et non une date figee dans le
+// harnais : c'est le bloc « EN COURS » qu'il s'agit d'empecher d'etre range
+// parmi les snapshots, pas le calendrier d'avancer.
+const declaredLatest = summary.snapshotDates.slice().sort().pop() ?? "";
+const fabricated = db
+  .prepare("SELECT count(*) n FROM forecast_snapshot WHERE snapshot_date > ?")
+  .get(declaredLatest).n;
+check("1. aucun snapshot fabrique apres le dernier lundi consolide", fabricated === 0,
+  `borne declaree par le classeur : ${declaredLatest}`);
+// Corollaire, et c'est LUI qui protege le cloisonnement : l'horodatage du bloc
+// courant ne doit jamais apparaitre comme une date de snapshot.
+const currentDay = (summary.currentUpdatedAt ?? "").slice(0, 10);
+const currentAsSnapshot = currentDay
+  ? db.prepare("SELECT count(*) n FROM forecast_snapshot WHERE snapshot_date = ?").get(currentDay).n
+  : 0;
+check("1. l'etat courant n'est jamais range parmi les snapshots", currentAsSnapshot === 0,
+  `MAJ ${currentDay || "(aucune)"} absente des snapshots`);
 check("2. l'etat courant est disponible en base", summary.currentLines > 0,
   `${summary.currentLines} ligne(s)`);
 check("6. le bloc courant le plus recent est identifiable",
@@ -228,12 +314,19 @@ check("l'etat courant n'est pas accumule : une ligne par (mois, affaire)",
     "SELECT count(*) n FROM (SELECT forecast_month, row_key FROM forecast_current GROUP BY 1,2 HAVING count(*) > 1)",
   ).get().n === 0);
 
-const novSnapshots = db
-  .prepare("SELECT count(*) n FROM forecast_snapshot WHERE forecast_month = '2026-11'").get().n;
-const novCurrent = loadForecastCurrent("2026-11");
-check("3. 2026-11 n'a aucun snapshot historique", novSnapshots === 0, `${novSnapshots}`);
-check("3. 2026-11 reste exploitable via l'etat courant", novCurrent.length > 0,
-  `${novCurrent.length} ligne(s) - MAJ ${forecastCurrentUpdatedAt("2026-11")}`);
+// Le mois le plus lointain du classeur. Il fut un temps sans aucun snapshot ;
+// depuis le 07/09/2026 il en porte un. Les DEUX etats sont legitimes, et ce qui
+// doit tenir dans les deux, c'est qu'il reste EXPLOITABLE — par un snapshot, ou
+// a defaut par l'etat courant. Nommer « 2026-11 » figeait le controle sur un
+// etat du classeur, et le faisait echouer des que ce mois se consolidait.
+const lastMonth = summary.months.slice().sort().pop() ?? "";
+const lastSnapshots = db
+  .prepare("SELECT count(*) n FROM forecast_snapshot WHERE forecast_month = ?").get(lastMonth).n;
+const lastCurrent = loadForecastCurrent(lastMonth);
+check(`3. ${lastMonth} est exploitable`, lastSnapshots > 0 || lastCurrent.length > 0,
+  `${lastSnapshots} snapshot(s) - ${lastCurrent.length} ligne(s) courantes`);
+check(`3. ${lastMonth} reste exploitable via l'etat courant`, lastCurrent.length > 0,
+  `${lastCurrent.length} ligne(s) - MAJ ${forecastCurrentUpdatedAt(lastMonth)}`);
 
 const currentOutsiders = db
   .prepare(

@@ -12,7 +12,7 @@
  */
 
 import type { ParseIssue } from "./salesforce";
-import type { SheetRowIssue } from "./forecast-sheet-parser";
+import type { SheetColumnGap, SheetRowIssue } from "./forecast-sheet-parser";
 
 /** États déclarés dans le Sheet. Conservés tels quels, jamais réinterprétés. */
 export const FORECAST_STATES = ["Gagnée", "Perdue", "Repoussée", "Nouvelle"] as const;
@@ -81,6 +81,11 @@ export type ForecastFetchResult = {
    * territoire est écartée sans être signalée.
    */
   rowIssues: SheetRowIssue[];
+  /**
+   * Sous-colonnes que le classeur ne présente plus. À CONSIGNER, jamais à
+   * transformer en avertissement : aucun chiffre affiché n'en dépend.
+   */
+  columnGaps: SheetColumnGap[];
 };
 
 export interface ForecastSnapshotSource {
@@ -106,6 +111,7 @@ export class NoForecastSnapshotSource implements ForecastSnapshotSource {
       currentLines: [],
       issues: [],
       rowIssues: [],
+      columnGaps: [],
     };
   }
 }
