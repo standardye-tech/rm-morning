@@ -17,6 +17,7 @@
  * seulement sous forme structurée.
  */
 
+import { acceptProof, selectInterestProof } from "./interest-proof";
 import type { Classification, ClassifiableMessage, SignalType } from "./mail-classify";
 
 /** Modèle visé : le plus petit qui sache lire une nuance commerciale. */
@@ -135,7 +136,7 @@ Règles impératives :
 12. Un suivi d'exécution de chantier déjà signé — service après-vente, malfaçon, planning de travaux, règlement d'échéance — n'est pas un signal commercial. Il vaut "neutre", sauf si le message annonce explicitement un NOUVEAU projet.
 13. Le summary doit TOUJOURS dire ce que le client DEMANDE quand il demande quelque chose, avec le verbe de demande et son objet : « demande le devis », « demande un planning prévisionnel », « demande un rendez-vous », « demande une modification du devis ». Une demande formulée platement compte autant qu'une demande enthousiaste : « pouvez-vous m'envoyer le devis » exige une action, même sans aucun mot chaleureux. À l'inverse, si le client ne fait qu'accuser réception, dis-le : « accuse réception du devis, sans demande ».
 14. Ne confonds pas la tonalité et l'action. Un message neutre qui demande quelque chose reste une demande ; un message chaleureux qui ne demande rien n'en est pas une.
-15. quote est la phrase du DERNIER message la plus parlante pour un manager commercial — une demande, une condition, une échéance, un engagement, une question — recopiée MOT POUR MOT depuis le texte fourni, au plus 160 caractères, sans rien reformuler ni compléter. Choisis la phrase la plus concrète et la plus différenciante, jamais une formule de politesse. null si aucune phrase ne s'y prête ou si l'auteur n'est pas le client.`;
+15. quote est la PREUVE D'INTÉRÊT : la phrase du DERNIER message qui prouve que le client est intéressé, engagé ou proche d'avancer, recopiée MOT POUR MOT depuis le texte fourni, au plus 160 caractères, sans rien reformuler ni compléter. Ordre de priorité : (1) engagement concret — « je souhaite avancer », « on valide », « je veux signer », « envoyez-moi le document », « bloquez-moi la date », « nous allons partir avec vous » ; (2) intention forte — « votre proposition nous convient », « nous sommes décidés », « nous préférons travailler avec vous » ; (3) condition de décision — « si vous confirmez X, nous avançons » ; (4) question de closing — disponibilité artisan, date de démarrage, signature, financement, acte authentique, planning ; (5) à défaut seulement, la phrase la plus engageante. Ne choisis JAMAIS une formule de politesse, un accusé de réception, une phrase neutre, une signature automatique ni un texte administratif. null si aucune phrase ne prouve un intérêt, ou si l'auteur n'est pas le client.`;
 
 export function buildUserMessage(payload: ModelPayload): string {
   const lines = [
@@ -266,7 +267,13 @@ export async function classifyWithModelDetailed(
       reason: String(parsed.reason ?? "").slice(0, 160),
       signalAt: ordered[ordered.length - 1].date,
       classifier: AI_MODEL,
-      quote: verifyQuote(parsed.quote, `${payload.subject} ${payload.lastMessage}`),
+      // Le modèle propose ; la citation doit figurer dans le texte ET prouver
+      // un intérêt au sens des règles. Sinon, la sélection par règles sur le
+      // même texte fait foi — jamais une phrase inventée ni une politesse.
+      quote:
+        acceptProof(verifyQuote(parsed.quote, `${payload.subject} ${payload.lastMessage}`))?.quote ??
+        selectInterestProof(payload.lastMessage)?.quote ??
+        null,
     },
     inputTokens: body.usage?.input_tokens ?? 0,
     outputTokens: body.usage?.output_tokens ?? 0,

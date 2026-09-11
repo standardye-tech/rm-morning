@@ -89,12 +89,24 @@ export default async function SemainePage({
         <RadarPipeline contacts={view.radar.all} />
       ) : (
         <>
+          {/*
+            Ordre de lecture voulu : la recommandation avant l'analyse. Le
+            bandeau compte, le planning répond « que dois-je faire cette
+            semaine ? », le tableau des ET explique pourquoi ils y sont, puis
+            viennent le détail des actions, les gros dossiers, l'affaire de la
+            semaine et, en bas, les candidatures.
+          */}
           <WeekSummaryBand view={view} />
-          <WeekActions items={view.actions} />
-          <TeamAttention verdicts={view.verdicts} />
-          <BigDeals deals={view.bigDeals} />
-          <DealOfWeek current={view.dealOfWeek} candidates={view.candidates} />
           <WeekPlanning planning={view.planning} />
+          <TeamAttention verdicts={view.verdicts} />
+          <WeekActions items={view.actions} />
+          <BigDeals deals={view.bigDeals} />
+          <DealOfWeek
+            current={view.dealOfWeek}
+            recommendation={view.recommendation}
+            ignoredThisWeek={view.ignoredThisWeek}
+            candidates={view.candidates}
+          />
           <RadarToProcess contacts={view.radar.toProcess} />
           <WeekNotes notes={view.notes} />
         </>

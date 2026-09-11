@@ -25,9 +25,10 @@ process.env.RM_DB_PATH = path.relative(process.cwd(), WORK).replace(/\\/g, "/");
 
 const lib = (n) => pathToFileURL(path.resolve(process.cwd(), `src/lib/${n}.ts`)).href;
 const { getDb } = await import(lib("db"));
-const { extractQuote, extractQuoteFromMessage, classifyMessage, QUOTE_MAX_LENGTH } = await import(lib("mail-classify"));
+const { extractQuoteFromMessage, classifyMessage, QUOTE_MAX_LENGTH } = await import(lib("mail-classify"));
+const { selectInterestProof, tierOf, acceptProof } = await import(lib("interest-proof"));
 const { verifyQuote } = await import(lib("mail-classify-ai"));
-const { whatClientSays, acknowledgeAllEvents, loadMorningEvents, threadsNeedingQuote } = await import(
+const { whatClientSays, expectationOf, NO_PROOF, acknowledgeAllEvents, loadMorningEvents, threadsNeedingQuote } = await import(
   lib("morning-events")
 );
 const { setThreadQuote } = await import(lib("mail-store"));
@@ -44,20 +45,37 @@ const section = (t) => console.log(`\n${t}`);
 
 // --- Q — La phrase du client ---------------------------------------------------
 
-section("Q1 — Extraction par les règles : textuelle, jamais inventée");
+section("Q1 — Preuve d'intérêt : paliers, exclusions, fidélité");
 
-const snippet =
+const msgText =
   "Bonjour, merci pour le devis. Si on valide aujourd'hui, pouvez-vous garantir un démarrage avant fin octobre ? Le financement est validé, il me reste uniquement à choisir l'entreprise. Bien à vous, M. Dupont";
-const q1 = extractQuote(snippet, [/financement/i]);
-check("la phrase retenue est celle qui porte le motif", q1 === "Le financement est validé, il me reste uniquement à choisir l'entreprise.", q1 ?? "null");
-const q2 = extractQuote(snippet, [/motif absent/i]);
-check("sans motif : la première question, telle quelle", q2 === "Si on valide aujourd'hui, pouvez-vous garantir un démarrage avant fin octobre ?", q2 ?? "null");
-const q3 = extractQuote("Bonjour, bien reçu. Merci beaucoup et bonne journée.", [/financement/i]);
-check("ni motif ni question ⇒ aucune citation", q3 === null);
+const p1 = selectInterestProof(msgText);
+check("intention forte (financement validé, palier 2) prime sur la condition et la question", p1?.tier === 2 && p1.quote === "Le financement est validé, il me reste uniquement à choisir l'entreprise.", p1?.quote ?? "null");
+const p1b = selectInterestProof("Bonjour, merci pour le devis. Si on valide aujourd'hui, pouvez-vous garantir un démarrage avant fin octobre ? Bien à vous.");
+check("condition de décision (palier 3) : « si on valide » est une condition, pas un accord", p1b?.tier === 3 && p1b.quote === "Si on valide aujourd'hui, pouvez-vous garantir un démarrage avant fin octobre ?", p1b?.quote ?? "null");
+const bare = selectInterestProof("Bonjour Daravith Avez vous pu prendre connaissance des plans et avancé sur le devis? Merci à vous");
+check("salutation sans virgule retirée, relance sur le devis = demande commerciale", bare?.tier === 5 && bare.quote === "Avez vous pu prendre connaissance des plans et avancé sur le devis?", bare?.quote ?? "null");
+const p2 = selectInterestProof("Bonjour. Votre proposition nous convient. Pouvez-vous me confirmer que votre artisan est disponible début octobre ?");
+check("intention forte (palier 2) prime sur la question de closing (palier 4)", p2?.tier === 2 && p2.quote === "Votre proposition nous convient.", p2?.quote ?? "null");
+const p3 = selectInterestProof("Merci pour votre retour. Nous souhaitons avancer et signer rapidement. Bonne journée.");
+check("engagement concret (palier 1) retenu, politesse ignorée", p3?.tier === 1 && p3.quote === "Nous souhaitons avancer et signer rapidement.", p3?.quote ?? "null");
+const p4 = selectInterestProof("Bonjour, pouvez-vous me confirmer que votre artisan est disponible la première semaine d'octobre ? Merci.");
+check("question de closing (palier 4) : disponibilité artisan, salutation retirée", p4?.tier === 4 && p4.quote === "pouvez-vous me confirmer que votre artisan est disponible la première semaine d'octobre ?", p4?.quote ?? "null");
+const p5 = selectInterestProof("Bonjour, pourriez-vous m'envoyer le devis détaillé pour la cuisine ? Cordialement.");
+check("demande commerciale (palier 5) à défaut", p5?.tier === 5, p5?.quote ?? "null");
+
+check("formule de politesse seule ⇒ rien", selectInterestProof("Bonjour Monsieur, je vous remercie. Bien cordialement, Jean.") === null);
+check("accusé de réception seul ⇒ rien", selectInterestProof("Bien reçu, merci beaucoup. Je reviens vers vous prochainement.") === null);
+check("signature automatique ⇒ jamais retenue", tierOf("Envoyé depuis mon iPhone, veuillez signer le document") === null && selectInterestProof("Obtenir Outlook pour iOS. Je souhaite avancer.")?.quote === "Je souhaite avancer.");
+check("notification administrative ⇒ rien", selectInterestProof("Julien RADIC vous a mentionné dans un document : Sales Meeting. Ouvrir le document.") === null);
+check("Docusign / Yousign ⇒ rien", selectInterestProof("Xavier Himbert via DocuSign : veuillez examiner et signer le document.") === null);
+check("phrase neutre sans intention ⇒ rien", selectInterestProof("Nous avons visité l'appartement mardi dernier avec l'architecte.") === null);
+check("URL ou adresse ⇒ rien", selectInterestProof("Voir https://exemple.fr/devis pour signer en ligne, contact@exemple.fr") === null);
+
+check("la citation est un extrait exact du texte", msgText.includes(p1.quote) && msgText.includes(p1b.quote) && "Votre proposition nous convient.".length === p2.quote.length);
 const long = "Nous souhaitons avancer " + "très vite sur ce projet ".repeat(12) + "avant la fin du mois.";
-const q4 = extractQuote(long, [/souhaitons avancer/i]);
-check(`une phrase trop longue est coupée à ${QUOTE_MAX_LENGTH} caractères sur un mot, avec ellipse`, q4.length <= QUOTE_MAX_LENGTH && q4.endsWith("…"));
-check("la citation est un extrait exact du texte", snippet.includes(q1) && snippet.includes(q2));
+const p6 = selectInterestProof(long);
+check(`une phrase trop longue est coupée à ${QUOTE_MAX_LENGTH} caractères sur un mot, avec ellipse`, p6.quote.length <= QUOTE_MAX_LENGTH && p6.quote.endsWith("…") && long.startsWith(p6.quote.slice(0, -1)));
 
 const classified = classifyMessage({
   id: "m1",
@@ -67,7 +85,16 @@ const classified = classifyMessage({
   subject: "Re: devis",
   snippet: "Bonjour. C'est bon pour nous, on part avec vous. Merci de nous envoyer le lien de signature.",
 });
-check("classifyMessage porte la phrase du motif décisif", classified.signalType === "signature" && classified.quote === "C'est bon pour nous, on part avec vous.", classified.quote ?? "null");
+check("classifyMessage porte la preuve d'intérêt", classified.signalType === "signature" && classified.quote === "C'est bon pour nous, on part avec vous.", classified.quote ?? "null");
+const risky = classifyMessage({
+  id: "m3",
+  threadId: "t3",
+  date: "2026-09-11T08:00:00.000Z",
+  direction: "entrant",
+  subject: "Re: devis",
+  snippet: "Le prix nous semble trop élevé. Si vous pouvez tenir le planning de novembre, nous avançons.",
+});
+check("un message « risque » peut porter une preuve d'intérêt (condition de décision)", risky.signalType === "risque" && risky.quote === "Si vous pouvez tenir le planning de novembre, nous avançons.", `${risky.signalType} · ${risky.quote ?? "null"}`);
 const backfilled = extractQuoteFromMessage({
   id: "m2",
   threadId: "t2",
@@ -76,26 +103,33 @@ const backfilled = extractQuoteFromMessage({
   subject: "Re: devis",
   snippet: "Merci. Nous réfléchissons encore, le prix nous semble trop élevé. Cordialement.",
 });
-check("le rattrapage trouve la phrase parlante tous motifs confondus", backfilled === "Nous réfléchissons encore, le prix nous semble trop élevé.", backfilled ?? "null");
+check("le rattrapage ne fabrique rien sur un message sans preuve", backfilled === null);
 
-section("Q2 — Citation du modèle : retenue seulement si elle figure dans le texte");
+section("Q2 — Citation du modèle : dans le texte ET probante");
 
-const source = "Objet : devis. Pouvez-vous me confirmer que votre artisan est disponible la première semaine d'octobre ?";
-check("phrase présente ⇒ retenue", verifyQuote("Pouvez-vous me confirmer que votre artisan est disponible la première semaine d'octobre ?", source) !== null);
+const source = "Objet : devis. Bien reçu, merci. Pouvez-vous me confirmer que votre artisan est disponible la première semaine d'octobre ?";
+check("phrase présente et probante ⇒ retenue", acceptProof(verifyQuote("Pouvez-vous me confirmer que votre artisan est disponible la première semaine d'octobre ?", source))?.tier === 4);
 check("guillemets, casse et accents tolérés", verifyQuote("« pouvez-vous me confirmer que votre artisan est disponible la premiere semaine d'octobre ? »", source) !== null);
 check("phrase inventée ⇒ écartée", verifyQuote("Le financement est validé, il ne reste qu'à signer.", source) === null);
+check("phrase présente mais accusé de réception ⇒ écartée par le garde-fou", acceptProof(verifyQuote("Bien reçu, merci.", source)) === null);
 check("valeur non textuelle ⇒ écartée", verifyQuote(null, source) === null && verifyQuote(42, source) === null);
 
-section("Q3 — Ce qui s'affiche : citation, puis résumé fidèle, puis motif");
+section("Q3 — Ce qui s'affiche : citation, « pas de preuve », ou non analysé");
 
 const withQuote = whatClientSays({ reason: "Demande le devis", quote: "Pouvez-vous m'envoyer le devis avant lundi ?", summary: "Client demande le devis", classifier: "claude-haiku-4-5-20251001" });
-check("citation ⇒ affichée entre guillemets, motif en parenthèse", withQuote.said === "« Pouvez-vous m'envoyer le devis avant lundi ? »" && withQuote.expects === "demande le devis");
-const modelOnly = whatClientSays({ reason: "Souhaite avancer", quote: null, summary: "Client finalise sa demande de prêt, devis en cours d'examen", classifier: "claude-haiku-4-5-20251001" });
-check("sans citation, résumé du modèle ⇒ affiché tel quel", modelOnly.said === "Client finalise sa demande de prêt, devis en cours d'examen" && modelOnly.expects === "souhaite avancer");
+check("citation ⇒ guillemets et « attend : le devis »", withQuote.proof === "citation" && withQuote.said === "« Pouvez-vous m'envoyer le devis avant lundi ? »" && withQuote.expects === "attend : le devis");
+const none = whatClientSays({ reason: "Souhaite avancer", quote: "", summary: "Client finalise sa demande de prêt", classifier: "claude-haiku-4-5-20251001" });
+check("relu sans preuve ⇒ « Pas de preuve d'intérêt explicite », jamais le résumé", none.proof === "aucune" && none.said === NO_PROOF && none.expects === "attend : la prochaine étape");
+const notYet = whatClientSays({ reason: "Souhaite avancer", quote: null, summary: "Client finalise sa demande de prêt, devis en cours d'examen", classifier: "claude-haiku-4-5-20251001" });
+check("pas encore relu ⇒ résumé fidèle du modèle en attendant le rattrapage", notYet.proof === "non_analyse" && notYet.said === "Client finalise sa demande de prêt, devis en cours d'examen");
 const rulesOnly = whatClientSays({ reason: "Souhaite avancer", quote: null, summary: "Projet vivant, probabilité de signature en baisse", classifier: "rules" });
-check("résumé des règles (gabarit) ⇒ on garde le motif, sans parenthèse", rulesOnly.said === "Souhaite avancer" && rulesOnly.expects === null);
-const emptyQuote = whatClientSays({ reason: "Demande le devis", quote: "", summary: null, classifier: "rules_fallback" });
-check("chaîne vide (« cherché, rien trouvé ») ⇒ traitée comme absente", emptyQuote.said === "Demande le devis" && emptyQuote.quote === null);
+check("pas encore relu, résumé des règles ⇒ motif, sans parenthèse", rulesOnly.said === "Souhaite avancer" && rulesOnly.expects === null);
+
+check("« attend : … » : demande", expectationOf("Demande un planning prévisionnel") === "attend : un planning prévisionnel");
+check("« attend : … » : relance", expectationOf("Relance, sans réponse de notre côté") === "attend : une réponse");
+check("« attend : … » : signature", expectationOf("Prêt à signer ou dernière étape avant signature") === "attend : la signature");
+check("« attend : … » : blocage", expectationOf("Souhaite avancer — financement en attente") === "attend : financement en attente");
+check("« attend : … » : document", expectationOf("Attend un document ou une correction") === "attend : un document ou une correction");
 
 const { events } = loadMorningEvents();
 check("sur la base : chaque événement porte une phrase non vide", events.every((e) => e.said && e.said.trim().length > 0), `${events.length} événements`);

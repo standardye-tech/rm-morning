@@ -40,12 +40,15 @@ const { buildWeek, weekBounds } = await import(lib("week"));
 const { loadTeam } = await import(lib("team-store"));
 const { loadOpportunities } = await import(lib("repository"));
 const { daysBetween } = await import(lib("normalize"));
-const { currentDealOfWeek, selectDealOfWeek, closeDealOfWeek, dealOfWeekHistory } = await import(
+const { currentDealOfWeek, selectDealOfWeek, closeDealOfWeek, dealOfWeekHistory, updateDealOfWeek } = await import(
   lib("deal-of-week-store")
 );
 const { addRadarContact, updateRadarContact, listRadarContacts, radarToProcess, radarInterviews } = await import(
   lib("radar-store")
 );
+const { preselect, evaluate, rank, pickDiverse, recommend, suggestAngle } = await import(lib("deal-of-week-recommend"));
+const { DEAL_OF_WEEK_RECOMMENDATION } = await import(lib("config"));
+const { ignoreWeek, resumeWeek, isWeekIgnored } = await import(lib("deal-of-week-store"));
 
 let failures = 0;
 const check = (label, ok, detail = "") => {
@@ -53,6 +56,7 @@ const check = (label, ok, detail = "") => {
   console.log(`  ${ok ? "ok   " : "ÉCHEC"} ${label}${detail ? ` — ${detail}` : ""}`);
 };
 const section = (t) => console.log(`\n${t}`);
+const kEurLocal = (v) => (v == null ? "—" : `${Math.round(v / 1000)} k€`);
 
 // --- S1 — Moteur d'attention sur entrées synthétiques -----------------------
 
@@ -292,8 +296,10 @@ section("S6 — Affaire de la semaine");
 const before = currentDealOfWeek();
 const first = active[0];
 const second = active.find((o) => o.opportunityId !== first.opportunityId);
-const r1 = selectDealOfWeek({ opportunityId: first.opportunityId, salesperson: first.owner, weekStart, comment: "test" });
+const r1 = selectDealOfWeek({ opportunityId: first.opportunityId, salesperson: first.owner, weekStart, angle: "closing", comment: "test" });
 check("sélection ⇒ devient l'affaire en cours", currentDealOfWeek()?.id === r1.id && r1.status === "en_cours");
+check("l'angle de challenge est conservé", r1.angle === "closing");
+check("changer l'angle ne remplace pas l'affaire", updateDealOfWeek(r1.id, { angle: "planning" }) && currentDealOfWeek()?.id === r1.id && currentDealOfWeek()?.angle === "planning");
 const r2 = selectDealOfWeek({ opportunityId: second.opportunityId, salesperson: second.owner, weekStart });
 const hist = dealOfWeekHistory();
 check("nouvelle sélection ⇒ la précédente passe en « remplacee »", hist.find((h) => h.id === r1.id)?.status === "remplacee" && currentDealOfWeek()?.id === r2.id);
@@ -301,9 +307,12 @@ check("une seule affaire en cours à la fois", hist.filter((h) => h.status === "
 check("clôture ⇒ plus d'affaire en cours", closeDealOfWeek(r2.id) && currentDealOfWeek() === null);
 check("clore deux fois ne change rien", closeDealOfWeek(r2.id) === false);
 check("l'affaire précédente du directeur n'a pas été touchée", before === null || hist.some((h) => h.id === before.id));
-const viewWith = (() => { selectDealOfWeek({ opportunityId: first.opportunityId, salesperson: first.owner, weekStart }); return buildWeek(now); })();
+const viewWith = (() => { selectDealOfWeek({ opportunityId: first.opportunityId, salesperson: first.owner, weekStart, angle: "strategie_client" }); return buildWeek(now); })();
 check("avec une affaire en cours : présente dans la synthèse, les actions et le créneau du jeudi",
   viewWith.summary.dealOfWeek === 1 && viewWith.actions.some((a) => a.kind === "affaire_semaine") && viewWith.planning.find((s) => s.kind === "affaire_semaine")?.item?.kind === "affaire_semaine");
+check("l'angle dicte le libellé et l'objectif du point", viewWith.dealOfWeek?.angleLabel === "Stratégie client" && viewWith.dealOfWeek?.objective.startsWith("Obtenir un plan d'action") && viewWith.actions.find((a) => a.kind === "affaire_semaine")?.recommendation.obtain === viewWith.dealOfWeek?.objective);
+const viewLegacy = (() => { selectDealOfWeek({ opportunityId: first.opportunityId, salesperson: first.owner, weekStart }); return buildWeek(now); })();
+check("un choix sans angle s'affiche « Autre »", viewLegacy.dealOfWeek?.angleLabel === "Autre");
 
 // --- S7 — Radar ----------------------------------------------------------------------
 
@@ -325,6 +334,135 @@ check("entretiens : statut RDV", radarInterviews(all).some((c) => c.id === c1.id
 const ecarte = updateRadarContact(c1.id, { status: "ecarte" });
 check("écarté ⇒ jamais à traiter", ecarte.status === "ecarte" && !radarToProcess(listRadarContacts(), weekEnd).some((c) => c.id === c1.id));
 check("statuts du pipeline conformes", RADAR.statuses.map((s) => s.key).join(",") === "nouveau,a_contacter,contacte,interessant,rdv,ecarte");
+
+// --- S8 — Affaire recommandée : présélection, points, angle, diversité, historique ----
+
+section("S8 — Affaire recommandée de la semaine");
+
+const RR = DEAL_OF_WEEK_RECOMMENDATION;
+const T = "2026-09-11";
+const W = "2026-09-07";
+const rc = (over) => ({
+  opportunityId: over.opportunityId ?? `c-${Math.random().toString(36).slice(2, 8)}`,
+  owner: "Anthony Ramaherison",
+  firstName: "Anthony",
+  client: "Client",
+  gmv: 40_000,
+  stage: "Examen devis",
+  createdAt: "2026-07-01",
+  lastActivityAt: "2026-09-09",
+  isActive: true,
+  milestone: { status: "normal", nextExpectedEvent: null, nextExpectedDueAt: null, estimationSentAt: null, devisSentAt: "2026-09-01", nextVisitAt: null, clientWaiting: false },
+  stageChangedRecently: false,
+  attention: "orange",
+  ownerEligible: true,
+  isBigDeal: false,
+  isCurrent: false,
+  ...over,
+});
+
+// Présélection
+check("gros dossier déjà remonté ⇒ exclu", preselect([rc({ isBigDeal: true })], T).length === 0);
+check(`montant sous ${RR.minGmv} ⇒ exclu`, preselect([rc({ gmv: RR.minGmv - 1 })], T).length === 0);
+check("ET exclu ou inactif ⇒ exclu", preselect([rc({ ownerEligible: false })], T).length === 0);
+check("dormante ⇒ exclue", preselect([rc({ milestone: { ...rc({}).milestone, status: "dormant_candidate" } })], T).length === 0);
+check("sans activité récente ni création récente ⇒ exclue", preselect([rc({ lastActivityAt: "2026-07-20", createdAt: "2026-06-01" })], T).length === 0);
+check("création récente sans activité ⇒ retenue", preselect([rc({ lastActivityAt: null, createdAt: "2026-09-05" })], T).length === 1);
+check("affaire en cours ⇒ exclue", preselect([rc({ isCurrent: true })], T).length === 0);
+check("stand-by ⇒ exclue", preselect([rc({ isActive: false })], T).length === 0);
+check("cas nominal ⇒ retenu", preselect([rc({})], T).length === 1);
+
+// Points, critère par critère
+const e1 = evaluate(rc({}), T, W, []);
+const pts = Object.fromEntries(e1.criteria.map((c) => [c.key, c.points]));
+check("Examen devis = +3, activité cette semaine = +2, montant significatif = +2, prochaine étape non datée = +1, ET orange = +2", pts.etape === 3 && pts.activite === 2 && pts.montant === 2 && pts.prochaine_etape === 1 && pts.et === 2 && e1.total === 10, JSON.stringify(pts));
+check("chaque critère porte une étiquette lisible", e1.criteria.every((c) => c.label.length > 3));
+check("la raison est une seule phrase courte", e1.reason.length < 120 && (e1.reason.match(/\./g) ?? []).length === 1, e1.reason);
+const e2 = evaluate(rc({ attention: "vert", gmv: 15_000, lastActivityAt: "2026-08-30", stageChangedRecently: true }), T, W, []);
+const pts2 = Object.fromEntries(e2.criteria.map((c) => [c.key, c.points]));
+check("ET vert = +1, montant modeste = +1, activité récente = +1, changement d'étape = +1", pts2.et === 1 && pts2.montant === 1 && pts2.activite === 1 && pts2.etape_changee === 1, JSON.stringify(pts2));
+check("ET vert : la raison commence par « ET performant »", e2.reason.startsWith("ET performant"));
+check("rendez-vous planifié (activité future) = +2", evaluate(rc({ lastActivityAt: "2026-09-15" }), T, W, []).criteria.find((c) => c.key === "activite")?.points === 2);
+check("ET rouge = +1 seulement : il a déjà son créneau", evaluate(rc({ attention: "rouge" }), T, W, []).criteria.find((c) => c.key === "et")?.points === 1);
+
+// Angle suggéré
+check("Étude dossier récente ⇒ Qualification", suggestAngle(rc({ stage: "Etude dossier", createdAt: "2026-09-01" }), T) === "qualification");
+check("Étude dossier ancienne ⇒ Stratégie client", suggestAngle(rc({ stage: "Etude dossier", createdAt: "2026-07-01" }), T) === "strategie_client");
+check("Examen estimation non envoyée ⇒ Estimation", suggestAngle(rc({ stage: "Examen estimation" }), T) === "estimation");
+check("Examen estimation envoyée ⇒ Stratégie client", suggestAngle(rc({ stage: "Examen estimation", milestone: { ...rc({}).milestone, estimationSentAt: "2026-09-01" } }), T) === "strategie_client");
+check("Visite artisan à venir ⇒ Visite artisan", suggestAngle(rc({ stage: "Visite artisan", milestone: { ...rc({}).milestone, nextVisitAt: "2026-09-15" } }), T) === "visite_artisan");
+check("Visite réalisée, activité fraîche ⇒ Planning", suggestAngle(rc({ stage: "Visite artisan" }), T) === "planning");
+check("Visite réalisée, silence > 10 j ⇒ Création d'urgence", suggestAngle(rc({ stage: "Visite artisan", lastActivityAt: "2026-08-25" }), T) === "urgence");
+check("Examen devis, devis envoyé ⇒ Closing", suggestAngle(rc({}), T) === "closing");
+check("Examen devis, devis non envoyé ⇒ Stratégie client", suggestAngle(rc({ milestone: { ...rc({}).milestone, devisSentAt: null } }), T) === "strategie_client");
+check("Signature ⇒ Closing", suggestAngle(rc({ stage: "Signature" }), T) === "closing");
+
+// Historique : pénalités validées
+const hx = (weeksAgo, status, opportunityId = "X", salesperson = "Anthony Ramaherison") => ({
+  opportunityId,
+  salesperson,
+  weekStart: new Date(new Date(`${W}T00:00:00`).getTime() - weeksAgo * 7 * 86_400_000).toISOString().slice(0, 10),
+  status,
+});
+const baseTotal = evaluate(rc({ opportunityId: "X" }), T, W, []).total;
+check("choisie la semaine dernière : −4", evaluate(rc({ opportunityId: "X" }), T, W, [hx(1, "cloturee")]).total === baseTotal - 4);
+check("choisie il y a 2 ou 3 semaines : −2", evaluate(rc({ opportunityId: "X" }), T, W, [hx(2, "remplacee")]).total === baseTotal - 2 && evaluate(rc({ opportunityId: "X" }), T, W, [hx(3, "cloturee")]).total === baseTotal - 2);
+check("choisie il y a 4 semaines : plus de pénalité", evaluate(rc({ opportunityId: "X" }), T, W, [hx(4, "cloturee")]).total === baseTotal);
+check("ignorée la semaine dernière : −3", evaluate(rc({ opportunityId: "X" }), T, W, [hx(1, "ignoree")]).total === baseTotal - 3);
+check("ignorée il y a 2 semaines : aucune pénalité, elle revient normalement", evaluate(rc({ opportunityId: "X" }), T, W, [hx(2, "ignoree")]).total === baseTotal);
+check("ignorance reprise : aucune pénalité", evaluate(rc({ opportunityId: "X" }), T, W, [hx(1, "reprise")]).total === baseTotal);
+check("même ET choisi la semaine dernière : −1", evaluate(rc({ opportunityId: "Y" }), T, W, [hx(1, "cloturee", "X")]).total === baseTotal - 1);
+check("autre ET la semaine dernière : rien", evaluate(rc({ opportunityId: "Y" }), T, W, [hx(1, "cloturee", "X", "David Bernstein")]).total === baseTotal);
+check("une affaire pénalisée reste proposable si elle domine", rank([rc({ opportunityId: "X" }), rc({ opportunityId: "Z", gmv: 12_000, attention: "vert", lastActivityAt: "2026-08-30" })], T, W, [hx(1, "ignoree")])[0].candidate.opportunityId === "X");
+
+// Diversité
+const same = [
+  rc({ opportunityId: "A1", client: "A1" }),
+  rc({ opportunityId: "A2", client: "A2", gmv: 38_000 }),
+  rc({ opportunityId: "A3", client: "A3", gmv: 36_000 }),
+  rc({ opportunityId: "D1", client: "D1", owner: "David Bernstein", firstName: "David", stage: "Visite artisan", milestone: { ...rc({}).milestone, devisSentAt: null }, gmv: 30_000 }),
+  rc({ opportunityId: "M1", client: "M1", owner: "Mathis Coulon", firstName: "Mathis", stage: "Examen estimation", attention: "vert", gmv: 30_000 }),
+];
+const raw = rank(same, T, W, []);
+const div = pickDiverse(raw);
+check("classement brut : les trois affaires d'Anthony en tête", raw.slice(0, 3).every((r) => r.candidate.owner === "Anthony Ramaherison"));
+check("diversité : le top 3 mêle trois ET différents", new Set(div.map((r) => r.candidate.owner)).size === 3, div.map((r) => `${r.candidate.firstName}/${r.angleLabel}`).join(", "));
+check("diversité : trois angles différents", new Set(div.map((r) => r.angle)).size === 3);
+check("la principale reste la meilleure du classement brut", div[0] === raw[0]);
+const far = [rc({ opportunityId: "A1" }), rc({ opportunityId: "A2", gmv: 38_000 }), rc({ opportunityId: "V1", owner: "Vincent Da Silva", firstName: "Vincent D.", gmv: 11_000, attention: "vert", lastActivityAt: "2026-08-30", stage: "Etude dossier", createdAt: "2026-06-01" })];
+check("diversité : un candidat trop faible ne remplace pas une seconde affaire du même ET", pickDiverse(rank(far, T, W, []))[1]?.candidate.opportunityId === "A2");
+check("au plus 1 principale + 2 alternatives", recommend(same, T, W, []).alternatives.length === RR.alternatives);
+check("aucun candidat ⇒ aucune recommandation, jamais imposée", recommend([rc({ isBigDeal: true })], T, W, []) === null);
+
+// Sur la base réelle. L'affaire posée par S6 est close d'abord : la
+// recommandation n'existe que sans affaire en cours.
+const leftover = currentDealOfWeek();
+if (leftover) closeDealOfWeek(leftover.id);
+const real = buildWeek(now);
+if (real.recommendation) {
+  const rec = real.recommendation;
+  const all = [rec.primary, ...rec.alternatives];
+  check("recommandation réelle : principale + au plus 2 alternatives", rec.alternatives.length <= 2, `${rec.considered} candidats`);
+  check("aucune recommandation n'est un gros dossier", all.every((r) => !real.bigDeals.some((d) => d.opportunityId === r.candidate.opportunityId)));
+  check("aucune recommandation ne vient d'un ET exclu", all.every((r) => !ATTENTION.excluded.includes(r.candidate.owner)));
+  check("des ET différents quand c'est possible", new Set(all.map((r) => r.candidate.owner)).size === all.length);
+  check("chaque recommandation porte une raison, un angle et des critères", all.every((r) => r.reason && r.angleLabel && r.criteria.length > 0));
+  console.log("  → " + all.map((r, i) => `${i + 1}. ${r.candidate.firstName} — ${r.candidate.client} — ${kEurLocal(r.candidate.gmv)} — ${r.candidate.stage} · ${r.angleLabel} · ${r.total} pts`).join("\n  → "));
+} else {
+  check("aucune recommandation réelle (aucun candidat) : état admis", true);
+}
+
+// Ignorer la semaine, sur la copie
+const primaryId = real.recommendation?.primary.candidate.opportunityId;
+if (primaryId && !real.dealOfWeek) {
+  check("ignorer ⇒ enregistré une fois", ignoreWeek({ opportunityId: primaryId, salesperson: real.recommendation.primary.candidate.owner, weekStart }) && !ignoreWeek({ opportunityId: primaryId, salesperson: "x", weekStart }));
+  const ignored = buildWeek(now);
+  check("semaine ignorée : plus de recommandation, bandeau à 0, aucune affaire imposée", ignored.ignoredThisWeek && ignored.recommendation === null && ignored.summary.dealOfWeek === 0 && ignored.dealOfWeek === null);
+  const thursday = ignored.planning.find((s) => s.kind === "affaire_semaine");
+  check("le créneau du jeudi est réaffecté ou disponible, jamais rempli d'une affaire", thursday && (thursday.item === null || thursday.item.kind !== "affaire_semaine"));
+  check("reprendre ⇒ la recommandation revient", resumeWeek(weekStart) && !isWeekIgnored(weekStart) && buildWeek(now).recommendation !== null);
+  check("une ignorance reprise ne pénalise pas l'affaire", buildWeek(now).recommendation.primary.candidate.opportunityId === primaryId);
+}
 
 // --- Bilan -------------------------------------------------------------------------------
 

@@ -27,9 +27,10 @@ import {
   updateThreadClassification,
   setThreadQuote,
 } from "../mail-store";
-import { extractQuoteFromMessage } from "../mail-classify";
+import { extractQuoteFromMessage, messageBody } from "../mail-classify";
+import { selectInterestProof } from "../interest-proof";
 import { classifyHybrid, type ClassificationSource } from "../mail-classify-hybrid";
-import { threadsNeedingQuote } from "../morning-events";
+import { threadsNeedingQuote, whatClientSays } from "../morning-events";
 import type { ClassifiableMessage } from "../mail-classify";
 import {
   INTERNAL_DOMAIN,
@@ -411,6 +412,66 @@ export type SyncReport = {
  * sinon on repart de la fin de la dernière synchronisation terminée, moins le
  * chevauchement de sécurité.
  */
+export type InterestProofAudit = {
+  threadId: string;
+  client: string;
+  category: string;
+  subject: string | null;
+  /** Ce que l'écran montre aujourd'hui pour ce message. */
+  before: string;
+  /** La preuve d'intérêt retenue, ou null. */
+  after: string | null;
+  tier: string | null;
+  /** Texte utile du dernier message client, pour juger la fidélité à l'œil. */
+  text: string;
+};
+
+/**
+ * Audit LECTURE SEULE de la preuve d'intérêt sur les événements Morning
+ * ouverts : relit les fils auprès de Gmail (métadonnées et extrait, comme la
+ * synchronisation), applique la sélection et rend l'avant / après. N'écrit
+ * rien, n'appelle aucun modèle.
+ */
+export async function auditInterestProofs(limit = 25): Promise<InterestProofAudit[]> {
+  const rows = queryAll<{
+    thread_id: string;
+    subject: string | null;
+    category: string;
+    reason: string | null;
+    summary: string | null;
+    classifier: string | null;
+    quote: string | null;
+    client: string | null;
+  }>(
+    `SELECT m.thread_id, m.subject, e.category, e.reason, m.summary, m.classifier, m.quote,
+            COALESCE(o.client_contact, m.from_name, m.from_email) AS client
+       FROM morning_event e
+       JOIN mail_signal m ON m.gmail_message_id = e.gmail_message_id
+       LEFT JOIN opportunity o ON o.opportunity_id = m.opportunity_id
+      WHERE e.status <> 'pris_en_compte' AND e.category IN ('chaud', 'attente')
+      ORDER BY e.sent_at DESC`,
+  );
+  const seen = new Set<string>();
+  const unique = rows.filter((r) => (seen.has(r.thread_id) ? false : (seen.add(r.thread_id), true))).slice(0, limit);
+
+  return mapLimited(unique, GMAIL_SYNC.classifyConcurrency, async (r) => {
+    const thread = await fetchThreadMessages(r.thread_id);
+    const last = thread.filter((m) => m.direction === "entrant").pop() ?? thread[thread.length - 1];
+    const text = last ? messageBody(last) : "";
+    const proof = text ? selectInterestProof(text) : null;
+    return {
+      threadId: r.thread_id,
+      client: r.client ?? "Client non identifié",
+      category: r.category,
+      subject: r.subject,
+      before: whatClientSays({ reason: r.reason, quote: null, summary: r.summary, classifier: r.classifier }).said,
+      after: proof?.quote ?? null,
+      tier: proof?.label ?? null,
+      text,
+    };
+  });
+}
+
 export function nextWindow(now = new Date()): { start: Date; end: Date; bootstrap: boolean } {
   const last = lastCompletedSync();
   if (!last) {

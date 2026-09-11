@@ -310,33 +310,59 @@ function classify(row: TriageRow, eligibility: ReturnType<typeof eligibilityOf>)
 /** Les résumés des règles sont des gabarits : ils ne disent rien de ce client-là. */
 const RULES_CLASSIFIER = /^rules/;
 
+/** Ce qu'on écrit quand le message a été relu et qu'aucune phrase ne prouve un intérêt. */
+export const NO_PROOF = "Pas de preuve d'intérêt explicite dans le dernier message";
+
 /**
- * Compose la phrase affichée en colonne « Ce que dit le client ».
+ * « (attend : …) » — ce que le client attend, déduit du motif du triage.
+ * Court, sans verbe redondant, jamais un code.
+ */
+export function expectationOf(reason: string | null): string | null {
+  const r = (reason ?? "").trim();
+  if (!r) return null;
+  let m: RegExpExecArray | null;
+  if ((m = /^Demande (.+)$/i.exec(r))) return `attend : ${m[1]}`;
+  if ((m = /^Attend (.+)$/i.exec(r))) return `attend : ${m[1]}`;
+  if (/^Relance/i.test(r)) return "attend : une réponse";
+  if (/signer|signature/i.test(r)) return "attend : la signature";
+  if ((m = /^Souhaite avancer(?:, demande une modification[^—]*)?(?: — (.+))?$/i.exec(r))) {
+    return m[1] ? `attend : ${m[1]}` : "attend : la prochaine étape";
+  }
+  return "attend : une réponse";
+}
+
+/**
+ * Compose la colonne « Preuve d'intérêt ».
  *
- * Trois sources, du plus fidèle au plus générique :
- *   1. la citation textuelle retenue au moment de classer ;
- *   2. le résumé du modèle, reformulation courte mais fidèle du message ;
- *   3. le motif du triage, gabarit identique d'une ligne à l'autre.
- * La parenthèse « ce qu'il attend » reprend le motif du triage, en minuscule,
- * et disparaît quand elle répéterait la phrase.
+ * Trois états, et ils ne se confondent pas :
+ *   — citation      : le message a été relu et une phrase prouve l'intérêt ;
+ *   — aucune        : le message a été relu (quote = chaîne vide) et rien ne
+ *                     prouve un intérêt explicite — on le dit, on n'invente pas ;
+ *   — non analysé   : message antérieur à la citation (quote = null), rattrapé
+ *                     à la prochaine synchronisation ; en attendant, le résumé
+ *                     fidèle du modèle, sinon le motif du triage.
  */
 export function whatClientSays(row: {
   reason: string | null;
   quote: string | null;
   summary: string | null;
   classifier: string | null;
-}): { said: string; expects: string | null; quote: string | null } {
+}): { said: string; expects: string | null; quote: string | null; proof: "citation" | "aucune" | "non_analyse" } {
   const reason = (row.reason ?? "").trim();
-  const expects = reason ? reason.charAt(0).toLowerCase() + reason.slice(1) : null;
-  const quote = (row.quote ?? "").trim();
-  if (quote) return { said: `« ${quote} »`, expects, quote };
+  const expects = expectationOf(reason);
+
+  if (row.quote != null) {
+    const quote = row.quote.trim();
+    if (quote) return { said: `« ${quote} »`, expects, quote, proof: "citation" };
+    return { said: NO_PROOF, expects, quote: null, proof: "aucune" };
+  }
 
   const summary = (row.summary ?? "").trim();
   const fromModel = summary && row.classifier && !RULES_CLASSIFIER.test(row.classifier);
   if (fromModel && summary.toLowerCase() !== reason.toLowerCase()) {
-    return { said: summary, expects, quote: null };
+    return { said: summary, expects, quote: null, proof: "non_analyse" };
   }
-  return { said: reason, expects: null, quote: null };
+  return { said: reason, expects: null, quote: null, proof: "non_analyse" };
 }
 
 /**

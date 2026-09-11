@@ -830,6 +830,9 @@ CREATE TABLE IF NOT EXISTS deal_of_week (
   -- Lundi (ISO) de la semaine pour laquelle l'affaire a été choisie.
   week_start     TEXT NOT NULL,
   selected_at    TEXT NOT NULL,
+  -- Angle de challenge (clé de DEAL_OF_WEEK_ANGLES). NULL sur les choix
+  -- antérieurs à l'angle : affichés « Autre ».
+  angle          TEXT,
   comment        TEXT,
   status         TEXT NOT NULL DEFAULT 'en_cours',
   closed_at      TEXT,
@@ -960,6 +963,13 @@ function migrate(db: DatabaseSync): void {
     if (signalColumns.length > 0 && !signalColumns.some((c) => c.name === name)) {
       db.exec(`ALTER TABLE mail_signal ADD COLUMN ${name} ${type}`);
     }
+  }
+
+  // « Ma semaine » — l'angle de challenge de l'affaire de la semaine, ajouté
+  // après la création de la table sur les bases déjà amorcées.
+  const dealColumns = db.prepare("PRAGMA table_info(deal_of_week)").all() as { name: string }[];
+  if (dealColumns.length > 0 && !dealColumns.some((c) => c.name === "angle")) {
+    db.exec("ALTER TABLE deal_of_week ADD COLUMN angle TEXT");
   }
 
   const leadColumns = db.prepare("PRAGMA table_info(lead)").all() as { name: string }[];

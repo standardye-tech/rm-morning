@@ -167,18 +167,19 @@ function Attachment({ event }: { event: MorningEvent }) {
 }
 
 /**
- * Ce que dit le client, tel qu'on le lit.
+ * La preuve d'intérêt, telle qu'on la lit.
  *
  * La phrase citée d'abord — c'est elle qui rend la ligne reconnaissable —,
- * puis, dans le bloc « attend une réponse », ce qu'il attend entre parenthèses.
- * La parenthèse ne s'affiche que si elle apporte quelque chose : quand la ligne
- * n'a que le motif du triage, le répéter n'apprendrait rien.
+ * puis, dans le bloc « attend une réponse », ce qu'il attend entre parenthèses
+ * (« attend : confirmation planning »). Quand le message a été relu sans rien
+ * de probant, la ligne le dit en clair plutôt que de montrer une phrase
+ * générique. La parenthèse disparaît quand elle répéterait la phrase.
  */
 function Said({ event, withExpectation }: { event: MorningEvent; withExpectation: boolean }) {
   const showExpectation = withExpectation && event.expects && event.said !== event.reason;
   return (
     <>
-      <span className={event.quote ? "text-ink" : undefined}>{event.said}</span>
+      <span className={event.quote ? "text-ink" : "text-ink-soft"}>{event.said}</span>
       {showExpectation ? <span className="text-ink-faint"> ({event.expects})</span> : null}
     </>
   );
@@ -378,7 +379,7 @@ export function HotClients({ events, board }: { events: MorningEvent[]; board: B
       ) : (
         <EventTable
           events={events}
-          columns={{ what: "Ce que dit le client", when: "Reçu" }}
+          columns={{ what: "Preuve d'intérêt", when: "Reçu" }}
           board={board}
           withExpectation={false}
         />
@@ -406,7 +407,7 @@ export function WaitingClients({ events, board }: { events: MorningEvent[]; boar
       ) : (
         <EventTable
           events={events}
-          columns={{ what: "Ce qu'il attend", when: "Depuis" }}
+          columns={{ what: "Preuve d'intérêt", when: "Depuis" }}
           board={board}
           withExpectation
         />

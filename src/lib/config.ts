@@ -308,6 +308,79 @@ export const WEEK_FALLBACK_ORDER: WeekSlotKind[] = [
 ];
 
 /**
+ * Affaire de la semaine — angles de challenge.
+ *
+ * L'angle remplace le « pourquoi cette affaire » : il dit ce que le point va
+ * travailler, et son objectif dit ce que le directeur doit en obtenir. C'est
+ * l'« obtenir quoi » du créneau planifié.
+ */
+export const DEAL_OF_WEEK_ANGLES = [
+  { key: "qualification", label: "Qualification", objective: "Vérifier que besoin, budget et décideur sont qualifiés, et corriger ce qui manque" },
+  { key: "strategie_client", label: "Stratégie client", objective: "Obtenir un plan d'action clair jusqu'à la prochaine étape" },
+  { key: "urgence", label: "Création d'urgence", objective: "Obtenir une échéance partagée avec le client, et ce qui la justifie" },
+  { key: "estimation", label: "Estimation", objective: "Obtenir une estimation envoyée, expliquée et défendue" },
+  { key: "visite_artisan", label: "Visite artisan", objective: "Obtenir une date de visite artisan confirmée avec le client" },
+  { key: "planning", label: "Planning", objective: "Obtenir un planning de démarrage accepté par le client" },
+  { key: "closing", label: "Closing", objective: "Obtenir une date de signature et lever le dernier frein" },
+  { key: "autre", label: "Autre", objective: "Définir l'objectif du point avec l'ET, précisé dans la note" },
+] as const;
+
+export type DealOfWeekAngle = (typeof DEAL_OF_WEEK_ANGLES)[number]["key"];
+
+/**
+ * Affaire recommandée de la semaine — « RM Morning propose, Sami arbitre ».
+ *
+ * Des points nommés, jamais un score opaque : chaque critère ajoute des points
+ * et une étiquette lisible. Les pénalités d'historique viennent de
+ * `deal_of_week`. Validé le 11/09/2026.
+ */
+export const DEAL_OF_WEEK_RECOMMENDATION = {
+  /** Plancher de montant : en dessous, aucun intérêt pédagogique. */
+  minGmv: 10_000,
+  /** Présélection : activité dans cette fenêtre, ou création récente. */
+  recentActivityDays: 30,
+  newDealDays: 14,
+  /** Au-delà, l'affaire est dormante : on ne challenge pas un dossier mort. */
+  staleDays: 45,
+  /** Fenêtres de « mouvement ». */
+  freshActivityDays: 7,
+  recentDays: 14,
+  /** Une étude de dossier est « récente » jusqu'à cet âge : la qualification est challengeable. */
+  freshDealDays: 21,
+  /** Montant significatif sans être un gros dossier. */
+  significantGmv: { lo: 25_000, hi: 150_000 },
+  /** Visite réalisée sans activité depuis ce délai : l'angle devient l'urgence. */
+  urgencyIdleDays: 10,
+  points: {
+    stage: { examenDevis: 3, visiteArtisan: 3, examenEstimation: 2, etudeDossierRecente: 2, etudeDossier: 1, signature: 1 },
+    activityFresh: 2,
+    activityRecent: 1,
+    plannedEvent: 2,
+    stageChanged: 1,
+    gmvSignificant: 2,
+    gmvModest: 1,
+    nextStepUndated: 1,
+    clientWaiting: 1,
+    /** Les oranges d'abord ; les rouges ont déjà leur créneau ; les verts restent éligibles. */
+    etOrange: 2,
+    etRouge: 1,
+    etVert: 1,
+  },
+  penalties: {
+    chosenLastWeek: -4,
+    chosenRecently: -2,
+    /** Semaines couvertes par « choisie récemment » (2 et 3). */
+    recentWeeks: 3,
+    /** Ignorer ne bannit pas : une seule semaine de pénalité. */
+    ignoredLastWeek: -3,
+    sameOwnerLastWeek: -1,
+  },
+  /** Diversité : un même ET ou un même angle est sauté si un autre candidat est à cette distance. */
+  diversity: { ownerTolerance: 2, angleTolerance: 1 },
+  alternatives: 2,
+} as const;
+
+/**
  * Semaine affichée. La semaine courante jusqu'au vendredi inclus ; à partir du
  * samedi, la semaine suivante — c'est celle qu'on prépare.
  */

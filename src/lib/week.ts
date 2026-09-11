@@ -20,8 +20,18 @@ import {
   type Recommendation,
 } from "./attention";
 import { bigDealTitle, detectBigDeals, type BigDeal, type BigDealCandidate } from "./big-deals";
-import { ATTENTION, BIG_DEALS, RADAR, WEEK_SLOTS, WEEK_VIEW } from "./config";
-import { currentDealOfWeek, type DealOfWeekRecord } from "./deal-of-week-store";
+import { ATTENTION, BIG_DEALS, DEAL_OF_WEEK_ANGLES, RADAR, WEEK_SLOTS, WEEK_VIEW } from "./config";
+import {
+  recommend,
+  type RecommendationCandidate,
+  type RecommendationSet,
+} from "./deal-of-week-recommend";
+import {
+  currentDealOfWeek,
+  isWeekIgnored,
+  recentDealOfWeekHistory,
+  type DealOfWeekRecord,
+} from "./deal-of-week-store";
 import { buildForecastV2 } from "./forecast-v2";
 import { computeMetrics, daysSinceActivity } from "./metrics";
 import { computeOpportunityMetrics, loadMilestoneOpportunities } from "./opportunity-metrics";
@@ -62,9 +72,11 @@ export type DealOfWeekView = {
   stage: string | null;
   /** L'affaire n'est plus active dans Salesforce : signée, perdue ou en stand-by. */
   inactiveReason: string | null;
+  /** Angle de challenge choisi, son libellé et l'objectif du point qui en découle. */
+  angle: string;
+  angleLabel: string;
+  objective: string;
   recommendation: Recommendation;
-  /** Les axes à challenger, aide-mémoire fixe. */
-  axes: string[];
 };
 
 export type WeekView = {
@@ -76,6 +88,9 @@ export type WeekView = {
   verdicts: AttentionVerdict[];
   bigDeals: BigDeal[];
   dealOfWeek: DealOfWeekView | null;
+  /** Recommandation de la semaine, quand aucune affaire n'est en cours et que la semaine n'est pas ignorée. */
+  recommendation: RecommendationSet | null;
+  ignoredThisWeek: boolean;
   candidates: DealCandidate[];
   radar: { all: RadarContact[]; toProcess: RadarContact[]; interviews: RadarContact[] };
   actions: WeekItem[];
@@ -84,24 +99,22 @@ export type WeekView = {
   notes: string[];
 };
 
-export const DEAL_OF_WEEK_AXES = [
-  "Qualité de qualification",
-  "Stratégie client",
-  "Prochaines étapes",
-  "Création de l'urgence",
-  "Disponibilité artisan",
-  "Estimation",
-  "Visite artisan",
-  "Closing",
-];
+/** L'angle choisi, ou « Autre » pour les choix antérieurs à l'angle. */
+function angleOf(key: string | null) {
+  return DEAL_OF_WEEK_ANGLES.find((a) => a.key === key) ?? DEAL_OF_WEEK_ANGLES[DEAL_OF_WEEK_ANGLES.length - 1];
+}
 
-const DEAL_OF_WEEK_RECOMMENDATION: Recommendation = {
-  minutes: 30,
-  action: "Challenger stratégie et méthode",
-  lookWhere: "Salesforce, l'affaire et son historique",
-  lookFor: "Qualification, stratégie client, prochaines étapes, urgence, artisan, estimation, visite, closing",
-  obtain: "Un plan d'action partagé avec l'ET, daté",
-};
+/** Le point sur l'affaire de la semaine : l'angle dicte l'action et l'objectif. */
+function dealOfWeekRecommendation(angleKey: string | null): Recommendation {
+  const angle = angleOf(angleKey);
+  return {
+    minutes: 30,
+    action: `Challenger : ${angle.label.toLowerCase()}`,
+    lookWhere: "Salesforce, l'affaire et son historique",
+    lookFor: "Ce que l'ET a fait, prévu et obtenu sur cet angle",
+    obtain: angle.objective,
+  };
+}
 
 const DAY_MONTH = new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "long" });
 const DAY_ONLY = new Intl.DateTimeFormat("fr-FR", { day: "numeric" });
@@ -268,10 +281,63 @@ export function buildWeek(now = new Date()): WeekView {
             : o.isStandby
               ? `Affaire en stand-by jusqu'au ${o.standbyUntil ?? "?"}.`
               : null,
-      recommendation: DEAL_OF_WEEK_RECOMMENDATION,
-      axes: DEAL_OF_WEEK_AXES,
+      angle: angleOf(record.angle).key,
+      angleLabel: angleOf(record.angle).label,
+      objective: angleOf(record.angle).objective,
+      recommendation: dealOfWeekRecommendation(record.angle),
     };
   }
+
+  // --- Affaire recommandée -----------------------------------------------------
+  // « RM Morning propose, Sami arbitre » : proposée seulement s'il n'y a pas
+  // d'affaire en cours et si la semaine n'a pas été ignorée. Les entrées sont
+  // des données déjà calculées ; le moteur pur note et explique.
+  const ignoredThisWeek = isWeekIgnored(weekStart);
+  const bigDealIds = new Set(bigDeals.map((d) => d.opportunityId));
+  const verdictByOwner = new Map(verdicts.map((v) => [v.salesperson, v]));
+  const eligibleOwners = new Set(team.filter((m) => !excluded.has(m.name)).map((m) => m.name));
+  const recoCandidates: RecommendationCandidate[] = active.map((o) => {
+    const m = milestoneById.get(o.opportunityId);
+    const s = stability.get(o.opportunityId);
+    return {
+      opportunityId: o.opportunityId,
+      owner: o.owner,
+      firstName: firstNameOf.get(o.owner) ?? o.owner,
+      client: clientOf(o),
+      gmv: o.gmv,
+      stage: o.stage,
+      createdAt: o.createdAt,
+      lastActivityAt: o.lastActivityAt,
+      isActive: o.isActive,
+      milestone: m
+        ? {
+            status: m.milestoneStatus,
+            nextExpectedEvent: m.nextExpectedEvent,
+            nextExpectedDueAt: m.nextExpectedDueAt,
+            estimationSentAt: m.estimationSentAt,
+            devisSentAt: m.devisSentAt,
+            nextVisitAt: m.nextVisitAt,
+            clientWaiting: m.clientWaiting,
+          }
+        : null,
+      stageChangedRecently: !!s && s.changeObserved && s.provenDays <= 14,
+      attention: verdictByOwner.get(o.owner)?.attention.level ?? null,
+      ownerEligible: eligibleOwners.has(o.owner),
+      // Au-delà du seuil gros dossier, jamais une affaire de la semaine : même
+      // hors des huit affichés, ce n'est pas un support de méthode.
+      isBigDeal: bigDealIds.has(o.opportunityId) || (o.gmv ?? 0) >= BIG_DEALS.minGmv,
+      isCurrent: record?.opportunityId === o.opportunityId,
+    };
+  });
+  const historyStart = addDays(weekStart, -7 * 4);
+  const history = recentDealOfWeekHistory(historyStart).map((h) => ({
+    opportunityId: h.opportunityId,
+    salesperson: h.salesperson,
+    weekStart: h.weekStart,
+    status: h.status,
+  }));
+  const recommendation =
+    record || ignoredThisWeek ? null : recommend(recoCandidates, today, weekStart, history);
 
   const dealCandidates: DealCandidate[] = active
     .map((o) => ({
@@ -329,7 +395,7 @@ export function buildWeek(now = new Date()): WeekView {
       score: 1,
       title: `${dealOfWeek.firstName} – ${dealOfWeek.client}${dealOfWeek.gmv != null ? ` – ${kEur(dealOfWeek.gmv)}` : ""}`,
       who: dealOfWeek.record.salesperson,
-      reason: dealOfWeek.record.comment?.trim() || "Affaire choisie comme support de management",
+      reason: `Angle : ${dealOfWeek.angleLabel}${dealOfWeek.record.comment?.trim() ? ` · ${dealOfWeek.record.comment.trim()}` : ""}`,
       recommendation: dealOfWeek.recommendation,
       href: `/forecast?commercial=${encodeURIComponent(dealOfWeek.record.salesperson)}`,
     });
@@ -410,6 +476,8 @@ export function buildWeek(now = new Date()): WeekView {
     verdicts,
     bigDeals,
     dealOfWeek,
+    recommendation,
+    ignoredThisWeek,
     candidates: dealCandidates,
     radar: { all: radarAll, toProcess, interviews },
     actions,

@@ -47,7 +47,8 @@
     "cloud:verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs scripts/verify-cloud.mjs",
     "semaine:verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/verify-semaine.mjs",
     "monitoring:verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/verify-monitoring-perimetre.mjs",
-    "morning:lot-verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/verify-morning-lot.mjs"
+    "morning:lot-verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/verify-morning-lot.mjs",
+    "morning:proof-audit": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/audit-interest-proof.mjs"
   },
   "dependencies": {
     "next": "16.3.1",

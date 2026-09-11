@@ -145,9 +145,15 @@ plus (`src/lib/stage-history.ts`).
 
 - **Gros dossiers** (`big-deals.ts`, seuils `BIG_DEALS`) : ≥ 100 k€ et au moins
   un critère de maturité ; objectif closer / débloquer / accélérer / arbitrer.
-- **Affaire de la semaine** (`deal-of-week-store.ts`, table `deal_of_week`) :
-  choix manuel d'une affaire comme support de management, conservée jusqu'à
-  clôture ou remplacement. Aucune proposition automatique en V1.
+- **Affaire de la semaine** (`deal-of-week-recommend.ts`, `deal-of-week-store.ts`,
+  table `deal_of_week`) : RM Morning propose une affaire et deux alternatives,
+  Sami arbitre. Présélection lisible (active, ≥ 10 k€, ET du périmètre,
+  activité récente, ni dormante ni gros dossier), points nommés par critère
+  (étape, mouvement, montant, prochaine étape floue, attention de l'ET),
+  pénalités d'historique tirées de la table, diversité d'ET et d'angle. L'angle
+  de challenge est suggéré d'après l'étape et reste modifiable. Ignorer la
+  semaine est un choix enregistré, jamais une affaire imposée. Le choix manuel
+  parmi tout le pipe reste disponible en secours.
 - **Planning recommandé** (`week-plan.ts`, grille `WEEK_SLOTS`) : chaque
   créneau-type reçoit le meilleur élément de son type ; un créneau vide est
   réaffecté dans l'ordre `WEEK_FALLBACK_ORDER`, sinon affiché disponible. Rien
