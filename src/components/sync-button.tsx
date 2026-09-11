@@ -150,7 +150,7 @@ export function SyncButton({ initial }: { initial: Payload }) {
 
   return (
     <div className="relative flex shrink-0 items-center gap-3">
-      <div className="hidden text-right text-xs leading-tight text-ink-faint xl:block">
+      <div className="hidden max-w-[18rem] text-right text-xs leading-tight text-ink-faint 2xl:block">
         {running ? (
           <span className="text-ink-soft">Actualisation en cours…</span>
         ) : run == null ? (
@@ -171,7 +171,7 @@ export function SyncButton({ initial }: { initial: Payload }) {
             <span className="block text-warning">
               Actualisation partielle — {humanTime(run.completedAt)}
             </span>
-            <span className="block">{run.warnings[0] ?? ""}</span>
+            <span className="block truncate" title={run.warnings[0] ?? ""}>{run.warnings[0] ?? ""}</span>
           </>
         ) : (
           <>

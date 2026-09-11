@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import {
+  acknowledgeAllEvents,
   acknowledgeEvent,
   markActionDone,
   markMorningRead,
@@ -20,6 +21,7 @@ export async function POST(request: Request) {
     action?: string;
     messageId?: string;
     actionKey?: string;
+    category?: string;
   };
 
   switch (body.action) {
@@ -31,6 +33,15 @@ export async function POST(request: Request) {
       // reviendra au Morning suivant.
       const done = acknowledgeEvent(body.messageId);
       return NextResponse.json({ ok: true, changed: done });
+    }
+    case "tout_pris_en_compte": {
+      // Un bloc (« chaud » ou « attente ») ou les deux. La liste des messages
+      // est recalculée côté serveur : ce qui est acquitté est ce que RM Morning
+      // considère ouvert à cet instant, pas ce qu'un onglet affichait.
+      const category =
+        body.category === "chaud" || body.category === "attente" ? body.category : null;
+      const result = acknowledgeAllEvents(category);
+      return NextResponse.json({ ok: true, ...result });
     }
     case "action_faite": {
       if (!body.actionKey) {

@@ -8,7 +8,10 @@ import { SyncButton, type SyncSnapshot } from "@/components/sync-button";
 
 const LINKS = [
   { href: "/", label: "Morning" },
-  // Performance vient juste après Morning : c'est la seconde question du matin
+  // Ma semaine vient en second : après « que se passe-t-il ce matin ? », la
+  // question suivante est « où mettre mon temps cette semaine ? ».
+  { href: "/semaine", label: "Ma semaine" },
+  // Performance vient juste après : c'est la seconde question du matin
   // — qui produit, et qui décroche — et elle se lit avant d'entrer dans le
   // détail opérationnel du Monitoring.
   { href: "/performance", label: "Performance" },
@@ -33,7 +36,7 @@ export function Nav({
 
   return (
     <header className="border-b border-line bg-surface">
-      <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-2.5 md:px-6 md:py-4 lg:gap-8">
+      <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-2.5 md:px-6 md:py-4 xl:gap-8">
         <Link
           href="/"
           className="shrink-0 whitespace-nowrap text-[15px] font-semibold tracking-tight"
@@ -49,11 +52,15 @@ export function Nav({
           page entière latéralement mobile. Sous `lg`, elle cède au menu.
         */}
         {/*
-          Sept entrées désormais. La rangée bascule toujours au menu sous `lg` ;
-          au-dessus, l'espacement est resserré pour que « Actualiser » reste
-          visible sans provoquer de défilement latéral.
+          Sept entrées ensuite, espacement resserré, bascule toujours à `lg`.
+
+          Huit entrées avec « Ma semaine ». Mesuré le 11/09/2026 : à 1024 px la
+          rangée réclamait déjà 1090 px sans la nouvelle entrée (le bouton
+          d'actualisation seul en prend 171) et 1189 px avec. Elle bascule donc
+          au menu sous `xl`, exactement comme elle était passée de `md` à `lg`
+          pour la même raison. À 1280 px et au-delà, tout tient sans défilement.
         */}
-        <nav className="hidden gap-0.5 lg:flex">
+        <nav className="hidden gap-0.5 xl:flex">
           {LINKS.map((link) => {
             const active = pathname === link.href;
             return (
@@ -82,7 +89,7 @@ export function Nav({
         <Link
           href="/monitoring?vue=pistes"
           title={`${exceptions.fresh} exception(s) nouvelle(s) · ${exceptions.legacy} en dette héritée`}
-          className="ml-auto hidden items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-ink-soft transition-colors hover:bg-canvas hover:text-ink lg:flex"
+          className="ml-auto hidden items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-ink-soft transition-colors hover:bg-canvas hover:text-ink xl:flex"
         >
           <span aria-hidden>🔔</span>
           {exceptions.fresh > 0 ? (
@@ -93,7 +100,7 @@ export function Nav({
             <span className="text-xs text-ink-faint">0</span>
           )}
           {exceptions.legacy > 0 ? (
-            <span className="hidden text-xs text-ink-faint lg:inline">+{exceptions.legacy} dette</span>
+            <span className="hidden text-xs text-ink-faint xl:inline">+{exceptions.legacy} dette</span>
           ) : null}
         </Link>
 
@@ -102,7 +109,7 @@ export function Nav({
           largeur : sur mobile il était rejeté à 789 px du bord gauche, donc
           hors de l'écran. Il est désormais dans la rangée, avant le menu.
         */}
-        <div className="ml-auto flex shrink-0 items-center gap-2 lg:ml-0 lg:gap-3">
+        <div className="ml-auto flex shrink-0 items-center gap-2 xl:ml-0 xl:gap-3">
           <SyncButton initial={sync} />
 
           <button
@@ -111,7 +118,7 @@ export function Nav({
             aria-expanded={open}
             aria-controls="nav-mobile"
             aria-label={open ? "Fermer le menu" : `Menu — page courante : ${current}`}
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-line text-ink-soft transition-colors hover:bg-canvas hover:text-ink lg:hidden"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-line text-ink-soft transition-colors hover:bg-canvas hover:text-ink xl:hidden"
           >
             <span aria-hidden className="text-base leading-none">
               {open ? "✕" : "☰"}
@@ -126,7 +133,7 @@ export function Nav({
         pouce sans viser juste.
       */}
       {open ? (
-        <nav id="nav-mobile" className="border-t border-line lg:hidden">
+        <nav id="nav-mobile" className="border-t border-line xl:hidden">
           {LINKS.map((link) => {
             const active = pathname === link.href;
             return (

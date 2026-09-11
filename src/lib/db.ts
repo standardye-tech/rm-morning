@@ -817,6 +817,48 @@ CREATE TABLE IF NOT EXISTS team_candidate (
   last_seen_at TEXT NOT NULL
 );
 
+-- « Ma semaine » — affaire de la semaine.
+-- Une opportunité choisie À LA MAIN comme support de management pour challenger
+-- un Expert Travaux. Ce n'est pas un gros dossier : elle peut être minuscule et
+-- venir de démarrer. Une seule est « en_cours » à la fois ; en choisir une autre
+-- passe la précédente en « remplacee », la clore la passe en « cloturee ». Rien
+-- n'est jamais supprimé : l'historique des choix dit ce qui a été travaillé.
+CREATE TABLE IF NOT EXISTS deal_of_week (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  opportunity_id TEXT NOT NULL,
+  salesperson    TEXT NOT NULL,
+  -- Lundi (ISO) de la semaine pour laquelle l'affaire a été choisie.
+  week_start     TEXT NOT NULL,
+  selected_at    TEXT NOT NULL,
+  comment        TEXT,
+  status         TEXT NOT NULL DEFAULT 'en_cours',
+  closed_at      TEXT,
+  updated_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_deal_of_week_status ON deal_of_week (status, selected_at);
+
+-- « Ma semaine » — radar recrutement ET et sourcing architectes.
+-- Pipeline commun aux deux catégories, saisi à la main en V1. Les sources
+-- automatiques (HelloWork, web) alimenteront plus tard la même table via la
+-- colonne « source ». Aucune donnée n'est collectée sans action du directeur.
+CREATE TABLE IF NOT EXISTS radar_contact (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  category       TEXT NOT NULL,
+  name           TEXT NOT NULL,
+  company        TEXT,
+  location       TEXT,
+  url            TEXT,
+  phone          TEXT,
+  email          TEXT,
+  notes          TEXT,
+  status         TEXT NOT NULL DEFAULT 'nouveau',
+  next_action_at TEXT,
+  source         TEXT NOT NULL DEFAULT 'manuel',
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_radar_status ON radar_contact (status, next_action_at);
+
 CREATE INDEX IF NOT EXISTS idx_forecast_month ON forecast_snapshot (forecast_month, snapshot_date);
 CREATE INDEX IF NOT EXISTS idx_forecast_opp ON forecast_snapshot (opportunity_id);
 
@@ -905,9 +947,15 @@ function migrate(db: DatabaseSync): void {
   // Sans ces colonnes, Morning ne pouvait pas distinguer « affaire du pipe » de
   // « chantier en cours » ni afficher une piste identifiée.
   const signalColumns = db.prepare("PRAGMA table_info(mail_signal)").all() as { name: string }[];
+  // Morning — la phrase du client. Au plus 160 caractères recopiés du dernier
+  // message, retenus au moment de classer : c'est la seule trace du contenu
+  // d'un message que RM Morning conserve, et elle sert à dire pourquoi un
+  // client est chaud plutôt qu'un gabarit identique d'une ligne à l'autre.
+  // Chaîne vide = rattrapage tenté, aucune phrase parlante trouvée.
   for (const [name, type] of [
     ["match_kind", "TEXT"],
     ["lead_id", "TEXT"],
+    ["quote", "TEXT"],
   ] as [string, string][]) {
     if (signalColumns.length > 0 && !signalColumns.some((c) => c.name === name)) {
       db.exec(`ALTER TABLE mail_signal ADD COLUMN ${name} ${type}`);

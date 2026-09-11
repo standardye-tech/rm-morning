@@ -18,6 +18,12 @@ import { kEur } from "@/lib/vocabulary";
  * Ce geste acquitte un MESSAGE, pas un client : le prochain message du même
  * client reviendra. Rien n'est écrit dans Gmail.
  *
+ * Les trois blocs partagent UN état (`MorningBoard`) : un message acquitté dans
+ * « Clients chauds » ou « Clients qui attendent » disparaît aussitôt du plan du
+ * jour s'il y figurait pour la même raison, et une action cochée dans le plan
+ * marque son message « traité » dans le bloc du dessus. Avant, chaque bloc
+ * gardait son propre état et la même affaire restait affichée deux fois.
+ *
  * Vocabulaire : aucune ligne ne suppose de connaître Salesforce, les
  * statistiques, ni un nom de variable. Le score de priorité existe mais ne
  * s'affiche jamais — l'utilisateur lit une raison, pas une formule.
@@ -25,20 +31,28 @@ import { kEur } from "@/lib/vocabulary";
 
 const VISIBLE = 8;
 
-function useAcknowledge() {
-  const [done, setDone] = useState<Set<string>>(new Set());
-  const [pending, start] = useTransition();
-  const acknowledge = (messageId: string) => {
-    setDone((s) => new Set(s).add(messageId));
-    start(async () => {
-      await fetch("/api/morning", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "pris_en_compte", messageId }),
-      });
-    });
-  };
-  return { done, pending, acknowledge };
+type Category = "chaud" | "attente";
+
+/** L'état partagé des trois blocs, et les gestes qui le font évoluer. */
+type Board = {
+  /** Messages pris en compte, quel que soit le bloc où le geste a été fait. */
+  acknowledged: Set<string>;
+  /** Messages acquittés DEPUIS les blocs 1 et 2 : ceux-là quittent le plan du jour. */
+  handledAbove: Set<string>;
+  /** Actions du plan cochées « Done ». */
+  doneActions: Set<string>;
+  acknowledge: (messageId: string) => void;
+  acknowledgeAll: (category: Category | null) => void;
+  complete: (actionKey: string, messageId: string | null) => void;
+  busy: boolean;
+};
+
+async function post(body: object) {
+  await fetch("/api/morning", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
 function AckButton({
@@ -63,6 +77,38 @@ function AckButton({
       className="h-9 rounded border border-line px-3 text-xs text-ink-soft transition-opacity hover:text-ink focus-visible:opacity-100 md:h-auto md:border-0 md:px-1 md:py-0  md:text-ink-faint md:underline md:decoration-dotted md:underline-offset-2 md:opacity-0 md:group-hover/row:opacity-100"
     >
       Pris en compte
+    </button>
+  );
+}
+
+/**
+ * « Tout marquer comme lu ».
+ *
+ * Annonce ce qu'il change pour l'utilisateur — le nombre de lignes encore
+ * ouvertes — et disparaît à zéro. La persistance est celle des cases
+ * individuelles : même statut, même colonne, et les acquittements déjà
+ * enregistrés ne sont pas réécrits.
+ */
+function MarkAllButton({
+  count,
+  busy,
+  onClick,
+  label = "Tout marquer comme lu",
+}: {
+  count: number;
+  busy: boolean;
+  onClick: () => void;
+  label?: string;
+}) {
+  if (count === 0) return null;
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      onClick={onClick}
+      className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-md border border-line px-3 py-1.5 text-xs text-ink-soft transition-colors hover:bg-canvas hover:text-ink disabled:opacity-50 md:min-h-0"
+    >
+      {label} ({count})
     </button>
   );
 }
@@ -121,6 +167,27 @@ function Attachment({ event }: { event: MorningEvent }) {
 }
 
 /**
+ * Ce que dit le client, tel qu'on le lit.
+ *
+ * La phrase citée d'abord — c'est elle qui rend la ligne reconnaissable —,
+ * puis, dans le bloc « attend une réponse », ce qu'il attend entre parenthèses.
+ * La parenthèse ne s'affiche que si elle apporte quelque chose : quand la ligne
+ * n'a que le motif du triage, le répéter n'apprendrait rien.
+ */
+function Said({ event, withExpectation }: { event: MorningEvent; withExpectation: boolean }) {
+  const showExpectation = withExpectation && event.expects && event.said !== event.reason;
+  return (
+    <>
+      <span className={event.quote ? "text-ink" : undefined}>{event.said}</span>
+      {showExpectation ? <span className="text-ink-faint"> ({event.expects})</span> : null}
+    </>
+  );
+}
+
+const saidTitle = (event: MorningEvent) =>
+  event.said === event.reason ? event.said : `${event.said} — ${event.reason}`;
+
+/**
  * Une action, telle qu'on la lit au pouce.
  *
  * Sous `md` la grille à sept colonnes ne tient pas : la ramener de force dans
@@ -134,11 +201,13 @@ function MobileEventRow({
   when,
   done,
   onAck,
+  withExpectation,
 }: {
   event: MorningEvent;
   when: string;
   done: boolean;
   onAck: (id: string) => void;
+  withExpectation: boolean;
 }) {
   return (
     <li className="px-4 py-3">
@@ -152,7 +221,9 @@ function MobileEventRow({
         Deux lignes avant l'ellipse. Le survol n'existe pas au doigt : se
         reposer sur `title` aurait rendu la raison inaccessible sur mobile.
       */}
-      <p className="mt-1 line-clamp-2 text-sm leading-snug text-ink">{event.reason}</p>
+      <p className="mt-1 line-clamp-2 text-sm leading-snug text-ink">
+        <Said event={event} withExpectation={withExpectation} />
+      </p>
       <div className="mt-1.5 flex items-center justify-between gap-3">
         <p className="min-w-0 flex-1 truncate text-xs text-ink-soft">
           {event.salesperson ?? "—"} · <Attachment event={event} /> · {when}
@@ -168,15 +239,19 @@ function MobileEventRow({
 function EventTable({
   events,
   columns,
+  board,
+  withExpectation,
 }: {
   events: MorningEvent[];
   columns: { what: string; when: string };
+  board: Board;
+  withExpectation: boolean;
 }) {
-  const { done, acknowledge } = useAcknowledge();
   const [expanded, setExpanded] = useState(false);
   const shown = expanded ? events : events.slice(0, VISIBLE);
   // Un marqueur porté par toutes les lignes ne hiérarchise rien.
   const allNew = events.length > 0 && events.every((e) => e.isNew);
+  const done = board.acknowledged;
 
   return (
     <>
@@ -187,7 +262,8 @@ function EventTable({
             event={e}
             when={received(e.sentAt)}
             done={done.has(e.messageId)}
-            onAck={acknowledge}
+            onAck={board.acknowledge}
+            withExpectation={withExpectation}
           />
         ))}
       </ul>
@@ -232,13 +308,13 @@ function EventTable({
                   {e.salesperson ?? "—"}
                 </td>
                 {/*
-                  Une ligne, toujours. La raison est parfois longue et la faire
+                  Une ligne, toujours. La phrase est parfois longue et la faire
                   passer sur deux lignes rendait la hauteur irrégulière, ce qui
                   casse le balayage vertical. Le texte complet reste accessible
                   au survol : rien n'est perdu, seule la mise en forme est fixe.
                 */}
-                <td className="truncate px-3 py-1" title={e.reason}>
-                  {e.reason}
+                <td className="truncate px-3 py-1" title={saidTitle(e)}>
+                  <Said event={e} withExpectation={withExpectation} />
                 </td>
                 <td className="tabular whitespace-nowrap px-3 py-1 text-right font-medium">
                   {kEur(e.gmv)}
@@ -253,7 +329,7 @@ function EventTable({
                   <AckButton
                     messageId={e.messageId}
                     done={done.has(e.messageId)}
-                    onClick={acknowledge}
+                    onClick={board.acknowledge}
                   />
                 </td>
               </tr>
@@ -279,35 +355,61 @@ function EventTable({
   );
 }
 
-export function HotClients({ events }: { events: MorningEvent[] }) {
+function remainingOf(events: MorningEvent[], board: Board): number {
+  return events.filter((e) => !board.acknowledged.has(e.messageId)).length;
+}
+
+export function HotClients({ events, board }: { events: MorningEvent[]; board: Board }) {
+  const remaining = remainingOf(events, board);
   return (
     <Card>
       <SectionTitle
         eyebrow="Bloc 1"
         title="Clients chauds depuis votre dernière lecture"
-        aside={`${events.length} client(s)`}
+        aside={
+          <span className="flex items-center gap-3">
+            <span>{events.length} client(s)</span>
+            <MarkAllButton count={remaining} busy={board.busy} onClick={() => board.acknowledgeAll("chaud")} />
+          </span>
+        }
       />
       {events.length === 0 ? (
         <EmptyState>Aucun client n&apos;a manifesté l&apos;envie d&apos;avancer depuis votre dernière lecture.</EmptyState>
       ) : (
-        <EventTable events={events} columns={{ what: "Ce que dit le client", when: "Reçu" }} />
+        <EventTable
+          events={events}
+          columns={{ what: "Ce que dit le client", when: "Reçu" }}
+          board={board}
+          withExpectation={false}
+        />
       )}
     </Card>
   );
 }
 
-export function WaitingClients({ events }: { events: MorningEvent[] }) {
+export function WaitingClients({ events, board }: { events: MorningEvent[]; board: Board }) {
+  const remaining = remainingOf(events, board);
   return (
     <Card>
       <SectionTitle
         eyebrow="Bloc 2"
         title="Clients qui attendent une réponse"
-        aside={`${events.length} client(s)`}
+        aside={
+          <span className="flex items-center gap-3">
+            <span>{events.length} client(s)</span>
+            <MarkAllButton count={remaining} busy={board.busy} onClick={() => board.acknowledgeAll("attente")} />
+          </span>
+        }
       />
       {events.length === 0 ? (
         <EmptyState>Aucun client n&apos;attend de réponse de notre côté.</EmptyState>
       ) : (
-        <EventTable events={events} columns={{ what: "Ce qu'il attend", when: "Depuis" }} />
+        <EventTable
+          events={events}
+          columns={{ what: "Ce qu'il attend", when: "Depuis" }}
+          board={board}
+          withExpectation
+        />
       )}
     </Card>
   );
@@ -322,32 +424,6 @@ const REASON_TONE: Record<string, "neutral" | "positive" | "warning" | "danger">
   a_challenger_vivante: "warning",
   proche_signature: "positive",
 };
-
-/**
- * Cocher une action du plan.
- *
- * Symétrique de `useAcknowledge`, et distinct pour une raison de fond : « Pris
- * en compte » acquitte un MESSAGE une fois pour toutes, « Done » clôt une
- * ACTION pour la journée. Le plan est reconstruit chaque matin ; une affaire
- * décisive traitée aujourd'hui doit pouvoir revenir demain si elle est toujours
- * décisive. Les deux gestes cohabitent : lorsque l'action porte un message, le
- * cocher l'acquitte aussi, exactement comme dans les blocs 1 et 2.
- */
-function useActionDone() {
-  const [done, setDone] = useState<Set<string>>(new Set());
-  const [, start] = useTransition();
-  const complete = (actionKey: string, messageId: string | null) => {
-    setDone((s) => new Set(s).add(actionKey));
-    start(async () => {
-      await fetch("/api/morning", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "action_faite", actionKey, messageId }),
-      });
-    });
-  };
-  return { done, complete };
-}
 
 /**
  * La case « Done » du plan du jour.
@@ -387,18 +463,37 @@ function DoneCheckbox({
   );
 }
 
+/**
+ * Une action du plan qui ne fait que recopier un message des blocs 1 ou 2.
+ *
+ * Seules ces deux raisons quittent le plan quand le message est traité en
+ * haut de page. Une affaire décisive ou en signature dont le client a écrit
+ * reste : sa raison d'être dans le plan n'est pas ce message.
+ */
+const echoesMessage = (a: MorningAction) =>
+  a.messageId != null && (a.reason === "client_motive" || a.reason === "client_attend");
+
 export function TodayPlan({
   actions,
   doneToday = 0,
+  board,
 }: {
   actions: MorningAction[];
   /** Actions déjà cochées aujourd'hui. Comptées, jamais listées. */
   doneToday?: number;
+  board: Board;
 }) {
-  const { done, complete } = useActionDone();
   const [expanded, setExpanded] = useState(false);
-  const shown = expanded ? actions : actions.slice(0, VISIBLE);
-  const remaining = actions.filter((a) => !done.has(a.key)).length;
+  const done = board.doneActions;
+
+  // Ce qui a été traité dans les blocs du dessus sort du plan, tout de suite.
+  // Ce qui a été coché ICI reste visible, estompé : c'est le geste habituel.
+  const visible = actions.filter(
+    (a) => !(echoesMessage(a) && board.handledAbove.has(a.messageId!) && !done.has(a.key)),
+  );
+  const removed = actions.length - visible.length;
+  const shown = expanded ? visible : visible.slice(0, VISIBLE);
+  const remaining = visible.filter((a) => !done.has(a.key)).length;
 
   return (
     <Card className="ring-1 ring-ink/5">
@@ -407,11 +502,16 @@ export function TodayPlan({
         title="À faire aujourd'hui"
         aside={
           doneToday > 0
-            ? `${actions.length} action(s) · ${doneToday} faite(s) aujourd'hui`
-            : `${actions.length} action(s)`
+            ? `${visible.length} action(s) · ${doneToday} faite(s) aujourd'hui`
+            : `${visible.length} action(s)`
         }
       />
-      {actions.length === 0 ? (
+      {removed > 0 ? (
+        <p className="border-b border-line px-4 py-2 text-xs text-ink-faint md:px-6">
+          {removed} action(s) retirée(s) : déjà traitée(s) dans les blocs ci-dessus.
+        </p>
+      ) : null}
+      {visible.length === 0 ? (
         <EmptyState>
           {doneToday > 0
             ? `Plan du jour terminé — ${doneToday} action(s) traitée(s) aujourd'hui.`
@@ -459,20 +559,20 @@ export function TodayPlan({
                     actionKey={a.key}
                     messageId={a.messageId}
                     done={done.has(a.key)}
-                    onDone={complete}
+                    onDone={board.complete}
                   />
                 </div>
               </li>
             ))}
           </ol>
-          {actions.length > VISIBLE ? (
+          {visible.length > VISIBLE ? (
             <button
               type="button"
               onClick={() => setExpanded((v) => !v)}
               className="w-full border-t border-line px-4 py-3 text-left text-sm text-ink-soft hover:text-ink md:px-6 md:py-2.5"
             >
               <span className="underline decoration-dotted">
-                {expanded ? "Replier" : `Voir toutes les actions (${actions.length})`}
+                {expanded ? "Replier" : `Voir toutes les actions (${visible.length})`}
               </span>
               <span className="ml-1" aria-hidden>
                 {expanded ? "▴" : "▾"}
@@ -482,6 +582,84 @@ export function TodayPlan({
         </>
       )}
     </Card>
+  );
+}
+
+// --- Les trois blocs, un seul état ----------------------------------------------
+
+/**
+ * Tient l'état commun des blocs 1, 2 et 3 et porte le bouton global « Tout
+ * marquer comme lu ». La persistance ne change pas : chaque geste écrit ce
+ * qu'écrivaient déjà les cases individuelles, et l'affichage local anticipe le
+ * résultat comme avant.
+ */
+export function MorningBoard({
+  hot,
+  waiting,
+  actions,
+  doneToday = 0,
+}: {
+  hot: MorningEvent[];
+  waiting: MorningEvent[];
+  actions: MorningAction[];
+  doneToday?: number;
+}) {
+  const [acknowledged, setAcknowledged] = useState<Set<string>>(new Set());
+  const [handledAbove, setHandledAbove] = useState<Set<string>>(new Set());
+  const [doneActions, setDoneActions] = useState<Set<string>>(new Set());
+  const [pending, start] = useTransition();
+
+  const add = (set: Set<string>, ids: string[]) => {
+    const next = new Set(set);
+    for (const id of ids) next.add(id);
+    return next;
+  };
+
+  const acknowledge = (messageId: string) => {
+    setAcknowledged((s) => add(s, [messageId]));
+    setHandledAbove((s) => add(s, [messageId]));
+    start(async () => {
+      await post({ action: "pris_en_compte", messageId });
+    });
+  };
+
+  const acknowledgeAll = (category: "chaud" | "attente" | null) => {
+    const events = category === "chaud" ? hot : category === "attente" ? waiting : [...hot, ...waiting];
+    const ids = events.map((e) => e.messageId);
+    setAcknowledged((s) => add(s, ids));
+    setHandledAbove((s) => add(s, ids));
+    start(async () => {
+      await post({ action: "tout_pris_en_compte", category });
+    });
+  };
+
+  const complete = (actionKey: string, messageId: string | null) => {
+    setDoneActions((s) => add(s, [actionKey]));
+    // Cocher dans le plan acquitte aussi le message : le bloc du dessus le
+    // montre « traité », exactement comme le fait déjà la route côté serveur.
+    if (messageId) setAcknowledged((s) => add(s, [messageId]));
+    start(async () => {
+      await post({ action: "action_faite", actionKey, messageId });
+    });
+  };
+
+  const board: Board = { acknowledged, handledAbove, doneActions, acknowledge, acknowledgeAll, complete, busy: pending };
+  const remainingAll = remainingOf(hot, board) + remainingOf(waiting, board);
+
+  return (
+    <div className="space-y-6">
+      {remainingAll > 0 ? (
+        <div className="flex items-center justify-end gap-3 text-xs text-ink-faint">
+          <span>
+            {remainingAll} message(s) à traiter dans les blocs 1 et 2
+          </span>
+          <MarkAllButton count={remainingAll} busy={pending} onClick={() => acknowledgeAll(null)} />
+        </div>
+      ) : null}
+      <HotClients events={hot} board={board} />
+      <WaitingClients events={waiting} board={board} />
+      <TodayPlan actions={actions} doneToday={doneToday} board={board} />
+    </div>
   );
 }
 

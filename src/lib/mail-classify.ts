@@ -37,6 +37,12 @@ export type Classification = {
   signalAt: string;
   /** `rules@1` ici ; un modèle inscrirait son propre identifiant. */
   classifier: string;
+  /**
+   * La phrase du message la plus parlante pour un manager : une demande, une
+   * condition, une échéance, un engagement. Recopiée TEXTUELLEMENT, au plus
+   * 160 caractères, jamais reformulée. Null quand rien ne s'y prête.
+   */
+  quote: string | null;
 };
 
 /** Message minimal nécessaire à la classification. */
@@ -127,6 +133,41 @@ const PENDING_POSITIVE: Marker[] = [
 const found = (text: string, markers: Marker[]): string[] =>
   markers.filter((m) => m.pattern.test(text)).map((m) => m.label);
 
+export const QUOTE_MAX_LENGTH = 160;
+
+/** Découpe un extrait en phrases lisibles. Les bribes trop courtes sont ignorées. */
+function sentencesOf(text: string): string[] {
+  return text
+    .replace(/\s+/g, " ")
+    .split(/(?<=[.!?…])\s+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length >= 12);
+}
+
+/** Tronque proprement, sur un mot, avec une ellipse. */
+function clip(sentence: string): string {
+  if (sentence.length <= QUOTE_MAX_LENGTH) return sentence;
+  const cut = sentence.slice(0, QUOTE_MAX_LENGTH - 1);
+  const space = cut.lastIndexOf(" ");
+  return `${space > 60 ? cut.slice(0, space) : cut}…`;
+}
+
+/**
+ * La phrase la plus parlante d'un extrait.
+ *
+ * D'abord la première phrase qui porte l'un des motifs donnés — c'est celle
+ * qui a fait le verdict, donc celle qui explique le mieux pourquoi ce client
+ * compte. À défaut, la première question : un client qui interroge attend
+ * quelque chose. Sinon rien : on ne fabrique pas de citation.
+ */
+export function extractQuote(text: string, patterns: RegExp[]): string | null {
+  const sentences = sentencesOf(text);
+  const hit = sentences.find((s) => patterns.some((p) => p.test(s)));
+  if (hit) return clip(hit);
+  const question = sentences.find((s) => s.includes("?"));
+  return question ? clip(question) : null;
+}
+
 /** Décode les entités HTML que Gmail laisse dans ses extraits. */
 function decode(text: string): string {
   return text
@@ -176,6 +217,7 @@ export function classifyMessage(message: ClassifiableMessage): Classification {
     reason: string,
     summary: string,
     blockerLabel: string | null = null,
+    markers: Marker[] = [],
   ): Classification => ({
     signalType,
     confidence: Number(confidence.toFixed(2)),
@@ -184,6 +226,9 @@ export function classifyMessage(message: ClassifiableMessage): Classification {
     reason,
     signalAt: message.date,
     classifier: "rules@1",
+    // La phrase citée est celle qui porte le motif décisif : le verdict et sa
+    // preuve viennent du même endroit du message.
+    quote: extractQuote(body, markers.map((m) => m.pattern)),
   });
 
   // 1. Perte explicite. Rien ne prime sur un abandon constaté.
@@ -193,6 +238,8 @@ export function classifyMessage(message: ClassifiableMessage): Classification {
       score(0.8, negative.length),
       negative.join(", "),
       "Perte ou abandon explicitement constaté",
+      null,
+      NEGATIVE,
     );
   }
 
@@ -206,6 +253,7 @@ export function classifyMessage(message: ClassifiableMessage): Classification {
         `${signature.join(", ")} — mais conditionné : ${blocker.join(", ")}`,
         `Accord exprimé, conditionné à : ${blocker.join(", ")}`,
         blocker[0],
+        [...SIGNATURE, ...BLOCKER],
       );
     }
     return make(
@@ -213,6 +261,8 @@ export function classifyMessage(message: ClassifiableMessage): Classification {
       score(0.75, signature.length),
       signature.join(", "),
       "Engagement exprimé ou dernière étape avant signature",
+      null,
+      SIGNATURE,
     );
   }
 
@@ -225,6 +275,7 @@ export function classifyMessage(message: ClassifiableMessage): Classification {
       risk.join(", "),
       "Projet vivant, probabilité de signature en baisse",
       blocker[0] ?? null,
+      RISK,
     );
   }
 
@@ -240,6 +291,7 @@ export function classifyMessage(message: ClassifiableMessage): Classification {
         ? `Client engagé, en attente : ${blocker.join(", ")}`
         : "Client engagé, ajustements demandés",
       blocker[0] ?? "ajustement en cours",
+      [...PENDING_POSITIVE, ...BLOCKER],
     );
   }
 
@@ -255,6 +307,14 @@ export function classifyMessage(message: ClassifiableMessage): Classification {
  * Renvoie `null` si le fil est vide. L'ABSENCE de message ne produit JAMAIS de
  * classification : le silence n'est pas un signal.
  */
+const ALL_MARKERS: Marker[] = [...SIGNATURE, ...PENDING_POSITIVE, ...BLOCKER, ...RISK, ...NEGATIVE];
+
+/** Phrase parlante d'un message, tous motifs confondus. Sert au rattrapage. */
+export function extractQuoteFromMessage(message: ClassifiableMessage): string | null {
+  const body = withoutQuote(decode(message.snippet ?? ""));
+  return extractQuote(body, ALL_MARKERS.map((m) => m.pattern));
+}
+
 export function classifyThread(messages: ClassifiableMessage[]): Classification | null {
   if (messages.length === 0) return null;
   const ordered = [...messages].sort((a, b) => a.date.localeCompare(b.date));

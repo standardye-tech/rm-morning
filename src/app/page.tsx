@@ -1,5 +1,5 @@
 import { AlertsBlock, TopDeals, WeekForecastBlock } from "@/components/morning";
-import { HotClients, SilentButStrong, TodayPlan, WaitingClients } from "@/components/morning-v2";
+import { MorningBoard, SilentButStrong } from "@/components/morning-v2";
 import { Card, Stat } from "@/components/ui";
 import { THRESHOLDS } from "@/lib/config";
 import { computeWeekForecast } from "@/lib/forecast";
@@ -164,9 +164,12 @@ export default function MorningPage() {
         valeur immédiate.
       */}
       <div className="mt-6 space-y-6">
-        <HotClients events={plan.hot} />
-        <WaitingClients events={plan.waiting} />
-        <TodayPlan actions={plan.actions} doneToday={plan.doneToday} />
+        <MorningBoard
+          hot={plan.hot}
+          waiting={plan.waiting}
+          actions={plan.actions}
+          doneToday={plan.doneToday}
+        />
         <SilentButStrong items={plan.silentButStrong} />
 
         <details className="group rounded-xl border border-line bg-surface">

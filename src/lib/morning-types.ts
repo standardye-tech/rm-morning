@@ -24,8 +24,18 @@ export type MorningEvent = {
   threadId: string;
   sentAt: string | null;
   category: MorningCategory;
-  /** Ce que dit le client, en français simple. Jamais un code de classe. */
+  /** Motif du triage, en français simple. Jamais un code de classe. */
   reason: string;
+  /**
+   * Ce que dit le client, tel qu'on l'affiche : sa phrase citée quand on l'a,
+   * sinon le résumé fidèle du classifieur, sinon le motif du triage. Jamais
+   * une phrase inventée.
+   */
+  said: string;
+  /** Ce qu'il attend, très court, pour la parenthèse du bloc 2. Null si redondant. */
+  expects: string | null;
+  /** La phrase citée seule, quand elle existe. */
+  quote: string | null;
   /** Pourquoi le message a été écarté, quand il l'a été. */
   ignoredBecause: string | null;
   client: string | null;

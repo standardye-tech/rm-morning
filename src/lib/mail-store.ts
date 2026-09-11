@@ -86,13 +86,15 @@ export function updateThreadClassification(
     blocker: string | null;
     summary: string;
     classifier: string;
+    /** Phrase du client, déjà bornée à 160 caractères par le classifieur. */
+    quote?: string | null;
   },
 ): void {
   getDb()
     .prepare(
       `UPDATE mail_signal
           SET signal_type = ?, signal_confidence = ?, blocker = ?, summary = ?,
-              classifier = ?, analyzed_at = ?
+              classifier = ?, analyzed_at = ?, quote = ?
         WHERE thread_id = ?`,
     )
     .run(
@@ -102,8 +104,21 @@ export function updateThreadClassification(
       classification.summary.slice(0, 200),
       classification.classifier,
       new Date().toISOString(),
+      classification.quote == null ? null : classification.quote.slice(0, 160),
       threadId,
     );
+}
+
+/**
+ * Pose la phrase du client sur un fil sans toucher au verdict. Sert au
+ * rattrapage des messages classés avant l'existence de la colonne. Une chaîne
+ * vide signifie « cherché, rien de parlant » et évite de rechercher à chaque
+ * synchronisation.
+ */
+export function setThreadQuote(threadId: string, quote: string | null): void {
+  getDb()
+    .prepare("UPDATE mail_signal SET quote = ? WHERE thread_id = ?")
+    .run(quote == null ? "" : quote.slice(0, 160), threadId);
 }
 
 /**

@@ -117,6 +117,48 @@ Une affaire présente au forecast mais absente de Salesforce est signalée comme
 node scripts/verify-forecast.mjs
 ```
 
+## Ma semaine (moteur de recommandation managériale)
+
+Page `/semaine`. Répond à une seule question : cette semaine, où le directeur
+régional doit-il investir son temps ? Ce n'est pas un agenda : Google Calendar
+garde les blocs, RM Morning dit lesquels remplir, avec qui et pour obtenir quoi.
+
+Deux lectures par Expert Travaux, jamais confondues :
+
+- **Performance** — comment il va commercialement. Score de la page Performance,
+  paliers vert / neutre / orange. Jamais de rouge.
+- **Attention managériale** — faut-il intervenir maintenant. Vert (rien de
+  particulier), orange (intervention utile), rouge (intervention prioritaire).
+  Un ET rouge n'est pas un mauvais ET.
+
+Le moteur (`src/lib/attention.ts`) est pur : sept règles nommées, chacune pesée
+« fort » ou « modéré », et un verdict qui découle du nombre et du poids des
+raisons — rouge dès une raison forte accompagnée d'une autre ou deux fortes,
+orange dès une forte ou deux modérées, vert sinon. Une raison modérée isolée est
+affichée, pas planifiée. Tous les seuils sont dans `config.ts` (`ATTENTION`).
+Le directeur (`ATTENTION.excluded`) n'est pas évalué ; ses affaires restent
+éligibles aux gros dossiers.
+
+Les changements d'étape ne sont observables que depuis le premier snapshot
+quotidien : une immobilité est toujours dite « depuis au moins N jours », jamais
+plus (`src/lib/stage-history.ts`).
+
+- **Gros dossiers** (`big-deals.ts`, seuils `BIG_DEALS`) : ≥ 100 k€ et au moins
+  un critère de maturité ; objectif closer / débloquer / accélérer / arbitrer.
+- **Affaire de la semaine** (`deal-of-week-store.ts`, table `deal_of_week`) :
+  choix manuel d'une affaire comme support de management, conservée jusqu'à
+  clôture ou remplacement. Aucune proposition automatique en V1.
+- **Planning recommandé** (`week-plan.ts`, grille `WEEK_SLOTS`) : chaque
+  créneau-type reçoit le meilleur élément de son type ; un créneau vide est
+  réaffecté dans l'ordre `WEEK_FALLBACK_ORDER`, sinon affiché disponible. Rien
+  n'est rempli artificiellement.
+- **Radar** (`radar-store.ts`, table `radar_contact`) : pipeline commun ET /
+  architectes, saisi à la main. Ni HelloWork, ni Google, ni scraping.
+
+```bash
+npm run semaine:verify
+```
+
 ## Non branché à ce stade
 
 Gmail : seule l'interface `MailSource` existe.

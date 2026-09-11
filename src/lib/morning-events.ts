@@ -56,6 +56,8 @@ type SignalRow = {
   signal_type: string;
   blocker: string | null;
   summary: string | null;
+  quote: string | null;
+  classifier: string | null;
   client: string | null;
   owner: string | null;
   gmv: number | null;
@@ -303,6 +305,65 @@ function classify(row: TriageRow, eligibility: ReturnType<typeof eligibilityOf>)
   return { category: "ignore", reason: "", ignoredBecause: "aucune intention identifiable" };
 }
 
+// --- Ce que dit le client ---------------------------------------------------
+
+/** Les résumés des règles sont des gabarits : ils ne disent rien de ce client-là. */
+const RULES_CLASSIFIER = /^rules/;
+
+/**
+ * Compose la phrase affichée en colonne « Ce que dit le client ».
+ *
+ * Trois sources, du plus fidèle au plus générique :
+ *   1. la citation textuelle retenue au moment de classer ;
+ *   2. le résumé du modèle, reformulation courte mais fidèle du message ;
+ *   3. le motif du triage, gabarit identique d'une ligne à l'autre.
+ * La parenthèse « ce qu'il attend » reprend le motif du triage, en minuscule,
+ * et disparaît quand elle répéterait la phrase.
+ */
+export function whatClientSays(row: {
+  reason: string | null;
+  quote: string | null;
+  summary: string | null;
+  classifier: string | null;
+}): { said: string; expects: string | null; quote: string | null } {
+  const reason = (row.reason ?? "").trim();
+  const expects = reason ? reason.charAt(0).toLowerCase() + reason.slice(1) : null;
+  const quote = (row.quote ?? "").trim();
+  if (quote) return { said: `« ${quote} »`, expects, quote };
+
+  const summary = (row.summary ?? "").trim();
+  const fromModel = summary && row.classifier && !RULES_CLASSIFIER.test(row.classifier);
+  if (fromModel && summary.toLowerCase() !== reason.toLowerCase()) {
+    return { said: summary, expects, quote: null };
+  }
+  return { said: reason, expects: null, quote: null };
+}
+
+/**
+ * Fils des événements Morning encore ouverts dont on n'a pas la phrase du
+ * client. Sert au rattrapage à la synchronisation Gmail : le message est relu
+ * (métadonnées et extrait, comme toujours) et sa phrase parlante extraite par
+ * les règles, sans appel au modèle.
+ */
+export function threadsNeedingQuote(limit = 80): string[] {
+  const db = getDb();
+  return (
+    db
+      .prepare(
+        `SELECT DISTINCT m.thread_id
+           FROM morning_event e
+           JOIN mail_signal m ON m.gmail_message_id = e.gmail_message_id
+          WHERE e.status <> 'pris_en_compte'
+            AND e.category IN ('chaud', 'attente')
+            AND m.direction = 'entrant'
+            AND m.quote IS NULL
+          ORDER BY e.sent_at DESC
+          LIMIT ?`,
+      )
+      .all(limit) as { thread_id: string }[]
+  ).map((r) => r.thread_id);
+}
+
 // --- Persistance ----------------------------------------------------------
 
 /**
@@ -357,6 +418,38 @@ export function syncMorningEvents(now = new Date()): { seen: number; created: nu
     );
   }
   return { seen: rows.length, created };
+}
+
+/**
+ * « Tout marquer comme lu » : acquitte d'un coup tous les messages encore
+ * ouverts d'un bloc, ou des deux. La liste est RECALCULÉE ICI, jamais reçue du
+ * navigateur — même règle que le « Tout lire » du Monitoring. Même écriture que
+ * l'acquittement unitaire : un message déjà pris en compte n'est pas réécrit,
+ * sa date d'acquittement d'origine est conservée.
+ */
+export function acknowledgeAllEvents(
+  category: "chaud" | "attente" | null,
+  now = new Date(),
+): { changed: number; messageIds: string[] } {
+  const db = getDb();
+  const categories = category ? [category] : ["chaud", "attente"];
+  const marks = categories.map(() => "?").join(", ");
+  const messageIds = (
+    db
+      .prepare(
+        `SELECT gmail_message_id FROM morning_event
+          WHERE status <> 'pris_en_compte' AND category IN (${marks})`,
+      )
+      .all(...categories) as { gmail_message_id: string }[]
+  ).map((r) => r.gmail_message_id);
+  if (messageIds.length === 0) return { changed: 0, messageIds };
+  const r = db
+    .prepare(
+      `UPDATE morning_event SET status = 'pris_en_compte', acknowledged_at = ?
+        WHERE status <> 'pris_en_compte' AND category IN (${marks})`,
+    )
+    .run(now.toISOString(), ...categories);
+  return { changed: Number(r.changes), messageIds };
 }
 
 /** Marque un message comme pris en compte. Porte sur ce message seul. */
@@ -433,7 +526,7 @@ export function loadMorningEvents(): { events: MorningEvent[]; lastRead: string 
       `SELECT e.gmail_message_id, e.thread_id, e.sent_at, e.category, e.reason, e.status,
               e.acknowledged_at, e.first_seen_at,
               m.from_email, m.from_name, m.match_level, m.match_kind, m.lead_id,
-              m.salesperson, m.opportunity_id,
+              m.salesperson, m.opportunity_id, m.summary, m.quote, m.classifier,
               o.client_contact AS client, o.owner, o.gmv, o.stage, o.is_terminal,
               d.lead_name, d.lead_owner, d.lead_status, d.contact_name,
               d.opportunity_name AS ext_name, d.opportunity_stage AS ext_stage,
@@ -458,12 +551,16 @@ export function loadMorningEvents(): { events: MorningEvent[]; lastRead: string 
     const client = clientLabel(
       r.client ?? r.lead_name ?? r.contact_name ?? r.ext_name ?? r.from_name ?? r.from_email,
     );
+    const says = whatClientSays(r);
     return {
       messageId: r.gmail_message_id,
       threadId: r.thread_id,
       sentAt: r.sent_at,
       category: r.category as MorningCategory,
       reason: r.reason ?? "",
+      said: says.said,
+      expects: says.expects,
+      quote: says.quote,
       ignoredBecause: null,
       client,
       fromEmail: r.from_email,

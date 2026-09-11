@@ -5,16 +5,20 @@
  *   1. la **confiance déclarée** dans le Google Sheet, photographiée chaque lundi ;
  *   2. la **Projection Kanban** de Salesforce, état courant.
  *
- * Le bloc compare le dernier snapshot hebdomadaire pertinent (≤ aujourd'hui) à
- * l'état Salesforce d'aujourd'hui, et lit la trajectoire en remontant au
- * snapshot précédent. On ne compare jamais les couleurs Kanban entre elles :
- * leur ordre métier n'est pas connu.
+ * La référence est l'ÉTAT COURANT du classeur — le bloc « EN COURS », mis à
+ * jour chaque jour à 8 h — et non la dernière photo figée du lundi, qui peut
+ * avoir plusieurs jours de retard. La photo figée n'est retenue qu'à défaut
+ * d'état courant. La trajectoire se lit contre le dernier snapshot figé
+ * antérieur à la référence. On ne compare jamais les couleurs Kanban entre
+ * elles : leur ordre métier n'est pas connu.
  */
 
 import { FORECAST_THRESHOLDS, THRESHOLDS } from "./config";
 import { daysBetween, formatEurShort, formatFrenchDate, mondayOf, MONTH_LABELS } from "./normalize";
 import {
+  forecastCurrentUpdatedAt,
   forecastSnapshotDates,
+  loadForecastCurrent,
   loadForecastSnapshot,
   loadSnapshot,
   previousSnapshotDate,
@@ -49,9 +53,13 @@ export type WeekForecast = {
   forecastMonth: string;
   monthLabel: string;
 
-  /** Snapshot hebdomadaire retenu, et le précédent pour la trajectoire. */
+  /** Date de la référence retenue, et le snapshot figé précédent pour la trajectoire. */
   referenceDate: string | null;
   previousDate: string | null;
+  /** « courant » = bloc « EN COURS » du classeur ; « snapshot » = dernière photo figée. */
+  referenceSource: "courant" | "snapshot" | null;
+  /** « MAJ le » annoncé par le classeur quand la référence est l'état courant. */
+  referenceUpdatedAt: string | null;
 
   /** Σ des GMV × confiance au snapshot de référence. */
   snapshotGmv: number | null;
@@ -135,14 +143,19 @@ export function computeWeekForecast(
     standbyTransitions: salesforceStandbyTransitions(opportunities, referenceDate),
   };
 
-  // Snapshot hebdomadaire retenu : le plus récent qui ne soit pas dans le futur.
+  // Référence : l'état courant « EN COURS » s'il existe ; sinon le snapshot
+  // figé le plus récent qui ne soit pas dans le futur.
+  const current = loadForecastCurrent(forecastMonth);
+  const currentUpdatedAt = current.length > 0 ? forecastCurrentUpdatedAt(forecastMonth) : null;
   const dates = forecastSnapshotDates(forecastMonth, referenceDate);
-  if (dates.length === 0) {
+  if (current.length === 0 && dates.length === 0) {
     return {
       ...base,
       mode: "salesforce-only",
       referenceDate: null,
       previousDate: null,
+      referenceSource: null,
+      referenceUpdatedAt: null,
       snapshotGmv: null,
       currentGmv: kanbanGmv,
       variationGmv: null,
@@ -155,9 +168,13 @@ export function computeWeekForecast(
     };
   }
 
-  const refDate = dates[0];
-  const prevDate = dates[1] ?? null;
-  const reference = loadForecastSnapshot(forecastMonth, refDate);
+  const useCurrent = current.length > 0;
+  const refDate = useCurrent ? (currentUpdatedAt?.slice(0, 10) ?? referenceDate) : dates[0];
+  // Trajectoire : le dernier snapshot figé strictement antérieur à la
+  // référence. Quand la référence est l'état courant d'un lundi 8 h, c'est donc
+  // le lundi précédent — une semaine, jamais zéro jour.
+  const prevDate = useCurrent ? (dates.find((d) => d < refDate) ?? null) : (dates[1] ?? null);
+  const reference = useCurrent ? current : loadForecastSnapshot(forecastMonth, refDate);
   const previous = prevDate
     ? new Map(loadForecastSnapshot(forecastMonth, prevDate).map((l) => [l.rowKey, l]))
     : new Map<string, ForecastLine>();
@@ -310,6 +327,8 @@ export function computeWeekForecast(
     mode: "sheet",
     referenceDate: refDate,
     previousDate: prevDate,
+    referenceSource: useCurrent ? "courant" : "snapshot",
+    referenceUpdatedAt: useCurrent ? currentUpdatedAt : null,
     snapshotGmv,
     currentGmv,
     variationGmv: currentGmv - snapshotGmv,

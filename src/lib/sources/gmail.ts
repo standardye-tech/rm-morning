@@ -25,8 +25,11 @@ import {
   lastCompletedSync,
   startSync,
   updateThreadClassification,
+  setThreadQuote,
 } from "../mail-store";
+import { extractQuoteFromMessage } from "../mail-classify";
 import { classifyHybrid, type ClassificationSource } from "../mail-classify-hybrid";
+import { threadsNeedingQuote } from "../morning-events";
 import type { ClassifiableMessage } from "../mail-classify";
 import {
   INTERNAL_DOMAIN,
@@ -255,6 +258,9 @@ async function fetchMessage(
  * demande. On ne garde que les derniers messages : la classification ne
  * regarde jamais plus loin que le signal courant et son antécédent immédiat.
  */
+/** Fils relus par passage pour le rattrapage de la phrase du client. */
+const QUOTE_BACKFILL_LIMIT = 80;
+
 async function fetchThreadMessages(threadId: string): Promise<ClassifiableMessage[]> {
   const data = await gmailGet<{ messages?: GmailMessageResponse[] }>(
     `threads/${threadId}?format=metadata` +
@@ -633,6 +639,7 @@ export class GmailSource implements MailSource {
           blocker: result.classification.blocker,
           summary: result.classification.summary,
           classifier: result.classification.classifier,
+          quote: result.classification.quote ?? null,
         });
 
         classified += 1;
@@ -655,6 +662,25 @@ export class GmailSource implements MailSource {
       }
     });
     const classifyMs = Date.now() - classifyStart;
+
+    // --- Rattrapage de la phrase du client sur les événements Morning ouverts.
+    //
+    // Les messages classés avant l'existence de la citation n'en ont pas. On
+    // relit leur fil — métadonnées et extrait, jamais le corps — et on en
+    // extrait la phrase par les règles, SANS appel au modèle. Borné, et jamais
+    // bloquant : un échec laisse la colonne vide et la ligne retombe sur le
+    // résumé. Une chaîne vide marque « cherché, rien trouvé » pour ne pas
+    // relire le même fil à chaque passage.
+    const backfill = threadsNeedingQuote(QUOTE_BACKFILL_LIMIT).filter((t) => !touchedThreads.has(t));
+    await mapLimited(backfill, GMAIL_SYNC.classifyConcurrency, async (threadId) => {
+      try {
+        const thread = await fetchThreadMessages(threadId);
+        const last = thread.filter((m) => m.direction === "entrant").pop() ?? thread[thread.length - 1];
+        setThreadQuote(threadId, last ? extractQuoteFromMessage(last) : null);
+      } catch {
+        // Rien à consigner : la synchronisation n'en dépend pas.
+      }
+    });
 
     // Trace technique unique, conservée en base et affichée par l'écran
     // « Données ». Chaque ligne est PRÉFIXÉE de sa nature : c'est ce qui permet

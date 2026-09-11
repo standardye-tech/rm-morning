@@ -147,6 +147,202 @@ export const THRESHOLDS = {
 } as const;
 
 /**
+ * « Ma semaine » — moteur d'attention managériale.
+ *
+ * DEUX NOTIONS DISTINCTES, et elles ne se déduisent pas l'une de l'autre :
+ *   — la PERFORMANCE dit comment va commercialement l'Expert Travaux. Elle
+ *     reprend le score de la page Performance et ses trois paliers (vert,
+ *     neutre, orange). Jamais de rouge ici.
+ *   — l'ATTENTION dit si le directeur régional doit investir du temps sur lui
+ *     MAINTENANT. Vert : rien de particulier. Orange : intervention utile.
+ *     Rouge : intervention prioritaire. Un ET rouge n'est pas un mauvais ET :
+ *     un très bon commercial avec un gros dossier à débloquer peut l'être.
+ *
+ * Chaque règle allume une RAISON lisible, pesée « fort » ou « modéré ». Le
+ * verdict découle du nombre et du poids des raisons — rien d'autre. Tous les
+ * seuils sont ici pour être discutés et affinés.
+ */
+export const ATTENTION = {
+  /**
+   * Commerciaux exclus du moteur d'attention. Le directeur régional porte
+   * lui-même quelques affaires : elles restent éligibles aux gros dossiers,
+   * mais il ne se planifie pas un point avec lui-même.
+   */
+  excluded: ["Sami Lazari"],
+
+  /** Paliers de la PERFORMANCE, identiques à ceux de la page Performance. */
+  performance: { green: 70, neutral: 45 },
+
+  /**
+   * Verdict. Rouge dès qu'une raison forte est accompagnée d'une autre raison,
+   * ou dès deux raisons fortes. Orange dès une raison forte, ou dès
+   * `orangeMinModerate` raisons modérées. Vert sinon.
+   *
+   * Une seule raison modérée ne déclenche donc PAS de point : elle est affichée
+   * dans la colonne « Pourquoi », pas planifiée. Calibré le 11/09/2026 sur les
+   * données réelles : avec un point dès la première raison, onze ET sur douze
+   * ressortaient orange ou rouge, ce qui ne hiérarchise rien.
+   */
+  verdict: { redStrongAlone: 2, redStrongWithOther: 1, redMinReasons: 2, orangeMinModerate: 2 },
+
+  /** « Pipe faible » : GMV actif sous ce seuil (même seuil que l'alerte Morning). */
+  lowPipeGmv: 600_000,
+
+  /**
+   * « Jalons à surveiller » : le verdict Monitoring « à surveiller » tombe dès
+   * une exception nouvelle, ce qui est le bon niveau pour l'ET mais pas pour un
+   * point du directeur. La raison ne s'allume qu'à partir de ce nombre.
+   * « Action requise » s'allume toujours, en fort.
+   */
+  watchMinExceptions: 4,
+
+  /**
+   * « Affaires sans évolution » : ni changement d'étape observé dans les
+   * snapshots, ni activité Salesforce depuis ce nombre de jours, sur au moins
+   * `stagnantMinCount` affaires ET au moins `stagnantShare` du pipe actif.
+   * La part évite qu'un pipe de cinquante affaires soit jugé sur trois.
+   */
+  stagnantDays: 14,
+  stagnantMinCount: 3,
+  stagnantShare: 0.5,
+
+  /** « Clients en attente » : nombre d'affaires en `client_attend` à partir duquel la raison devient forte. */
+  clientWaitingStrong: 2,
+
+  /**
+   * « Données Salesforce insuffisamment à jour » : part du pipe actif sans
+   * activité depuis `THRESHOLDS.staleDays`, au-delà de laquelle le point porte
+   * d'abord sur la tenue de l'outil.
+   */
+  staleShare: 0.5,
+
+  /**
+   * « Gros dossier proche de signature » : au moins une affaire d'au moins
+   * `BIG_DEALS.minGmv` à ce rang d'étape ou au-delà (Examen devis).
+   */
+  nearSignatureRank: 4,
+
+  /** Temps recommandé par point, en minutes. */
+  minutes: { rouge: 30, orange: 30 },
+} as const;
+
+/**
+ * Gros dossiers — les affaires où l'objectif est d'accélérer, débloquer,
+ * closer ou arbitrer. Rien à voir avec l'affaire de la semaine, qui est un
+ * support de management et peut être toute petite.
+ */
+export const BIG_DEALS = {
+  /** GMV minimal. Le seul seuil d'entrée : en dessous, jamais un gros dossier. */
+  minGmv: 100_000,
+  /** Rang d'étape à partir duquel le dossier est dit avancé (Examen devis). */
+  advancedRank: 4,
+  /** Rang de l'étape « Signature » : l'objectif devient « closer ». */
+  signatureRank: 5,
+  /** Probabilité Expected fin de mois à partir de laquelle le dossier est retenu. */
+  minProbability: 0.25,
+  /** Probabilité à partir de laquelle l'objectif devient « closer ». */
+  closingProbability: 0.5,
+  /** En dessous, la probabilité n'est pas écrite : « 0 % de chances » n'aide personne. */
+  showProbabilityFrom: 0.05,
+  /** Nombre maximal de dossiers affichés. */
+  maxItems: 8,
+  /** Temps recommandé par dossier, en minutes. */
+  minutes: 30,
+} as const;
+
+/** Types de créneaux du planning recommandé. */
+export type WeekSlotKind =
+  | "et_rouge"
+  | "et_orange"
+  | "gros_dossier"
+  | "affaire_semaine"
+  | "candidatures"
+  | "entretiens"
+  | "sourcing_et"
+  | "sourcing_archi";
+
+export type WeekSlot = {
+  /** 1 = lundi … 5 = vendredi. */
+  day: 1 | 2 | 3 | 4 | 5;
+  /** « HH:MM ». */
+  time: string;
+  kind: WeekSlotKind;
+};
+
+/**
+ * Grille des créneaux-types que RM Morning est autorisé à piloter. Les autres
+ * blocs de l'agenda (RM Morning du matin, mails, points hebdomadaires,
+ * réunions fixes) ne sont PAS ici : l'application ne les touche pas.
+ *
+ * Un créneau ET sans candidat n'est jamais rempli artificiellement : il est
+ * réaffecté selon `WEEK_FALLBACK_ORDER`, et sinon affiché disponible.
+ */
+export const WEEK_SLOTS: WeekSlot[] = [
+  { day: 1, time: "11:00", kind: "et_rouge" },
+  { day: 2, time: "10:00", kind: "sourcing_et" },
+  { day: 2, time: "11:00", kind: "entretiens" },
+  { day: 2, time: "14:00", kind: "et_orange" },
+  { day: 2, time: "14:45", kind: "et_orange" },
+  { day: 2, time: "15:30", kind: "gros_dossier" },
+  { day: 3, time: "10:00", kind: "et_rouge" },
+  { day: 3, time: "14:00", kind: "sourcing_archi" },
+  { day: 4, time: "12:00", kind: "affaire_semaine" },
+  { day: 4, time: "14:00", kind: "sourcing_et" },
+  { day: 4, time: "15:00", kind: "candidatures" },
+];
+
+/** Créneaux réaffectables quand leur type n'a aucun candidat. */
+export const WEEK_REASSIGNABLE: WeekSlotKind[] = ["et_rouge", "et_orange", "gros_dossier", "affaire_semaine"];
+
+/**
+ * Ordre de réaffectation d'un créneau resté vide : ET rouge restant, gros
+ * dossier urgent, affaire de la semaine, ET orange, candidatures / sourcing.
+ * Au bout de la liste, le créneau est « disponible » — et c'est un résultat.
+ */
+export const WEEK_FALLBACK_ORDER: WeekSlotKind[] = [
+  "et_rouge",
+  "gros_dossier",
+  "affaire_semaine",
+  "et_orange",
+  "candidatures",
+];
+
+/**
+ * Semaine affichée. La semaine courante jusqu'au vendredi inclus ; à partir du
+ * samedi, la semaine suivante — c'est celle qu'on prépare.
+ */
+export const WEEK_VIEW = { switchToNextFromDay: 6 } as const;
+
+/**
+ * Radar recrutement ET et sourcing architectes — V1 sans aucune automatisation.
+ * Un pipeline commun, saisi à la main. HelloWork, Google et le web viendront
+ * plus tard alimenter la même table.
+ */
+export const RADAR = {
+  categories: [
+    { key: "et", label: "Expert Travaux" },
+    { key: "archi", label: "Architecte" },
+  ],
+  statuses: [
+    { key: "nouveau", label: "Nouveau" },
+    { key: "a_contacter", label: "À contacter" },
+    { key: "contacte", label: "Contacté" },
+    { key: "interessant", label: "Intéressant" },
+    { key: "rdv", label: "RDV" },
+    { key: "ecarte", label: "Écarté" },
+  ],
+  /** Statuts qui font entrer un contact dans « Candidatures à traiter ». */
+  toProcess: ["nouveau", "a_contacter"],
+  /** Statut qui alimente le créneau « Entretiens ». */
+  interview: "rdv",
+  /** Temps recommandé par candidature, en minutes. */
+  minutes: 15,
+} as const;
+
+export type RadarCategory = (typeof RADAR.categories)[number]["key"];
+export type RadarStatus = (typeof RADAR.statuses)[number]["key"];
+
+/**
  * Chemin du fichier SQLite, relatif à la racine du projet.
  *
  * `RM_DB_PATH` permet de le détourner vers une COPIE. C'est la seule façon de

@@ -90,7 +90,9 @@ export function WeekForecastBlock({ forecast }: { forecast: WeekForecast }) {
         title="Forecast de la semaine"
         aside={
           forecast.mode === "sheet"
-            ? `snapshot du ${formatFrenchDate(forecast.referenceDate)}`
+            ? forecast.referenceSource === "courant"
+              ? `état courant du ${formatFrenchDate(forecast.referenceDate)}`
+              : `snapshot du ${formatFrenchDate(forecast.referenceDate)}`
             : "vue provisoire"
         }
       />

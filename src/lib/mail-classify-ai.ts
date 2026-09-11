@@ -111,7 +111,7 @@ export function buildPayload(
 export const SYSTEM_PROMPT = `Tu classes des échanges commerciaux d'un courtier en travaux de rénovation.
 
 Rends UNIQUEMENT un objet JSON, sans texte autour :
-{"signal_type": ..., "confidence": ..., "blocker": ..., "summary": ..., "reason": ...}
+{"signal_type": ..., "confidence": ..., "blocker": ..., "summary": ..., "reason": ..., "quote": ...}
 
 signal_type vaut exactement l'une de ces valeurs :
 - "signature"      : engagement réel ou dernière étape avant engagement (bon pour accord, validation explicite, demande de lien de signature, de facture d'acompte ou de RIB pour régler, dernière correction avant signature, choix explicite de nous retenir).
@@ -134,7 +134,8 @@ Règles impératives :
 11. Ne traite comme signal commercial que ce qui vient d'un PROSPECT ou d'un CLIENT au sujet d'une affaire commerciale active ou d'une nouvelle opportunité crédible. Les messages d'artisans, de fournisseurs, d'architectes, de partenaires, de prestataires, ainsi que le démarchage adressé à Renovation Man (logiciel, référencement, recrutement, partenariat non demandé), sont "neutre" avec une confidence basse — quelle que soit leur urgence apparente.
 12. Un suivi d'exécution de chantier déjà signé — service après-vente, malfaçon, planning de travaux, règlement d'échéance — n'est pas un signal commercial. Il vaut "neutre", sauf si le message annonce explicitement un NOUVEAU projet.
 13. Le summary doit TOUJOURS dire ce que le client DEMANDE quand il demande quelque chose, avec le verbe de demande et son objet : « demande le devis », « demande un planning prévisionnel », « demande un rendez-vous », « demande une modification du devis ». Une demande formulée platement compte autant qu'une demande enthousiaste : « pouvez-vous m'envoyer le devis » exige une action, même sans aucun mot chaleureux. À l'inverse, si le client ne fait qu'accuser réception, dis-le : « accuse réception du devis, sans demande ».
-14. Ne confonds pas la tonalité et l'action. Un message neutre qui demande quelque chose reste une demande ; un message chaleureux qui ne demande rien n'en est pas une.`;
+14. Ne confonds pas la tonalité et l'action. Un message neutre qui demande quelque chose reste une demande ; un message chaleureux qui ne demande rien n'en est pas une.
+15. quote est la phrase du DERNIER message la plus parlante pour un manager commercial — une demande, une condition, une échéance, un engagement, une question — recopiée MOT POUR MOT depuis le texte fourni, au plus 160 caractères, sans rien reformuler ni compléter. Choisis la phrase la plus concrète et la plus différenciante, jamais une formule de politesse. null si aucune phrase ne s'y prête ou si l'auteur n'est pas le client.`;
 
 export function buildUserMessage(payload: ModelPayload): string {
   const lines = [
@@ -154,6 +155,35 @@ export function buildUserMessage(payload: ModelPayload): string {
 // --- Appel ------------------------------------------------------------------
 
 const VALID: SignalType[] = ["signature", "positif_bloque", "risque", "negatif", "neutre"];
+
+const foldForMatch = (s: string) =>
+  s
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[\u2018\u2019\u00b4`]/g, "'")
+    .replace(/[\u00ab\u00bb"\u201c\u201d]/g, "")
+    .replace(/[^a-z0-9?!' ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+/**
+ * Une citation n'est retenue QUE si elle figure réellement dans le texte
+ * envoyé au modèle. C'est la garde contre la phrase inventée : le modèle
+ * propose, le texte d'origine dispose. Comparaison tolérante à la casse, aux
+ * accents et à la ponctuation, jamais au contenu.
+ */
+export function verifyQuote(candidate: unknown, source: string): string | null {
+  if (typeof candidate !== "string") return null;
+  const quote = candidate
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^[\u00ab"\u201c\s]+|[\u00bb"\u201d\s]+$/g, "");
+  if (quote.length < 8) return null;
+  const folded = foldForMatch(quote);
+  if (!folded || !foldForMatch(source).includes(folded)) return null;
+  return quote.slice(0, 160);
+}
 
 /**
  * Appelle le modèle. Lève si aucune clé n'est configurée — jamais de clé en
@@ -236,6 +266,7 @@ export async function classifyWithModelDetailed(
       reason: String(parsed.reason ?? "").slice(0, 160),
       signalAt: ordered[ordered.length - 1].date,
       classifier: AI_MODEL,
+      quote: verifyQuote(parsed.quote, `${payload.subject} ${payload.lastMessage}`),
     },
     inputTokens: body.usage?.input_tokens ?? 0,
     outputTokens: body.usage?.output_tokens ?? 0,

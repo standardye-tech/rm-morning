@@ -11,13 +11,14 @@
  * écart pose une question plutôt qu'il ne condamne.
  */
 
-import { OPPORTUNITY_MONITORING, TEAM, THRESHOLDS } from "./config";
+import { OPPORTUNITY_MONITORING, THRESHOLDS } from "./config";
 import { queryAll } from "./db";
 import {
   MILESTONE_ANOMALIES,
   type MilestoneStatus,
   type NextExpectedEvent,
 } from "./opportunity-milestones";
+import { loadTeam } from "./team-store";
 
 export type MilestoneOpportunity = {
   opportunityId: string;
@@ -135,7 +136,11 @@ function isUnlockable(o: MilestoneOpportunity): boolean {
 export function computeOpportunityMetrics(
   opportunities: MilestoneOpportunity[],
 ): TeamOpportunityMetrics {
-  const owners: OwnerOpportunityMetrics[] = TEAM.map((member) => {
+  // Le périmètre est celui de la table `team_member`, pas de la graine TEAM de
+  // config.ts : un commercial ajouté depuis l'écran Données doit recevoir son
+  // verdict, et un commercial retiré ne doit plus en avoir. Même source que
+  // l'import, la Performance et le Forecast.
+  const owners: OwnerOpportunityMetrics[] = loadTeam().map((member) => {
     const mine = opportunities.filter((o) => o.owner === member.name);
     const anomalies = mine.filter((o) => isAnomaly(o.milestoneStatus));
     const fresh = anomalies.filter((o) => !o.isLegacy);
