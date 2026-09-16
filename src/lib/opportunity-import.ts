@@ -8,7 +8,6 @@
 
 import { OPPORTUNITY_MONITORING } from "./config";
 import { getDb, queryAll } from "./db";
-import { latestSignalByOpportunity } from "./mail-store";
 import {
   countMilestoneEvidence,
   evaluateOpportunity,
@@ -23,7 +22,6 @@ export const MILESTONE_THRESHOLDS: MilestoneThresholds = {
   estimationSlaDays: OPPORTUNITY_MONITORING.estimationSlaDays,
   devisSlaDays: OPPORTUNITY_MONITORING.devisSlaDays,
   dormantAfterDays: OPPORTUNITY_MONITORING.dormantAfterDays,
-  clientWaitingAfterDays: OPPORTUNITY_MONITORING.clientWaitingAfterDays,
 };
 
 export type MilestoneImportSummary = {
@@ -153,7 +151,6 @@ export async function importOpportunityMilestones(now = new Date()): Promise<Mil
     ).map((r) => [r.opportunity_id, { since: r.since, legacy: Number(r.legacy) === 1 }]),
   );
 
-  const mailSignals = latestSignalByOpportunity();
   const byStatus: Record<string, number> = {};
   const byNextEvent: Record<string, number> = {};
   const snapshotDate = now.toISOString().slice(0, 10);
@@ -174,7 +171,6 @@ export async function importOpportunityMilestones(now = new Date()): Promise<Mil
   );
 
   for (const o of opportunities) {
-    const signal = mailSignals.get(o.opportunity_id);
     const verdict = evaluateOpportunity(
       {
         opportunityId: o.opportunity_id,
@@ -184,9 +180,6 @@ export async function importOpportunityMilestones(now = new Date()): Promise<Mil
         isActive: o.is_active === 1,
         tasks: tasksBy.get(o.opportunity_id) ?? [],
         events: eventsBy.get(o.opportunity_id) ?? [],
-        mailSignal: signal
-          ? { direction: "entrant", signalType: signal.signalType, sentAt: signal.sentAt }
-          : null,
       },
       MILESTONE_THRESHOLDS,
       now.getTime(),

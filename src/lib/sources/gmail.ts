@@ -37,6 +37,8 @@ import {
   filterMessage,
   isSignedProjectFollowUp,
   isUnattributableAgendaCancellation,
+  teamMembersInCc,
+  teamMembersInTo,
   teamMembersInvolved,
   type MailMessage,
 } from "../mail-rules";
@@ -589,6 +591,11 @@ export class GmailSource implements MailSource {
         }
 
         const teamMembers = teamMembersInvolved(message);
+        // D — destinataires RM, à part : `teamMembers` ci-dessus fusionne
+        // from/to/cc et ne dit pas QUI est destinataire principal. La règle
+        // d'exclusion Sami (E) a besoin de cette distinction.
+        const rmTo = teamMembersInTo(message);
+        const rmCc = teamMembersInCc(message);
         const match = matchMessage(message, index, {
           internalDomain: INTERNAL_DOMAIN,
           teamMembers,
@@ -672,6 +679,8 @@ export class GmailSource implements MailSource {
             matchLevel: match.level,
             matchReason: match.reason,
             salesperson: opportunity?.owner ?? teamMembers[0] ?? null,
+            rmTo,
+            rmCc,
           },
           syncId,
         );

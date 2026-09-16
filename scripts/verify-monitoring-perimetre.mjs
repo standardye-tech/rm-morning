@@ -105,12 +105,19 @@ check("ajout par le store existant, comme depuis l'écran Données", member.acti
 // Cinq affaires actives portées par ce commercial : trois en anomalie nouvelle,
 // une en attente client, une saine. Règle attendue : 3 exceptions sur 5 (60 %)
 // ⇒ « action requise ».
+//
+// TESTCAMILLE0003 est en `dormant_candidate`, pas `client_attend` : depuis C,
+// `loadMilestoneOpportunities` ne fait plus confiance à un `client_attend`
+// persisté sans vérité canonique Morning derrière (voir
+// `monitoring:client-attend-verify`) — ce test-ci porte sur le périmètre par
+// commercial, pas sur cette mécanique, donc `client_waiting` est simulé par
+// le drapeau brut, indépendant du statut.
 const db = getDb();
 const today = new Date().toISOString().slice(0, 10);
 const fixtures = [
   ["TESTCAMILLE0001", "sla_devis", 0, 120_000],
   ["TESTCAMILLE0002", "sla_estimation", 0, 40_000],
-  ["TESTCAMILLE0003", "client_attend", 1, 60_000],
+  ["TESTCAMILLE0003", "dormant_candidate", 1, 60_000],
   ["TESTCAMILLE0004", "normal", 0, 25_000],
   ["TESTCAMILLE0005", "a_venir", 0, 10_000],
 ];

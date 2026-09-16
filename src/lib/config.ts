@@ -1032,9 +1032,6 @@ export const OPPORTUNITY_MONITORING = {
    */
   dormantAfterDays: 45,
 
-  /** Jours au-delà desquels un client sans réponse est signalé. */
-  clientWaitingAfterDays: 3,
-
   /** Éléments du bloc « À débloquer maintenant ». */
   maxValueItems: 8,
 

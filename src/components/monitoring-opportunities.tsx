@@ -9,7 +9,7 @@ import type {
   TeamOpportunityMetrics,
 } from "@/lib/opportunity-metrics";
 import type { ExceptionEntry, OpportunityMonitoringView } from "@/lib/monitoring-view";
-import { AllHandled, ChangeLine, ToutLireButton } from "./monitoring-read";
+import { AllHandled, ChangeLine, LireButton, ToutLireButton } from "./monitoring-read";
 import { Badge, Card, EmptyState, SectionTitle, Stat } from "./ui";
 
 const TONE: Record<MilestoneStatus, "neutral" | "positive" | "warning" | "danger"> = {
@@ -109,7 +109,10 @@ export function ValueBlock({
             <li key={o.opportunityId} className="px-4 md:px-6 py-3">
               <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
                 <p className="text-[15px] font-medium">{o.client ?? o.opportunityId}</p>
-                <p className="tabular text-[15px] font-semibold">{formatEurShort(o.gmv)}</p>
+                <div className="flex shrink-0 items-center gap-3">
+                  <p className="tabular text-[15px] font-semibold">{formatEurShort(o.gmv)}</p>
+                  <LireButton scope="opportunite" itemId={o.opportunityId} />
+                </div>
               </div>
               <p className="mt-0.5 text-xs text-ink-soft">
                 {o.owner} · {o.stage}
@@ -244,7 +247,10 @@ export function ExceptionBlock({
                     {o.isLegacy ? " · retard initial" : ""}
                   </p>
                 </div>
-                <p className="tabular text-sm">{formatEurShort(o.gmv)}</p>
+                <div className="flex shrink-0 items-center gap-3">
+                  <p className="tabular text-sm">{formatEurShort(o.gmv)}</p>
+                  <LireButton scope="opportunite" itemId={o.opportunityId} />
+                </div>
               </div>
               <ChangeLine verdict={verdict} />
             </li>

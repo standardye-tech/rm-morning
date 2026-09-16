@@ -28,12 +28,6 @@ export type OppEvent = {
   isAllDay: boolean;
 };
 
-export type OppMailSignal = {
-  direction: string;
-  signalType: string;
-  sentAt: string | null;
-};
-
 export type OpportunityInput = {
   opportunityId: string;
   stage: string | null;
@@ -42,8 +36,6 @@ export type OpportunityInput = {
   isActive: boolean;
   tasks: OppTask[];
   events: OppEvent[];
-  /** Signal Gmail rattaché en A ou B. Absent = aucune conclusion possible. */
-  mailSignal?: OppMailSignal | null;
 };
 
 export type MilestoneThresholds = {
@@ -52,8 +44,6 @@ export type MilestoneThresholds = {
   devisSlaDays: number;
   /** Sans jalon ni action humaine au-delà, l'opportunité devient candidate. */
   dormantAfterDays: number;
-  /** Au-delà, un client sans réponse est signalé. */
-  clientWaitingAfterDays: number;
 };
 
 export type MilestoneStatus =
@@ -125,6 +115,27 @@ export type MilestoneVerdict = {
   milestoneReason: string;
   latenessHours: number;
   clientWaiting: boolean;
+};
+
+/**
+ * Faits DÉJÀ DÉRIVÉS dont la hiérarchie des jalons a besoin — jamais des
+ * tâches ou événements bruts. Une même forme sert deux appelants : ce moteur,
+ * qui les dérive fraîchement à l'import depuis Salesforce, et
+ * `opportunity-metrics.ts`, qui les relit depuis les colonnes déjà persistées
+ * quand il doit retrouver le statut Salesforce pur d'une affaire — par
+ * exemple pour neutraliser un `client_attend` hérité de l'ancienne règle sans
+ * attendre le prochain import.
+ */
+export type MilestoneFacts = {
+  standbyUntil: string | null;
+  nextVisitAt: string | null;
+  visitKind: string | null;
+  devisSentAt: string | null;
+  devisRelanceAt: string | null;
+  estimationSentAt: string | null;
+  estimationRelanceAt: string | null;
+  lastHumanActionAt: string | null;
+  nextExpectedDueAt: string | null;
 };
 
 // --- Reconnaissance des libellés Salesforce --------------------------------
@@ -283,99 +294,111 @@ export function evaluateOpportunity(
 
   const withNext = { ...base, nextExpectedEvent, nextExpectedDueAt };
 
-  // --- Verdict. L'ordre EST la règle métier.
+  // « Le client attend » (client_attend) n'est PAS décidé ici.
+  //
+  // Avant C, ce moteur tranchait seul à partir d'un délai sur le dernier
+  // signal Gmail rattaché — une approximation qui ignorait le sens de
+  // circulation réel du fil et pouvait diverger du jugement du Morning
+  // (périmètre commercial + intention + fil complet). Depuis C, le Morning
+  // est la SEULE autorité sur une attente d'origine e-mail : c'est
+  // `opportunity-metrics.ts::loadMilestoneOpportunities` qui superpose
+  // `client_attend`, après cet appel, à partir de `morning-events.ts::
+  // canonicalClientAttend()`. Ce moteur reste donc un jugement Salesforce
+  // pur — jalons, tâches, événements — sans jamais lire Gmail.
+  const verdict = resolveMilestoneVerdict({ ...withNext, standbyUntil: opp.standbyUntil }, thresholds, now);
+
+  return { ...withNext, ...verdict };
+}
+
+function hasHumanActionAfter(lastHumanActionAt: string | null, since: number): boolean {
+  const at = ms(lastHumanActionAt);
+  return at != null && at > since;
+}
+
+/**
+ * Hiérarchie des jalons Salesforce, SANS l'ancienne branche e-mail — l'ordre
+ * EST la règle métier, inchangé depuis avant C : stand-by, jalon futur connu,
+ * SLA de relance, puis dormant en dernier recours.
+ *
+ * N'a besoin d'AUCUNE tâche ni événement brut, uniquement de faits déjà
+ * dérivés : c'est ce qui permet à `opportunity-metrics.ts` de la rejouer à la
+ * lecture, à partir des colonnes déjà persistées, sans rappeler Salesforce.
+ */
+export function resolveMilestoneVerdict(
+  facts: MilestoneFacts,
+  thresholds: Pick<MilestoneThresholds, "devisSlaDays" | "estimationSlaDays" | "dormantAfterDays">,
+  now: number,
+): { milestoneStatus: MilestoneStatus; milestoneReason: string; latenessHours: number } {
+  const standbyUntil = ms(facts.standbyUntil);
+  const nextVisitAt = ms(facts.nextVisitAt);
 
   // 1. Stand-by : bouclier absolu tant qu'il court.
   if (standbyUntil && standbyUntil > now) {
-    return { ...withNext, milestoneStatus: "standby", milestoneReason: `stand-by jusqu'au ${fmt(opp.standbyUntil)}` };
+    return { milestoneStatus: "standby", milestoneReason: `stand-by jusqu'au ${fmt(facts.standbyUntil)}`, latenessHours: 0 };
   }
-  if (standbyUntil && standbyUntil <= now && !hasActionAfter(tasks, standbyUntil)) {
+  if (standbyUntil && standbyUntil <= now && !hasHumanActionAfter(facts.lastHumanActionAt, standbyUntil)) {
     return {
-      ...withNext,
       milestoneStatus: "standby_expire",
-      milestoneReason: `stand-by expiré le ${fmt(opp.standbyUntil)}, aucune reprise constatée`,
+      milestoneReason: `stand-by expiré le ${fmt(facts.standbyUntil)}, aucune reprise constatée`,
       latenessHours: Math.round((now - standbyUntil) / HOUR),
     };
   }
 
   // 2. Jalon futur connu : le commercial est protégé jusqu'à l'échéance.
-  if (nextVisit) {
+  if (nextVisitAt && nextVisitAt > now) {
     return {
-      ...withNext,
       milestoneStatus: "a_venir",
-      milestoneReason: `${visitKindOf(nextVisit)} le ${fmt(nextVisit.startAt)}`,
+      milestoneReason: `${facts.visitKind ?? "rendez-vous client"} le ${fmt(facts.nextVisitAt)}`,
+      latenessHours: 0,
     };
   }
 
   // 3. SLA : une PREMIÈRE relance est due dans les N jours suivant l'envoi.
   //    Une fois faite, le SLA est satisfait — on n'impose pas un cycle.
-  const slaBreach = (
-    sentAt: string | null,
-    relanceAt: string | null,
-    days: number,
-  ): number | null => {
+  const slaBreach = (sentAt: string | null, relanceAt: string | null, days: number): number | null => {
     if (!sentAt || relanceAt) return null;
     const due = (ms(sentAt) ?? now) + days * DAY;
     return now > due ? now - due : null;
   };
 
-  const devisLate = slaBreach(devisSentAt, devisRelanceAt, thresholds.devisSlaDays);
+  const devisLate = slaBreach(facts.devisSentAt, facts.devisRelanceAt, thresholds.devisSlaDays);
   if (devisLate !== null) {
     return {
-      ...withNext,
       milestoneStatus: "sla_devis",
-      milestoneReason: `devis envoyé le ${fmt(devisSentAt)}, aucune relance dans les ${thresholds.devisSlaDays} jours`,
+      milestoneReason: `devis envoyé le ${fmt(facts.devisSentAt)}, aucune relance dans les ${thresholds.devisSlaDays} jours`,
       latenessHours: Math.round(devisLate / HOUR),
     };
   }
-  const estimLate = slaBreach(estimationSentAt, estimationRelanceAt, thresholds.estimationSlaDays);
+  const estimLate = slaBreach(facts.estimationSentAt, facts.estimationRelanceAt, thresholds.estimationSlaDays);
   if (estimLate !== null) {
     return {
-      ...withNext,
       milestoneStatus: "sla_estimation",
-      milestoneReason: `estimation envoyée le ${fmt(estimationSentAt)}, aucune relance dans les ${thresholds.estimationSlaDays} jours`,
+      milestoneReason: `estimation envoyée le ${fmt(facts.estimationSentAt)}, aucune relance dans les ${thresholds.estimationSlaDays} jours`,
       latenessHours: Math.round(estimLate / HOUR),
     };
   }
 
-  // 4. Le client attend. Signal POSITIF, uniquement quand Gmail le démontre :
-  //    son absence ne prouve rien, la couverture n'étant que partielle.
-  if (opp.mailSignal?.direction === "entrant" && opp.mailSignal.sentAt) {
-    const waiting = (now - (ms(opp.mailSignal.sentAt) ?? now)) / DAY;
-    const answered = hasActionAfter(tasks, ms(opp.mailSignal.sentAt) ?? 0);
-    if (waiting > thresholds.clientWaitingAfterDays && !answered) {
-      return {
-        ...withNext,
-        milestoneStatus: "client_attend",
-        milestoneReason: `dernier message client le ${fmt(opp.mailSignal.sentAt)}, sans réponse constatée`,
-        latenessHours: Math.round(waiting * 24),
-        clientWaiting: true,
-      };
-    }
-  }
+  // 4. « client_attend » d'origine e-mail : jamais ici. Voir le commentaire
+  //    au-dessus de l'appel, dans `evaluateOpportunity`.
 
   // 5. Dernier recours seulement : aucun jalon futur, aucun stand-by, aucune
   //    action humaine depuis longtemps. On dit « candidat », pas « en faute ».
-  const idleDays = lastHumanActionAt ? (now - (ms(lastHumanActionAt) ?? now)) / DAY : Infinity;
-  if (!nextExpectedDueAt && idleDays > thresholds.dormantAfterDays) {
+  const idleDays = facts.lastHumanActionAt ? (now - (ms(facts.lastHumanActionAt) ?? now)) / DAY : Infinity;
+  if (!facts.nextExpectedDueAt && idleDays > thresholds.dormantAfterDays) {
     return {
-      ...withNext,
       milestoneStatus: "dormant_candidate",
-      milestoneReason: lastHumanActionAt
+      milestoneReason: facts.lastHumanActionAt
         ? `aucun jalon prévu, dernière action client il y a ${Math.round(idleDays)} j`
         : "aucun jalon prévu, aucune action client constatée",
       latenessHours: Number.isFinite(idleDays) ? Math.round(idleDays * 24) : 0,
     };
   }
 
-  return { ...withNext, milestoneStatus: "normal", milestoneReason: "process suivi" };
+  return { milestoneStatus: "normal", milestoneReason: "process suivi", latenessHours: 0 };
 }
 
-function hasActionAfter(tasks: OppTask[], since: number): boolean {
-  return tasks.some((t) => isClientRelance(t) && (ms(t.at) ?? 0) > since);
-}
-
-function fmt(iso: string | null): string {
+/** Date lisible, réutilisée par les modules qui composent un motif à partir de faits externes. */
+export function fmt(iso: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("fr-FR");

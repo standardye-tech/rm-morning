@@ -106,9 +106,6 @@ export default function MorningPage() {
           <p className="mt-1 text-sm text-ink-soft">
             {metrics.owners.length} commerciaux suivis · {lastImport.teamRows} opportunités
             importées{isToday ? "" : " (données non rafraîchies aujourd'hui)"}
-            {plan.lastRead
-              ? ` · dernière lecture le ${new Date(plan.lastRead).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" })}`
-              : " · première lecture"}
           </p>
         </div>
       </div>

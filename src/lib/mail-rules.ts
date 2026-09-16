@@ -78,6 +78,13 @@ const NOISE_DOMAINS = [
   "alan.com", "alan.eu",
   // Recrutement
   "hellowork.com", "candidaturespontanee.com",
+  // Outils internes dont les notifications ne sont jamais la voix du client
+  // (F, audit des attentes affichées : 24 messages sur 43 venaient de ces
+  // domaines, sans aucun contenu client exploitable). `docs.google.com`
+  // aurait pu passer par la règle « google-technique », mais son expéditeur
+  // `comments-noreply` ne matche pas le motif `no-reply` (le tiret manque) —
+  // une entrée explicite ici est plus sûre qu'un correctif fragile de ce motif.
+  "trello.com", "docusign.net", "docs.google.com",
 ];
 
 /**
@@ -140,6 +147,34 @@ export function participants(message: MailMessage): string[] {
 export function teamMembersInvolved(message: MailMessage): string[] {
   const found = new Set<string>();
   for (const address of participants(message)) {
+    const member = TEAM_MAILBOXES[address];
+    if (member) found.add(member);
+  }
+  return [...found];
+}
+
+/**
+ * Commerciaux de l'équipe présents en `to` / `cc`, séparément.
+ *
+ * Distinct de `teamMembersInvolved` : celui-là fusionne from/to/cc dans un
+ * même ensemble, utile pour savoir SI l'équipe est concernée. Ici, la
+ * distinction destinataire principal / copie est la donnée elle-même — c'est
+ * elle qui permettra de distinguer « Sami gère cet échange » de « Sami est en
+ * copie sur l'affaire d'un autre commercial » (voir `morning-eligibility.ts`).
+ * Jamais `from` : un expéditeur client n'est pas un destinataire RM.
+ */
+export function teamMembersInTo(message: MailMessage): string[] {
+  const found = new Set<string>();
+  for (const address of (message.to ?? []).map(lower)) {
+    const member = TEAM_MAILBOXES[address];
+    if (member) found.add(member);
+  }
+  return [...found];
+}
+
+export function teamMembersInCc(message: MailMessage): string[] {
+  const found = new Set<string>();
+  for (const address of (message.cc ?? []).map(lower)) {
     const member = TEAM_MAILBOXES[address];
     if (member) found.add(member);
   }

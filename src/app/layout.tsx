@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 
 import { Nav } from "@/components/nav";
-import { exceptionCounts } from "@/lib/lead-store";
+import { monitoringUnreadCounts } from "@/lib/monitoring-view";
 import { activeRun, lastCompleteRun, lastRealRun } from "@/lib/sync/store";
 import "./globals.css";
 
@@ -11,8 +11,10 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
-  // Compteurs du mini-centre d'exceptions. Lecture locale, sans appel réseau.
-  const exceptions = exceptionCounts();
+  // Compteurs de la cloche : priorités Monitoring (pistes + opportunités) non
+  // lues au sens de `monitoring_read`, pas le statut Salesforce brut. Lecture
+  // locale, sans appel réseau.
+  const exceptions = monitoringUnreadCounts();
   // État de l'actualisation, rendu côté serveur. `activeRun` est appelé en
   // premier : c'est lui qui referme un run dont le battement s'est tu, pour qu'un
   // serveur redémarré en pleine actualisation ne laisse pas le bouton bloqué.

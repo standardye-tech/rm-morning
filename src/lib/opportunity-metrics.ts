@@ -13,12 +13,45 @@
 
 import { OPPORTUNITY_MONITORING, THRESHOLDS } from "./config";
 import { queryAll } from "./db";
+import { canonicalClientAttend, type CanonicalClientAttend } from "./morning-events";
 import {
+  fmt,
   MILESTONE_ANOMALIES,
+  resolveMilestoneVerdict,
   type MilestoneStatus,
   type NextExpectedEvent,
 } from "./opportunity-milestones";
 import { loadTeam } from "./team-store";
+
+const HOUR = 36e5;
+
+/**
+ * Mêmes seuils que ceux appliqués à l'import (`opportunity-import.ts::
+ * MILESTONE_THRESHOLDS`), pour la même hiérarchie de jalons — mais lus ici
+ * directement depuis la config, pour ne pas faire dépendre le chemin de
+ * LECTURE du module d'IMPORT.
+ */
+const RESOLVE_THRESHOLDS = {
+  devisSlaDays: OPPORTUNITY_MONITORING.devisSlaDays,
+  estimationSlaDays: OPPORTUNITY_MONITORING.estimationSlaDays,
+  dormantAfterDays: OPPORTUNITY_MONITORING.dormantAfterDays,
+};
+
+/**
+ * Statuts qui priment sur une attente d'origine e-mail — exactement l'ordre de
+ * `evaluateOpportunity` (C2) : stand-by, jalon futur connu et SLA de relance
+ * restent des faits Salesforce prioritaires. « client_attend » d'origine
+ * e-mail ne remplace qu'un statut « dormant_candidate » ou « normal », comme
+ * le faisait l'ancienne règle de délai qu'il remplace — jamais un SLA ou un
+ * stand-by en cours.
+ */
+const OUTRANKS_CLIENT_ATTEND: MilestoneStatus[] = [
+  "standby",
+  "standby_expire",
+  "a_venir",
+  "sla_devis",
+  "sla_estimation",
+];
 
 export type MilestoneOpportunity = {
   opportunityId: string;
@@ -40,6 +73,8 @@ export type MilestoneOpportunity = {
   devisRelanceAt: string | null;
   nextVisitAt: string | null;
   visitKind: string | null;
+  /** Dernière relance client valide constatée à l'import — jamais affichée telle quelle. */
+  lastHumanActionAt: string | null;
   nextExpectedEvent: NextExpectedEvent;
   nextExpectedDueAt: string | null;
   milestoneStatus: MilestoneStatus;
@@ -49,42 +84,118 @@ export type MilestoneOpportunity = {
   isLegacy: boolean;
 };
 
+/**
+ * Superpose la vérité canonique du Morning sur une opportunité déjà chargée.
+ *
+ * `evaluateOpportunity` (C2) ne décide plus jamais de `client_attend` : c'est
+ * fait ICI, en lecture, à partir de `canonicalClientAttend()`. Résultat :
+ * l'état suit le fil en temps réel, sans attendre le prochain import des
+ * jalons Salesforce — une réponse RM tout juste synchronisée fait disparaître
+ * l'attente au prochain affichage, pas au prochain « Actualiser » Salesforce.
+ *
+ * Rien n'est réécrit en base : c'est une projection à la lecture, exactement
+ * comme le fingerprint de `monitoring-read`. Un statut qui prime déjà
+ * (stand-by, jalon futur, SLA en cours) n'est jamais recouvert.
+ *
+ * DEUX DIRECTIONS, symétriques :
+ *   — la vérité canonique dit « oui » et rien ne prime déjà → on AJOUTE
+ *     `client_attend` ;
+ *   — la base retient encore un `client_attend` hérité de l'ANCIENNE règle
+ *     (par délai, avant C) mais la vérité canonique dit « non » → on ne le
+ *     laisse JAMAIS traîner jusqu'au prochain import. On rejoue
+ *     `resolveMilestoneVerdict` — la même hiérarchie que celle qui aurait
+ *     tourné à l'import, à partir des mêmes faits déjà persistés (SLA,
+ *     stand-by, dormant…) — pour retrouver le statut Salesforce pur exact,
+ *     jamais un repli optimiste sur « normal » qui masquerait une anomalie.
+ */
+function withCanonicalClientAttend(
+  o: MilestoneOpportunity,
+  canonical: Map<string, CanonicalClientAttend>,
+  now: number,
+): MilestoneOpportunity {
+  const attente = canonical.get(o.opportunityId);
+
+  if (attente && !OUTRANKS_CLIENT_ATTEND.includes(o.milestoneStatus)) {
+    return {
+      ...o,
+      milestoneStatus: "client_attend",
+      milestoneReason: `dernier message client le ${fmt(attente.sentAt)}, sans réponse constatée`,
+      clientWaiting: true,
+      latenessHours: attente.sentAt ? Math.round((now - new Date(attente.sentAt).getTime()) / HOUR) : o.latenessHours,
+    };
+  }
+
+  if (!attente && o.milestoneStatus === "client_attend") {
+    const verdict = resolveMilestoneVerdict(
+      {
+        standbyUntil: o.standbyUntil,
+        nextVisitAt: o.nextVisitAt,
+        visitKind: o.visitKind,
+        devisSentAt: o.devisSentAt,
+        devisRelanceAt: o.devisRelanceAt,
+        estimationSentAt: o.estimationSentAt,
+        estimationRelanceAt: o.estimationRelanceAt,
+        lastHumanActionAt: o.lastHumanActionAt,
+        nextExpectedDueAt: o.nextExpectedDueAt,
+      },
+      RESOLVE_THRESHOLDS,
+      now,
+    );
+    return {
+      ...o,
+      milestoneStatus: verdict.milestoneStatus,
+      milestoneReason: verdict.milestoneReason,
+      latenessHours: verdict.latenessHours,
+      clientWaiting: false,
+    };
+  }
+
+  return o;
+}
+
 export function loadMilestoneOpportunities(): MilestoneOpportunity[] {
+  const canonical = canonicalClientAttend();
+  const now = Date.now();
   return queryAll<Record<string, string | number | null>>(
     `SELECT opportunity_id, name, client_contact, owner, gmv, stage, standby_until,
             kanban_month, kanban_year,
             estimation_sent_at, estimation_relance_at, devis_sent_at, devis_relance_at,
-            next_visit_at, visit_kind, next_expected_event, next_expected_due_at,
+            next_visit_at, visit_kind, last_human_action_at, next_expected_event, next_expected_due_at,
             milestone_status, milestone_reason, milestone_lateness_hours,
             client_waiting, milestone_is_legacy
        FROM opportunity
       WHERE is_terminal = 0 AND milestone_status IS NOT NULL`,
-  ).map((r) => ({
-    opportunityId: String(r.opportunity_id),
-    name: r.name as string | null,
-    client: (r.client_contact as string | null) ?? (r.name as string | null),
-    owner: String(r.owner),
-    gmv: r.gmv as number | null,
-    stage: r.stage as string | null,
-    plannedMonth:
-      r.kanban_year && r.kanban_month
-        ? `${r.kanban_year}-${String(r.kanban_month).padStart(2, "0")}`
-        : null,
-    standbyUntil: r.standby_until as string | null,
-    estimationSentAt: r.estimation_sent_at as string | null,
-    estimationRelanceAt: r.estimation_relance_at as string | null,
-    devisSentAt: r.devis_sent_at as string | null,
-    devisRelanceAt: r.devis_relance_at as string | null,
-    nextVisitAt: r.next_visit_at as string | null,
-    visitKind: r.visit_kind as string | null,
-    nextExpectedEvent: r.next_expected_event as NextExpectedEvent,
-    nextExpectedDueAt: r.next_expected_due_at as string | null,
-    milestoneStatus: String(r.milestone_status) as MilestoneStatus,
-    milestoneReason: r.milestone_reason as string | null,
-    latenessHours: Number(r.milestone_lateness_hours ?? 0),
-    clientWaiting: Number(r.client_waiting) === 1,
-    isLegacy: Number(r.milestone_is_legacy) === 1,
-  }));
+  )
+    .map(
+      (r): MilestoneOpportunity => ({
+        opportunityId: String(r.opportunity_id),
+        name: r.name as string | null,
+        client: (r.client_contact as string | null) ?? (r.name as string | null),
+        owner: String(r.owner),
+        gmv: r.gmv as number | null,
+        stage: r.stage as string | null,
+        plannedMonth:
+          r.kanban_year && r.kanban_month
+            ? `${r.kanban_year}-${String(r.kanban_month).padStart(2, "0")}`
+            : null,
+        standbyUntil: r.standby_until as string | null,
+        estimationSentAt: r.estimation_sent_at as string | null,
+        estimationRelanceAt: r.estimation_relance_at as string | null,
+        devisSentAt: r.devis_sent_at as string | null,
+        devisRelanceAt: r.devis_relance_at as string | null,
+        nextVisitAt: r.next_visit_at as string | null,
+        visitKind: r.visit_kind as string | null,
+        lastHumanActionAt: r.last_human_action_at as string | null,
+        nextExpectedEvent: r.next_expected_event as NextExpectedEvent,
+        nextExpectedDueAt: r.next_expected_due_at as string | null,
+        milestoneStatus: String(r.milestone_status) as MilestoneStatus,
+        milestoneReason: r.milestone_reason as string | null,
+        latenessHours: Number(r.milestone_lateness_hours ?? 0),
+        clientWaiting: Number(r.client_waiting) === 1,
+        isLegacy: Number(r.milestone_is_legacy) === 1,
+      }),
+    )
+    .map((o) => withCanonicalClientAttend(o, canonical, now));
 }
 
 const sum = (list: MilestoneOpportunity[]) => list.reduce((s, o) => s + (o.gmv ?? 0), 0);

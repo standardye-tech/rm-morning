@@ -44,6 +44,7 @@ type Board = {
   acknowledge: (messageId: string) => void;
   acknowledgeAll: (category: Category | null) => void;
   complete: (actionKey: string, messageId: string | null) => void;
+  completeAll: (targets: { key: string; messageId: string | null }[]) => void;
   busy: boolean;
 };
 
@@ -250,8 +251,6 @@ function EventTable({
 }) {
   const [expanded, setExpanded] = useState(false);
   const shown = expanded ? events : events.slice(0, VISIBLE);
-  // Un marqueur porté par toutes les lignes ne hiérarchise rien.
-  const allNew = events.length > 0 && events.every((e) => e.isNew);
   const done = board.acknowledged;
 
   return (
@@ -292,18 +291,6 @@ function EventTable({
               >
                 <td className="truncate px-4 md:px-6 py-1">
                   <span className="font-medium">{e.client ?? "Client non identifié"}</span>
-                  {/*
-                    Le point ne s'affiche que lorsqu'il DISTINGUE : si tous les
-                    messages sont nouveaux, il n'apprend rien et disparaît. Le
-                    champ métier `isNew` est inchangé, seule sa mise en forme l'est.
-                  */}
-                  {e.isNew && !allNew ? (
-                    <span
-                      className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-positive align-middle"
-                      title="Nouveau depuis votre dernière lecture"
-                      aria-label="nouveau"
-                    />
-                  ) : null}
                 </td>
                 <td className="truncate px-3 py-1 text-xs text-ink-soft">
                   {e.salesperson ?? "—"}
@@ -366,7 +353,7 @@ export function HotClients({ events, board }: { events: MorningEvent[]; board: B
     <Card>
       <SectionTitle
         eyebrow="Bloc 1"
-        title="Clients chauds depuis votre dernière lecture"
+        title="Clients chauds à traiter"
         aside={
           <span className="flex items-center gap-3">
             <span>{events.length} client(s)</span>
@@ -375,7 +362,7 @@ export function HotClients({ events, board }: { events: MorningEvent[]; board: B
         }
       />
       {events.length === 0 ? (
-        <EmptyState>Aucun client n&apos;a manifesté l&apos;envie d&apos;avancer depuis votre dernière lecture.</EmptyState>
+        <EmptyState>Aucun client n&apos;a manifesté l&apos;envie d&apos;avancer.</EmptyState>
       ) : (
         <EventTable
           events={events}
@@ -494,7 +481,8 @@ export function TodayPlan({
   );
   const removed = actions.length - visible.length;
   const shown = expanded ? visible : visible.slice(0, VISIBLE);
-  const remaining = visible.filter((a) => !done.has(a.key)).length;
+  const remainingActions = visible.filter((a) => !done.has(a.key));
+  const remaining = remainingActions.length;
 
   return (
     <Card className="ring-1 ring-ink/5">
@@ -502,9 +490,19 @@ export function TodayPlan({
         eyebrow="Plan du jour"
         title="À faire aujourd'hui"
         aside={
-          doneToday > 0
-            ? `${visible.length} action(s) · ${doneToday} faite(s) aujourd'hui`
-            : `${visible.length} action(s)`
+          <span className="flex items-center gap-3">
+            <span>
+              {doneToday > 0
+                ? `${visible.length} action(s) · ${doneToday} faite(s) aujourd'hui`
+                : `${visible.length} action(s)`}
+            </span>
+            <MarkAllButton
+              count={remaining}
+              busy={board.busy}
+              onClick={() => board.completeAll(remainingActions.map((a) => ({ key: a.key, messageId: a.messageId })))}
+              label="Tout traiter"
+            />
+          </span>
         }
       />
       {removed > 0 ? (
@@ -644,7 +642,28 @@ export function MorningBoard({
     });
   };
 
-  const board: Board = { acknowledged, handledAbove, doneActions, acknowledge, acknowledgeAll, complete, busy: pending };
+  const completeAll = (targets: { key: string; messageId: string | null }[]) => {
+    setDoneActions((s) => add(s, targets.map((t) => t.key)));
+    const messageIds = targets.filter((t) => t.messageId).map((t) => t.messageId!);
+    if (messageIds.length > 0) setAcknowledged((s) => add(s, messageIds));
+    start(async () => {
+      // La liste est RECALCULÉE côté serveur (voir la route) : ce qui est fait
+      // est ce que le Plan affiche à cet instant, pas ce qu'un onglet resté
+      // ouvert enverrait.
+      await post({ action: "tout_faire" });
+    });
+  };
+
+  const board: Board = {
+    acknowledged,
+    handledAbove,
+    doneActions,
+    acknowledge,
+    acknowledgeAll,
+    complete,
+    completeAll,
+    busy: pending,
+  };
   const remainingAll = remainingOf(hot, board) + remainingOf(waiting, board);
 
   return (

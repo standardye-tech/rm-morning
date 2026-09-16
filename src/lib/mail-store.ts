@@ -25,6 +25,9 @@ export type MailSignalRow = {
   matchLevel: "A" | "B" | "C";
   matchReason: string;
   salesperson: string | null;
+  /** Commerciaux de l'équipe présents en `to` / `cc` — voir `mail-rules.ts`. */
+  rmTo: string[];
+  rmCc: string[];
 };
 
 /**
@@ -39,8 +42,8 @@ export function insertSignal(signal: MailSignalRow, syncId: number): boolean {
          gmail_message_id, thread_id, sent_at, from_email, from_name, subject,
          direction, filter_rule, opportunity_id, match_level, match_reason,
          salesperson, signal_type, signal_confidence, blocker, summary,
-         classifier, analyzed_at, sync_id
-       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         classifier, analyzed_at, sync_id, rm_to, rm_cc
+       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT (gmail_message_id) DO NOTHING`,
     )
     .run(
@@ -65,6 +68,8 @@ export function insertSignal(signal: MailSignalRow, syncId: number): boolean {
       null,
       null,
       syncId,
+      JSON.stringify(signal.rmTo),
+      JSON.stringify(signal.rmCc),
     );
   return result.changes > 0;
 }

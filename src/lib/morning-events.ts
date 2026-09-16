@@ -53,6 +53,9 @@ type SignalRow = {
   ext_stage: string | null;
   ext_amount: number | null;
   ext_owner: string | null;
+  /** Destinataires RM (D), JSON brut. Absent = ligne antérieure à cette donnée. */
+  rm_to?: string | null;
+  rm_cc?: string | null;
   signal_type: string;
   blocker: string | null;
   summary: string | null;
@@ -96,13 +99,39 @@ const AUTOMATED =
 const WAITING =
   /relance|je vous relance|je me permets de vous relancer|sans reponse|pas eu de reponse|toujours pas|des nouvelles|du nouveau|avez-vous recu|auriez-vous|pourriez-vous m'envoyer|dans l'attente|j'attends|nous attendons|en attente de votre|pouvez-vous me rappeler|merci de me rappeler|deuxieme relance|2eme relance/;
 
+/**
+ * Le client propose un créneau et attend que RM confirme lequel (F, W6) :
+ * « dites-moi ce qui vous convient » ne contient ni point d'interrogation ni
+ * verbe de demande classique, mais RM doit répondre pour que le rendez-vous
+ * se cale.
+ */
+const PROPOSES_SLOT =
+  /(?:dites-moi|indiquez-moi|confirmez-moi|precisez-moi|faites-moi savoir)[^.?!]{0,40}(?:convient|arrange|preferez|choix)/;
+
 /** Le client demande un document ou une correction pour pouvoir avancer. */
 const NEEDS =
   /document|attestation|justificatif|devis (corrige|modifie|actualise)|corriger|correction|modifier|modification|ajuster|ajustement|rectifier|preciser/;
 
-/** Le client exprime une volonté d'avancer. */
+/**
+ * Simple transmission, sans rien demander (F) : « voici », pièce jointe,
+ * document déjà signé/disponible. Neutralise `NEEDS` quand ce dernier n'a
+ * accroché qu'un nom de pièce mentionné en passant — jamais une vraie
+ * demande, qui aurait de toute façon déjà été attrapée plus haut par
+ * `detectIntent` ou par `WAITING`.
+ */
+const DELIVERY =
+  /voici (?:le|la|les)|ci-joint|veuillez trouver|vous trouverez|je vous transmets|je vous envoie|en piece jointe|(?:document|devis|contrat) (?:est |a ete )?(?:signe|disponible|transmis)/;
+
+/**
+ * Le client exprime une volonté d'avancer.
+ *
+ * « convient » est volontairement restreint à SON propre accord (le devis, la
+ * proposition, le budget... lui convient) : la forme nue laissait « dites-moi
+ * ce qui VOUS convient » — une simple proposition de créneau — se faire
+ * passer pour un accord commercial (F, W6).
+ */
 const ADVANCING =
-  /comment (avancons|on avance|procede|proceder|faire pour)|prochaine etape|on y va|c'est bon pour (moi|nous)|nous souhaitons avancer|je souhaite avancer|valider|validation|signer|signature|bon pour accord|d'accord pour|convient|ca me va|ca nous va|fixer un rendez-vous|prendre rendez-vous|caler un (rdv|rendez-vous)|disponible pour|reglement|paiement|acompte|contrat/;
+  /comment (avancons|on avance|procede|proceder|faire pour)|prochaine etape|on y va|c'est bon pour (moi|nous)|nous souhaitons avancer|je souhaite avancer|valider|validation|\bsign(?:er|ions|iez|ons|ez|erai\w*|eras\w*|era\b|erons|erez|eront|ature)|bon pour accord|d'accord pour|(?:ca|le devis|la proposition|l'offre|le budget) (?:me |nous )?convient|ca me va|ca nous va|fixer un rendez-vous|prendre rendez-vous|caler un (rdv|rendez-vous)|disponible pour|reglement|paiement|acompte|contrat|quand[^.?!]{0,20}(?:demarrer|commencer)/;
 
 /** Interlocuteurs qui ne sont pas le client final. */
 const NOT_CLIENT = /artisan|fournisseur|partenaire|comptable|assurance|banque(?!.*client)/;
@@ -147,6 +176,17 @@ type TriageRow = {
   stage?: string | null;
   is_terminal?: number | null;
   signal_type: string;
+  /**
+   * Propriétaires Salesforce bruts (E) — un seul est pertinent, choisi selon
+   * `match_kind`. Non normalisés : `eligibilityOf` les fait passer par
+   * `matchTeamMember` avant de les comparer à un nom d'équipe.
+   */
+  owner?: string | null;
+  ext_owner?: string | null;
+  lead_owner?: string | null;
+  /** Destinataires RM (D), JSON brut tel que persisté dans `mail_signal`. */
+  rm_to?: string | null;
+  rm_cc?: string | null;
 };
 
 /**
@@ -169,6 +209,35 @@ export function triage(row: TriageRow): Triage {
   return result;
 }
 
+/**
+ * Propriétaire Salesforce de ce que le message désigne, normalisé sur le nom
+ * d'équipe canonique — le même que celui de `TEAM_MAILBOXES` — pour être
+ * comparable à un membre RM. Un seul champ est pertinent selon `match_kind` :
+ * jamais `salesperson` (E), qui n'est qu'une approximation de rattachement.
+ */
+function dealOwnerOf(row: TriageRow): string | null {
+  const raw =
+    row.match_kind === "affaire_pipe"
+      ? row.owner
+      : row.match_kind === "affaire_hors_pipe" || row.match_kind === "affaire_fermee"
+        ? row.ext_owner
+        : row.match_kind === "piste"
+          ? row.lead_owner
+          : null;
+  return raw ? (matchTeamMember(raw)?.name ?? null) : null;
+}
+
+/** Liste de noms d'équipe persistée en JSON (D). `null` = donnée absente, jamais « vide ». */
+function parseTeamNames(json: string | null | undefined): string[] | null {
+  if (json == null) return null;
+  try {
+    const value = JSON.parse(json) as unknown;
+    return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : null;
+  } catch {
+    return null;
+  }
+}
+
 function eligibilityOf(row: TriageRow) {
   return evaluateEligibility(
     { fromEmail: row.from_email ?? null, subject: row.subject, summary: row.summary },
@@ -179,6 +248,9 @@ function eligibilityOf(row: TriageRow) {
       dealStage: row.stage ?? null,
       dealIsTerminal: row.is_terminal === 1,
       direction: row.direction,
+      ownerName: dealOwnerOf(row),
+      rmTo: parseTeamNames(row.rm_to),
+      rmCc: parseTeamNames(row.rm_cc),
     },
     INTERNAL_DOMAIN,
   );
@@ -223,16 +295,19 @@ function classify(row: TriageRow, eligibility: ReturnType<typeof eligibilityOf>)
     return { category: "ignore", reason: "", ignoredBecause: "le client ne donne pas suite" };
   }
 
-  // Un client qui relance passe devant : il attend une réponse, et c'est plus
-  // urgent qu'une intention d'avancer déjà entendue.
-  if (WAITING.test(text)) {
-    return {
-      category: "attente",
-      reason: NEEDS.test(text) ? "Relance et attend un document ou une correction" : "Relance, sans réponse de notre côté",
-      ignoredBecause: null,
-    };
-  }
-
+  // --- Hiérarchie produit (F, priorité chaud > attente).
+  //
+  // Un engagement commercial FORT est l'information la plus importante d'un
+  // message, même quand ce même message contient aussi une demande : « le
+  // devis nous convient, pourriez-vous m'envoyer le lien pour signer ? » doit
+  // se lire comme un accord qui appelle une accélération, pas comme une
+  // simple relance. C'est pourquoi ces trois signaux — les plus déterministes
+  // de l'engagement — sont désormais vérifiés AVANT `WAITING`.
+  //
+  // Ordre choisi pour limiter le risque de régression : `WAITING` reste
+  // vérifié avant tout le reste (accusé de réception mis à part), donc une
+  // relance qui ne porte AUCUN signal d'engagement continue de primer sur une
+  // demande formulée platement, exactement comme avant F.
   if (row.signal_type === "signature") {
     return { category: "chaud", reason: "Prêt à signer ou dernière étape avant signature", ignoredBecause: null };
   }
@@ -255,6 +330,20 @@ function classify(row: TriageRow, eligibility: ReturnType<typeof eligibilityOf>)
   }
   if (ADVANCING.test(text)) {
     return { category: "chaud", reason: "Souhaite avancer", ignoredBecause: null };
+  }
+
+  // Un client qui relance passe devant : il attend une réponse, et c'est plus
+  // urgent qu'une intention d'avancer déjà entendue — SAUF si un engagement
+  // fort vient d'être détecté ci-dessus, auquel cas on ne redescend jamais.
+  if (WAITING.test(text)) {
+    return {
+      category: "attente",
+      reason: NEEDS.test(text) ? "Relance et attend un document ou une correction" : "Relance, sans réponse de notre côté",
+      ignoredBecause: null,
+    };
+  }
+  if (PROPOSES_SLOT.test(text)) {
+    return { category: "attente", reason: "Propose un créneau, attend une confirmation", ignoredBecause: null };
   }
 
   // --- ÉTAGE B' (C15). La demande, avant l'abandon.
@@ -296,7 +385,10 @@ function classify(row: TriageRow, eligibility: ReturnType<typeof eligibilityOf>)
     return { category: "chaud", reason: "Souhaite avancer", ignoredBecause: null };
   }
 
-  if (NEEDS.test(text)) {
+  // Dernier filet, jamais sur une simple transmission (F, W7) : « voici le
+  // document signé » contient « document » sans rien demander, et aurait déjà
+  // été attrapé plus haut par `detectIntent` si une vraie demande existait.
+  if (NEEDS.test(text) && !DELIVERY.test(text)) {
     return { category: "attente", reason: "Attend un document ou une correction", ignoredBecause: null };
   }
   if (row.signal_type === "risque") {
@@ -408,8 +500,9 @@ export function syncMorningEvents(now = new Date()): { seen: number; created: nu
       // heuristiques de domaine.
       `SELECT m.gmail_message_id, m.thread_id, m.sent_at, m.direction, m.subject, m.summary,
               m.blocker, m.signal_type, m.from_email, m.match_kind, m.opportunity_id,
-              d.opportunity_stage, d.lead_status,
-              o.stage, o.is_terminal
+              m.rm_to, m.rm_cc,
+              d.opportunity_stage, d.lead_status, d.opportunity_owner AS ext_owner, d.lead_owner,
+              o.stage, o.is_terminal, o.owner
          FROM mail_signal m
          LEFT JOIN mail_directory d ON d.email = lower(m.from_email)
          LEFT JOIN opportunity o ON o.opportunity_id = m.opportunity_id`,
@@ -522,31 +615,16 @@ export function doneActionKeys(now = new Date()): Set<string> {
   return new Set(rows.map((r) => r.action_key));
 }
 
-export function lastMorningRead(): string | null {
-  const db = getDb();
-  const row = db.prepare("SELECT last_read_at FROM morning_state WHERE id = 1").get() as
-    | { last_read_at: string | null }
-    | undefined;
-  return row?.last_read_at ?? null;
-}
-
-export function markMorningRead(now = new Date()): void {
-  const db = getDb();
-  db.prepare(
-    "INSERT INTO morning_state (id, last_read_at) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET last_read_at = excluded.last_read_at",
-  ).run(now.toISOString());
-}
-
 /**
  * Les événements à présenter ce matin.
  *
- * Tout ce qui n'est pas encore pris en compte remonte, quelle que soit la date :
- * ne pas avoir ouvert RM Morning hier ne doit pas faire perdre un message. La
- * dernière lecture ne sert qu'à dire ce qui est *nouveau* depuis, pas à filtrer.
+ * Tout ce qui n'est pas encore pris en compte remonte, quelle que soit la
+ * date : ne pas avoir ouvert RM Morning hier ne doit pas faire perdre un
+ * message. Il n'existe plus de notion de « lu / non lu » ici (H) — seulement
+ * « à traiter / traité », portée par `acknowledged`.
  */
-export function loadMorningEvents(): { events: MorningEvent[]; lastRead: string | null } {
+export function loadMorningEvents(): { events: MorningEvent[] } {
   const db = getDb();
-  const lastRead = lastMorningRead();
   const rows = db
     .prepare(
       `SELECT e.gmail_message_id, e.thread_id, e.sent_at, e.category, e.reason, e.status,
@@ -565,6 +643,9 @@ export function loadMorningEvents(): { events: MorningEvent[]; lastRead: string 
         ORDER BY e.sent_at DESC`,
     )
     .all() as SignalRow[];
+
+  const activeWaiting = activeWaitingMessageIds();
+  const latestHot = latestHotMessageIds();
 
   const events = rows.map((r): MorningEvent => {
     const level = r.match_level ?? "C";
@@ -614,11 +695,189 @@ export function loadMorningEvents(): { events: MorningEvent[]; lastRead: string 
       stage: kind === "affaire_pipe" ? r.stage : null,
       acknowledged: r.status === "pris_en_compte",
       acknowledgedAt: r.acknowledged_at,
-      isNew: lastRead == null || (r.sent_at ?? "") > lastRead,
+      // Non pertinent hors « attente » : vrai par défaut pour ne rien filtrer
+      // d'autre que ce que cette notion concerne.
+      awaitingReply: r.category !== "attente" || activeWaiting.has(r.gmail_message_id),
+      // Non pertinent hors « chaud » (G) : vrai par défaut pour les autres
+      // catégories, pour ne filtrer que ce que cette notion concerne.
+      isLatestHotInThread: r.category !== "chaud" || latestHot.has(r.gmail_message_id),
     };
   });
 
-  return { events, lastRead };
+  return { events };
+}
+
+// --- Fraîcheur du fil (F) ----------------------------------------------------
+
+/**
+ * Dernier message SORTANT de chaque fil.
+ *
+ * UNE SEULE définition de « le fil a reçu une réponse RM », partagée par le
+ * Bloc 2 du Morning (`loadMorningEvents`) et par `canonicalClientAttend()`
+ * (Monitoring) : avant F, cette même logique était écrite deux fois — une
+ * fois en SQL dans `canonicalClientAttend`, jamais dans le Bloc 2 lui-même,
+ * ce qui laissait une attente déjà répondue s'afficher indéfiniment tant
+ * qu'elle n'était pas acquittée à la main.
+ */
+export function latestOutboundByThread(): Map<string, string> {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT thread_id, MAX(sent_at) AS latest FROM mail_signal
+        WHERE direction = 'sortant' AND sent_at IS NOT NULL
+        GROUP BY thread_id`,
+    )
+    .all() as { thread_id: string; latest: string }[];
+  return new Map(rows.map((r) => [r.thread_id, r.latest]));
+}
+
+/**
+ * Le fil est-il resté sans réponse RM après ce message ?
+ *
+ * `sentAt` nul ne peut être comparé à rien : on considère alors l'attente
+ * encore active plutôt que de faire disparaître à tort un message dont la
+ * date est inconnue.
+ */
+export function isThreadStillWaiting(
+  threadId: string,
+  sentAt: string | null,
+  latestOutbound: Map<string, string>,
+): boolean {
+  if (!sentAt) return true;
+  const latest = latestOutbound.get(threadId);
+  return !latest || latest <= sentAt;
+}
+
+/**
+ * Parmi des messages d'UNE MÊME catégorie, ceux qui sont la plus récente
+ * occurrence de leur fil. Brique commune à la déduplication du Bloc 2
+ * (attente) et du Bloc 1 (chaud, G) : plusieurs signaux successifs sur le
+ * même sujet, dans le même fil, ne sont pas des situations distinctes — seule
+ * la plus récente décrit la situation commerciale actuelle.
+ */
+function latestByThread(rows: { id: string; thread_id: string; sent_at: string | null }[]): Set<string> {
+  const latest = new Map<string, string>();
+  for (const r of rows) {
+    const current = latest.get(r.thread_id);
+    const at = r.sent_at ?? "";
+    if (current === undefined || at > current) latest.set(r.thread_id, at);
+  }
+  const result = new Set<string>();
+  for (const r of rows) {
+    if ((r.sent_at ?? "") >= (latest.get(r.thread_id) ?? "")) result.add(r.id);
+  }
+  return result;
+}
+
+function eventRowsOfCategory(category: "chaud" | "attente"): { id: string; thread_id: string; sent_at: string | null }[] {
+  return getDb()
+    .prepare(
+      `SELECT e.gmail_message_id AS id, m.thread_id AS thread_id, m.sent_at AS sent_at
+         FROM morning_event e
+         JOIN mail_signal m ON m.gmail_message_id = e.gmail_message_id
+        WHERE e.category = ?`,
+    )
+    .all(category) as { id: string; thread_id: string; sent_at: string | null }[];
+}
+
+/**
+ * Messages « chaud » qui sont la plus récente occurrence de leur fil (G,
+ * audit F-bis : 2 threads sur 21 portaient plusieurs événements chauds
+ * simultanés). Déduplication AU NIVEAU DU THREAD seulement — jamais par
+ * affaire : une même opportunité peut porter plusieurs fils réellement
+ * distincts, et chacun garde sa propre plus récente occurrence.
+ */
+export function latestHotMessageIds(): Set<string> {
+  return latestByThread(eventRowsOfCategory("chaud"));
+}
+
+/**
+ * Messages « attente » réellement actifs — UNE SEULE définition (F, audit des
+ * 43 attentes affichées), consommée par le Bloc 2 du Morning
+ * (`loadMorningEvents`) et par `canonicalClientAttend()` (Monitoring) : elles
+ * ne peuvent plus diverger.
+ *
+ * Un message `attente` est actif quand :
+ *   — aucune réponse RM plus récente n'existe dans son fil
+ *     (`isThreadStillWaiting`) ;
+ *   — ET il est la PLUS RÉCENTE relance « attente » de ce fil. Plusieurs
+ *     relances non répondues sur le même sujet ne sont pas trois attentes
+ *     distinctes : c'est une seule conversation qui n'a toujours pas de
+ *     réponse, et une seule ligne suffit à le dire. Les précédentes ne sont
+ *     ni supprimées ni réinterprétées — seule la LECTURE ne les affiche plus.
+ */
+export function activeWaitingMessageIds(): Set<string> {
+  const rows = eventRowsOfCategory("attente");
+  const latestOutbound = latestOutboundByThread();
+  const latestInThread = latestByThread(rows);
+
+  const active = new Set<string>();
+  for (const r of rows) {
+    if (!isThreadStillWaiting(r.thread_id, r.sent_at, latestOutbound)) continue;
+    if (!latestInThread.has(r.id)) continue;
+    active.add(r.id);
+  }
+  return active;
+}
+
+// --- Vérité canonique « client attend » (C) --------------------------------
+
+export type CanonicalClientAttend = {
+  opportunityId: string;
+  /** Date d'envoi du message qui fonde l'attente. */
+  sentAt: string | null;
+};
+
+/**
+ * Opportunités actuellement en attente réelle d'une réponse RM, telles que le
+ * Morning les juge — et LUI SEUL. `opportunity-metrics.ts` consomme ce
+ * résultat ; il ne recalcule jamais une attente d'origine e-mail de son côté.
+ *
+ * Un événement compte pour une affaire quand :
+ *   — sa catégorie est « attente » (verdict du Morning : périmètre commercial
+ *     via `morning-eligibility`, puis intention via `morning-intent` et les
+ *     règles de `triage()` — jamais rejoué ici, seulement lu) ;
+ *   — son rattachement à CETTE affaire est de confiance suffisante (niveau A
+ *     ou B). Un niveau C reste affiché dans le Morning avec un badge « à
+ *     vérifier », lu par un humain qui juge sur pièces ; il n'est pas assez
+ *     sûr pour être attaché automatiquement à une affaire précise, et ne doit
+ *     surtout pas ressusciter l'ancienne règle de délai que ce mécanisme
+ *     remplace ;
+ *   — le message est actif au sens d'`activeWaitingMessageIds` — LA MÊME
+ *     fonction que le Bloc 2 : les deux ne peuvent plus diverger (F), y
+ *     compris pour la déduplication des relances successives d'un même fil.
+ *
+ * `status` (« pris_en_compte ») n'entre JAMAIS dans ce calcul : c'est un état
+ * UTILISATEUR — le geste de Sami ou d'un commercial sur SA liste de tâches. Il
+ * ne dit rien de la réalité du fil. Un message traité alors que le client
+ * n'a toujours reçu aucune réponse reste une attente active pour Monitoring ;
+ * inversement, un message jamais acquitté dont le fil montre une réponse plus
+ * récente n'en est plus une. Les deux notions sont volontairement disjointes.
+ */
+export function canonicalClientAttend(): Map<string, CanonicalClientAttend> {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT m.gmail_message_id AS id, m.opportunity_id AS opportunity_id, m.sent_at AS sent_at
+         FROM morning_event e
+         JOIN mail_signal m ON m.gmail_message_id = e.gmail_message_id
+        WHERE e.category = 'attente'
+          AND m.opportunity_id IS NOT NULL
+          AND m.match_level IN ('A', 'B')
+        ORDER BY m.sent_at ASC`,
+    )
+    .all() as { id: string; opportunity_id: string; sent_at: string | null }[];
+
+  const active = activeWaitingMessageIds();
+
+  // Ordre croissant, puis écrasement : le message le plus récent gagne quand
+  // plusieurs attentes actives existent sur la même affaire.
+  const map = new Map<string, CanonicalClientAttend>();
+  for (const r of rows) {
+    if (!active.has(r.id)) continue;
+    map.set(r.opportunity_id, { opportunityId: r.opportunity_id, sentAt: r.sent_at });
+  }
+  return map;
 }
 
 /** Motifs d'exclusion, pour rendre compte de ce que Morning n'a pas retenu. */

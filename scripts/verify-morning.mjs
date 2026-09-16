@@ -112,10 +112,9 @@ const tDoc = triage(msg({ subject: "Devis", summary: "Pourriez-vous m'envoyer l'
 check("demande de document → client qui attend", tDoc.category === "attente", tDoc.reason);
 
 console.log(`\n════ ÉTAT RÉEL ════`);
-const { events, lastRead } = loadMorningEvents();
+const { events } = loadMorningEvents();
 const hot = events.filter((e) => e.category === "chaud" && !e.acknowledged);
 const waiting = events.filter((e) => e.category === "attente" && !e.acknowledged);
-console.log(`  dernière lecture Morning : ${lastRead ? new Date(lastRead).toLocaleString("fr-FR") : "jamais"}`);
 console.log(`  retenus : ${events.length} · chauds ${hot.length} · en attente ${waiting.length}`);
 console.log(`  écartés :`);
 for (const i of ignoredSummary()) console.log(`      ${i.reason.padEnd(46)} ${i.count}`);

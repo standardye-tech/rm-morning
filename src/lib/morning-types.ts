@@ -68,7 +68,22 @@ export type MorningEvent = {
   stage: string | null;
   acknowledged: boolean;
   acknowledgedAt: string | null;
-  isNew: boolean;
+  /**
+   * L'attente est-elle encore active (F) ? Vrai pour tout ce qui n'est pas
+   * une catégorie « attente », et pour une attente sans réponse RM
+   * postérieure dans le fil. Faux uniquement quand RM a répondu depuis —
+   * INDÉPENDANT de `acknowledged` : un message traité par Sami reste une
+   * attente active tant que le client n'a pas reçu de réponse, et un message
+   * jamais acquitté cesse d'être une attente dès qu'une réponse existe.
+   */
+  awaitingReply: boolean;
+  /**
+   * Ce message chaud est-il la plus récente occurrence de son fil (G) ? Vrai
+   * pour tout ce qui n'est pas « chaud ». Plusieurs signaux chauds successifs
+   * du même fil ne sont pas des opportunités distinctes — seul le plus
+   * récent décrit la situation commerciale actuelle.
+   */
+  isLatestHotInThread: boolean;
 };
 
 export type MorningReason =

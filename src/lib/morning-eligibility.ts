@@ -55,6 +55,22 @@ export type EligibilityContext = {
   dealStage?: string | null;
   dealIsTerminal?: boolean;
   direction?: string | null;
+  /**
+   * Propriétaire Salesforce (E) de l'affaire ou de la piste que `matchKind`
+   * désigne — nom d'équipe déjà normalisé. Fait SEUL autorité quand
+   * `matchKind` en décrit une : un commercial en copie du message ne le
+   * remet jamais en cause, dans un sens comme dans l'autre.
+   */
+  ownerName?: string | null;
+  /**
+   * Membres de l'équipe présents en `to` / `cc` (D), consultés SEULEMENT
+   * quand aucune affaire ou piste Salesforce n'est identifiée. `null` = donnée
+   * absente (message antérieur à D, ou fil sans cette information) — jamais
+   * assimilé à « personne » : une ligne ancienne ne doit pas être exclue à
+   * tort faute d'avoir été synchronisée avec cette information.
+   */
+  rmTo?: string[] | null;
+  rmCc?: string[] | null;
 };
 
 export type Eligibility = {
@@ -82,6 +98,21 @@ const norm = (value: string | null | undefined): string =>
  */
 const PROSPECTION_DOMAIN =
   /@(go-kelvin|lumidb|buildpokeslide|sanctuary-pass|cmtd1|obat|hubspot|salesforce|pipedrive|indeed|welcometothejungle|linkedin|sendinblue|brevo|mailchimp)\./i;
+
+/**
+ * Notifications d'outils tiers ou internes : jamais la voix du client (F,
+ * audit des 43 attentes affichées). Une mention dans un Google Doc partagé en
+ * interne, un rappel Trello, ou une notification DocuSign (envoi, consultation,
+ * complétion d'enveloppe) ne sont pas un message du client — ce sont des
+ * systèmes tiers qui parlent EN SON NOM, souvent sans aucun contenu
+ * exploitable (le classifieur retombe alors sur un motif générique).
+ * L'audit en a compté 24 sur 43 attentes affichées, principalement
+ * `comments-noreply@docs.google.com` (mentions internes) et
+ * `dse@eumail.docusign.net` (statuts d'enveloppe, pas la parole du client —
+ * une signature réelle est de toute façon détectée depuis Salesforce,
+ * `signature_event`, jamais depuis cet e-mail).
+ */
+const TOOL_NOTIFICATION_DOMAIN = /@([a-z0-9-]+\.)?(docs\.google|trello|docusign)\.[a-z.]+$/i;
 
 /**
  * Domaines de métier du bâtiment et de la maîtrise d'œuvre.
@@ -127,6 +158,16 @@ const NEW_PROJECT =
 /** Statuts de piste qui ne justifient aucune action commerciale. */
 const DEAD_LEAD = /(abandon|perdue|doublon|injoignable|hors zone|non qualifi)/;
 
+/**
+ * Le commercial dont la messagerie est lue par RM Morning (E).
+ *
+ * Nom d'équipe canonique, identique à celui de `TEAM_MAILBOXES` — jamais une
+ * adresse : c'est le nom déjà normalisé par `matchTeamMember` que porte
+ * `context.ownerName` / `context.rmTo` / `context.rmCc`. Une conversation
+ * qu'il gère lui-même ne remonte jamais dans Morning : il la lit déjà.
+ */
+const OWNER_SELF = "Sami Lazari";
+
 export function evaluateEligibility(
   message: {
     fromEmail: string | null;
@@ -152,6 +193,53 @@ export function evaluateEligibility(
       family: "message sortant",
       reason: "message sortant ou interne, jamais une action client",
     };
+  }
+
+  // --- E1ter (F). Notification d'un outil, jamais la voix du client.
+  if (TOOL_NOTIFICATION_DOMAIN.test(email)) {
+    return {
+      verdict: "non",
+      family: "notification d'outil",
+      reason: "notification automatique d'un outil tiers, pas un message du client",
+    };
+  }
+
+  // --- E1bis. Échange géré DIRECTEMENT par le titulaire du compte lu (E).
+  //
+  // Deux cas, jamais mélangés :
+  //   — une affaire ou une piste Salesforce est identifiée : SON propriétaire
+  //     fait seul autorité. S'il ne s'agit pas de lui, la présence éventuelle
+  //     de son adresse en copie ne change RIEN — c'est l'affaire d'un autre
+  //     commercial, le signal reste plein droit ;
+  //   — aucune entité Salesforce n'est identifiée : à défaut, les
+  //     destinataires RM du message tranchent, mais seulement s'il est
+  //     LE SEUL commercial identifié. Sami ET un autre commercial impliqués
+  //     ne l'exclut jamais : on ne le suppose propriétaire par défaut dans
+  //     aucun des deux cas.
+  // Donnée absente (`rmTo`/`rmCc` à `null`) : on ne conclut rien ici, la
+  // logique de périmètre existante continue de s'appliquer normalement.
+  const hasSalesforceEntity =
+    context.matchKind === "affaire_pipe" ||
+    context.matchKind === "affaire_hors_pipe" ||
+    context.matchKind === "affaire_fermee" ||
+    context.matchKind === "piste";
+  if (hasSalesforceEntity) {
+    if (context.ownerName === OWNER_SELF) {
+      return {
+        verdict: "non",
+        family: "géré directement",
+        reason: `affaire suivie personnellement par ${OWNER_SELF}`,
+      };
+    }
+  } else if (context.rmTo != null || context.rmCc != null) {
+    const involved = new Set([...(context.rmTo ?? []), ...(context.rmCc ?? [])]);
+    if (involved.size === 1 && involved.has(OWNER_SELF)) {
+      return {
+        verdict: "non",
+        family: "géré directement",
+        reason: `échange sans affaire identifiée, ${OWNER_SELF} seul interlocuteur RM`,
+      };
+    }
   }
 
   // --- E2. Prospection adressée à Renovation Man.

@@ -198,3 +198,72 @@ export function markScopeRead(
   const targets = scope === "piste" ? leadReadTargets(ownerFilter) : opportunityReadTargets(ownerFilter);
   return markAllRead(scope, targets, now);
 }
+
+/**
+ * Lecture d'une seule ligne.
+ *
+ * Même principe que « Tout lire » : la signature est celle de l'élément TEL
+ * QU'IL EST EN BASE au moment du geste, jamais reçue du navigateur. Un
+ * identifiant qui ne désigne plus rien (piste convertie entre-temps,
+ * opportunité sortie du périmètre) ne fait rien — il n'y a rien à figer, et ce
+ * n'est pas une erreur : la ligne aura de toute façon disparu de l'écran.
+ */
+export function markItemRead(scope: "piste" | "opportunite", itemId: string, now = new Date()): boolean {
+  if (scope === "piste") {
+    const lead = loadLeads().find((l) => l.leadId === itemId);
+    if (!lead) return false;
+    markAllRead(scope, [{ id: lead.leadId, fields: leadFields(lead) }], now);
+    return true;
+  }
+  const opportunity = loadMilestoneOpportunities().find((o) => o.opportunityId === itemId);
+  if (!opportunity) return false;
+  markAllRead(scope, [{ id: opportunity.opportunityId, fields: opportunityFields(opportunity) }], now);
+  return true;
+}
+
+// --- Cloche de navigation ---------------------------------------------------
+
+export type MonitoringUnreadCounts = { fresh: number; legacy: number };
+
+/**
+ * Ce que la cloche affiche : le nombre de priorités Monitoring — pistes et
+ * opportunités confondues, toutes équipes — qui ne sont PAS encore lues au
+ * sens de `monitoring_read`.
+ *
+ * MÊME définition de « non lu » que les écrans : on ne relit jamais
+ * `operational_status` ni `milestone_status` bruts ici. Marquer une ligne lue,
+ * individuellement ou via « Tout lire », fait donc mécaniquement baisser ce
+ * compte au prochain calcul — il n'y a pas d'état intermédiaire à synchroniser.
+ *
+ * La distinction fresh/legacy est conservée telle qu'elle existait déjà dans
+ * le mini-centre d'exceptions : la dette héritée reste visible mais ne sonne
+ * pas.
+ */
+export function monitoringUnreadCounts(): MonitoringUnreadCounts {
+  let fresh = 0;
+  let legacy = 0;
+
+  const leadTodos = buildLeadTodo(loadLeads(), ALL);
+  const leadVerdicts = compareWithRead(
+    "piste",
+    leadTodos.map((t) => ({ id: t.lead.leadId, fields: leadFields(t.lead) })),
+  );
+  for (const t of leadTodos) {
+    if (leadVerdicts.get(t.lead.leadId)?.status === "lu") continue;
+    if (t.lead.isLegacy) legacy += 1;
+    else fresh += 1;
+  }
+
+  const { union } = opportunityScope(null);
+  const oppVerdicts = compareWithRead(
+    "opportunite",
+    union.map((o) => ({ id: o.opportunityId, fields: opportunityFields(o) })),
+  );
+  for (const o of union) {
+    if (oppVerdicts.get(o.opportunityId)?.status === "lu") continue;
+    if (o.isLegacy) legacy += 1;
+    else fresh += 1;
+  }
+
+  return { fresh, legacy };
+}

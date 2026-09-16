@@ -667,8 +667,16 @@ CREATE TABLE IF NOT EXISTS morning_event (
 
 CREATE INDEX IF NOT EXISTS idx_morning_event_status ON morning_event (status, sent_at);
 
--- Curseur de lecture du Morning : jusqu'où le directeur régional a déjà lu.
--- Distinct du curseur de synchronisation Gmail, qui avance tout seul.
+-- HISTORIQUE, INUTILISÉE (H) — conservée telle quelle, jamais écrite ni lue.
+--
+-- Devait porter le curseur de lecture du Morning (« jusqu'où le directeur
+-- régional a déjà lu », distinct du curseur de synchronisation Gmail). En
+-- pratique, rien ne l'a jamais alimentée : aucune action ne l'écrivait, et
+-- la notion de « lu / non lu » qu'elle portait ne correspond à aucun besoin
+-- du Morning — la distinction utile est « à traiter / traité »
+-- (colonne status de morning_event), déjà portée ailleurs. Retirer cette
+-- table demanderait une migration destructive pour un bénéfice nul ; on la
+-- laisse vide plutôt que de prendre ce risque pour du seul rangement.
 CREATE TABLE IF NOT EXISTS morning_state (
   id           INTEGER PRIMARY KEY CHECK (id = 1),
   last_read_at TEXT
@@ -959,6 +967,23 @@ function migrate(db: DatabaseSync): void {
     ["match_kind", "TEXT"],
     ["lead_id", "TEXT"],
     ["quote", "TEXT"],
+  ] as [string, string][]) {
+    if (signalColumns.length > 0 && !signalColumns.some((c) => c.name === name)) {
+      db.exec(`ALTER TABLE mail_signal ADD COLUMN ${name} ${type}`);
+    }
+  }
+
+  // D — destinataires RM utiles à l'exclusion des échanges gérés directement
+  // par un commercial (E). Deux colonnes seulement, chacune un JSON compact
+  // de NOMS d'équipe déjà normalisés (ex. '["Sami Lazari"]'), jamais
+  // l'adresse brute ni le header complet — on ne stocke que ce qui tranche la
+  // règle métier. NULL = message synchronisé AVANT cette migration : il n'a
+  // jamais été examiné pour cette donnée, ce n'est pas la même chose que
+  // « aucun destinataire RM trouvé » (qui vaut '[]'). Voir
+  // `mail-rules.ts::teamMembersInTo/teamMembersInCc`.
+  for (const [name, type] of [
+    ["rm_to", "TEXT"],
+    ["rm_cc", "TEXT"],
   ] as [string, string][]) {
     if (signalColumns.length > 0 && !signalColumns.some((c) => c.name === name)) {
       db.exec(`ALTER TABLE mail_signal ADD COLUMN ${name} ${type}`);

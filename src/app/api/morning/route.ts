@@ -4,16 +4,16 @@ import {
   acknowledgeAllEvents,
   acknowledgeEvent,
   markActionDone,
-  markMorningRead,
   syncMorningEvents,
 } from "@/lib/morning-events";
+import { buildMorningPlan } from "@/lib/morning-priority";
 
 /**
  * Actions du Morning.
  *
- * Quatre seulement, toutes locales : trier les signaux mail déjà synchronisés,
- * marquer un message comme pris en compte, cocher une action du plan du jour, et
- * enregistrer que le Morning a été lu. Aucune écriture Gmail, aucune écriture
+ * Toutes locales : trier les signaux mail déjà synchronisés, marquer un
+ * message comme pris en compte (seul ou en bloc), cocher une action du plan
+ * du jour (seule ou en bloc). Aucune écriture Gmail, aucune écriture
  * Salesforce — l'état de prise en compte appartient à RM Morning.
  */
 export async function POST(request: Request) {
@@ -55,9 +55,19 @@ export async function POST(request: Request) {
       if (body.messageId) acknowledgeEvent(body.messageId);
       return NextResponse.json({ ok: true, changed: done });
     }
-    case "lu": {
-      markMorningRead();
-      return NextResponse.json({ ok: true });
+    case "tout_faire": {
+      // Le plan affiché est RECALCULÉ ici, jamais reçu du navigateur — même
+      // principe que « tout_pris_en_compte » et « tout lire » du Monitoring.
+      // Chaque action suit exactement le même double effet que
+      // « action_faite » : faite pour aujourd'hui, message acquitté quand il
+      // y en a un.
+      const plan = buildMorningPlan();
+      let changed = 0;
+      for (const a of plan.actions) {
+        if (markActionDone(a.key)) changed += 1;
+        if (a.messageId) acknowledgeEvent(a.messageId);
+      }
+      return NextResponse.json({ ok: true, changed });
     }
     case "trier": {
       const r = syncMorningEvents();

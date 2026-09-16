@@ -213,41 +213,6 @@ export function leadSnapshotDates(limit = 30): string[] {
   ).map((r) => r.snapshot_date);
 }
 
-/**
- * Compteurs du mini-centre d'exceptions.
- *
- * Ne contient QUE des exceptions au process — jamais une création de piste,
- * un nouveau mail ou un mouvement Salesforce ordinaire. La dette héritée est
- * comptée à part : elle est visible, elle ne sonne pas.
- */
-export function exceptionCounts(): { fresh: number; legacy: number } {
-  let fresh = 0;
-  let legacy = 0;
-  const add = (rows: { is_legacy: number; n: number }[]) => {
-    for (const r of rows) {
-      if (Number(r.is_legacy) === 1) legacy += Number(r.n);
-      else fresh += Number(r.n);
-    }
-  };
-  add(
-    queryAll<{ is_legacy: number; n: number }>(
-      `SELECT is_legacy, COUNT(*) AS n FROM lead
-        WHERE operational_status IN ('a_traiter','en_retard','critique','sans_rendez_vous')
-        GROUP BY is_legacy`,
-    ),
-  );
-  // Une seule cloche pour tout le Monitoring : pistes et opportunités.
-  add(
-    queryAll<{ is_legacy: number; n: number }>(
-      `SELECT milestone_is_legacy AS is_legacy, COUNT(*) AS n FROM opportunity
-        WHERE is_terminal = 0 AND milestone_status IN
-              ('sla_estimation','sla_devis','client_attend','dormant_candidate','standby_expire')
-        GROUP BY milestone_is_legacy`,
-    ),
-  );
-  return { fresh, legacy };
-}
-
 /** Dernier contrôle de couverture des libellés Salesforce. Alerte TECHNIQUE. */
 export function latestMilestoneCoverage(): {
   checkedAt: string;

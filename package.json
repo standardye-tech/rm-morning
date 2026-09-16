@@ -47,6 +47,12 @@
     "cloud:verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs scripts/verify-cloud.mjs",
     "semaine:verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/verify-semaine.mjs",
     "monitoring:verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/verify-monitoring-perimetre.mjs",
+    "monitoring:lecture-verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/verify-monitoring-lecture.mjs",
+    "monitoring:client-attend-verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/verify-monitoring-client-attend.mjs",
+    "morning:owner-exclusion-verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/verify-morning-owner-exclusion.mjs",
+    "morning:bloc-quality-verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/verify-morning-bloc-quality.mjs",
+    "morning:waiting-audit": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/audit-morning-waiting.mjs",
+    "morning:plan-sync-verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/verify-morning-plan-sync.mjs",
     "morning:lot-verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/verify-morning-lot.mjs",
     "morning:proof-audit": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/audit-interest-proof.mjs"
   },

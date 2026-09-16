@@ -62,7 +62,6 @@ export type MorningPlan = {
   doneToday: number;
   hot: MorningEvent[];
   waiting: MorningEvent[];
-  lastRead: string | null;
   /** Affaires écartées du haut de Morning faute de signe de vie. */
   silentButStrong: { client: string; salesperson: string; gmv: number | null; expected: number }[];
 };
@@ -76,7 +75,7 @@ export type MorningPlan = {
  * parle, ou un poids décisif sur le mois.
  */
 export function buildMorningPlan(now = new Date()): MorningPlan {
-  const { events, lastRead } = loadMorningEvents();
+  const { events } = loadMorningEvents();
   const snapshot = buildExpectedGmvSnapshot();
   const board = buildForecastV2(0);
 
@@ -101,8 +100,17 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
   );
 
   const pending = events.filter((e) => !e.acknowledged);
-  const hot = pending.filter((e) => e.category === "chaud");
-  const waiting = pending.filter((e) => e.category === "attente");
+  // G — plusieurs signaux chauds successifs du même fil ne sont pas des
+  // opportunités distinctes : `isLatestHotInThread` (mutualisée avec
+  // `loadMorningEvents`) ne garde que le plus récent. L'historique
+  // (`morning_event`) n'est jamais réécrit — seul l'AFFICHAGE en tient compte.
+  const hot = pending.filter((e) => e.category === "chaud" && e.isLatestHotInThread);
+  // F — une réponse RM postérieure éteint l'attente, indépendamment de
+  // l'acquittement : `awaitingReply` porte cette fraîcheur de fil, partagée
+  // avec `canonicalClientAttend()`. L'historique (`category`) n'est jamais
+  // réécrit — seul l'AFFICHAGE du Bloc 2 (et donc l'action du Plan qui en
+  // découle) en tient compte.
+  const waiting = pending.filter((e) => e.category === "attente" && e.awaitingReply);
 
   const actions: MorningAction[] = [];
   const seen = new Set<string>();
@@ -315,7 +323,6 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
     doneToday: actions.length - remaining.length,
     hot,
     waiting,
-    lastRead,
     silentButStrong,
   };
 }

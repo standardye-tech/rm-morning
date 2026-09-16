@@ -115,6 +115,44 @@ export function ToutLireButton({
 }
 
 /**
+ * Lecture d'une seule ligne.
+ *
+ * Jusqu'ici, « Tout lire » était le seul geste possible : impossible d'acquitter
+ * une piste ou une opportunité sans acquitter tout le périmètre avec elle. Ce
+ * bouton porte sur l'identifiant de la ligne seule ; les autres restent
+ * inchangées, lues ou non.
+ */
+export function LireButton({ scope, itemId }: { scope: MonitoringScope; itemId: string }) {
+  const router = useRouter();
+  const [pending, start] = useTransition();
+  const [sent, setSent] = useState(false);
+
+  return (
+    <button
+      type="button"
+      disabled={pending || sent}
+      onClick={() => {
+        setSent(true);
+        start(async () => {
+          await fetch("/api/monitoring", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "lire", scope, itemId }),
+          });
+          // Même logique que « Tout lire » : on relit la page côté serveur
+          // plutôt que de masquer la ligne localement.
+          router.refresh();
+          setSent(false);
+        });
+      }}
+      className="inline-flex h-7 shrink-0 items-center rounded border border-line px-2 text-xs text-ink-soft transition-colors hover:bg-canvas hover:text-ink disabled:opacity-50"
+    >
+      {pending || sent ? "…" : "Lu"}
+    </button>
+  );
+}
+
+/**
  * L'état « rien à traiter ».
  *
  * Le point du Lot A : le travail du Monitoring ne se termine jamais tout seul,
