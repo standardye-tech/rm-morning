@@ -129,9 +129,16 @@ const DELIVERY =
  * proposition, le budget... lui convient) : la forme nue laissait « dites-moi
  * ce qui VOUS convient » — une simple proposition de créneau — se faire
  * passer pour un accord commercial (F, W6).
+ *
+ * « signature » (nom nu) a été RETIRÉ (post-RC, audit production) : le mot
+ * seul apparaît aussi bien dans un résumé négatif ou neutre (« échange sans
+ * effet clair sur la signature ») que dans un signal positif, et faisait
+ * remonter en chaud/attente des messages sans aucun rapport. Les formes
+ * verbales (signer, signions…) restent, moins ambiguës ; « lien de
+ * signature » reste couvert par `DECISIVE` (morning-intent.ts).
  */
 const ADVANCING =
-  /comment (avancons|on avance|procede|proceder|faire pour)|prochaine etape|on y va|c'est bon pour (moi|nous)|nous souhaitons avancer|je souhaite avancer|valider|validation|\bsign(?:er|ions|iez|ons|ez|erai\w*|eras\w*|era\b|erons|erez|eront|ature)|bon pour accord|d'accord pour|(?:ca|le devis|la proposition|l'offre|le budget) (?:me |nous )?convient|ca me va|ca nous va|fixer un rendez-vous|prendre rendez-vous|caler un (rdv|rendez-vous)|disponible pour|reglement|paiement|acompte|contrat|quand[^.?!]{0,20}(?:demarrer|commencer)/;
+  /comment (avancons|on avance|procede|proceder|faire pour)|prochaine etape|on y va|c'est bon pour (moi|nous)|nous souhaitons avancer|je souhaite avancer|valider|validation|\bsign(?:er|ions|iez|ons|ez|erai\w*|eras\w*|era\b|erons|erez|eront)\b|bon pour accord|d'accord pour|(?:ca|le devis|la proposition|l'offre|le budget) (?:me |nous )?convient|ca me va|ca nous va|fixer un rendez-vous|prendre rendez-vous|caler un (rdv|rendez-vous)|disponible pour|reglement|paiement|acompte|contrat|quand[^.?!]{0,20}(?:demarrer|commencer)/;
 
 /** Interlocuteurs qui ne sont pas le client final. */
 const NOT_CLIENT = /artisan|fournisseur|partenaire|comptable|assurance|banque(?!.*client)/;

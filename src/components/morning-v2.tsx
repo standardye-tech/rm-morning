@@ -83,18 +83,19 @@ function AckButton({
 }
 
 /**
- * « Tout marquer comme lu ».
+ * « Tout traiter ».
  *
  * Annonce ce qu'il change pour l'utilisateur — le nombre de lignes encore
  * ouvertes — et disparaît à zéro. La persistance est celle des cases
  * individuelles : même statut, même colonne, et les acquittements déjà
- * enregistrés ne sont pas réécrits.
+ * enregistrés ne sont pas réécrits. Le libellé a changé (post-RC) ; le geste
+ * et son appel API restent identiques.
  */
 function MarkAllButton({
   count,
   busy,
   onClick,
-  label = "Tout marquer comme lu",
+  label = "Tout traiter",
 }: {
   count: number;
   busy: boolean;

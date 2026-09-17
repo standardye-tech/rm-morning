@@ -88,6 +88,22 @@ check(
 const p3 = triageWith("Pouvez-vous simplement m'envoyer la fiche technique ?");
 check("P3 — simple demande d'info, aucun engagement => attente, pas chaud", p3.category === "attente", p3.category);
 
+section("P4 — Régression audit production : « signature » nue dans un résumé sans engagement réel");
+
+// Résumé générique produit par le classifieur IA quand rien de concluant n'a
+// été trouvé : le mot « signature » y apparaît dans un contexte négatif, pas
+// comme un signal d'engagement. Cause racine confirmée sur la production :
+// ce résumé, à lui seul, faisait passer des dizaines de messages sans rapport
+// en chaud/attente.
+const p4a = triageWith("Echange sans effet clair sur la signature");
+check("P4a — résumé générique inconclusif => ni chaud ni attente", p4a.category !== "chaud" && p4a.category !== "attente", p4a.category);
+const p4b = triageWith("Nous restons dans l'attente d'un retour sur la signature du dossier");
+check(
+  "P4b — « signature » en contexte non-engageant, sans verbe ni demande => pas chaud",
+  p4b.category !== "chaud",
+  p4b.category,
+);
+
 // ============================================================================
 // W — Bloc 2, précision et fraîcheur du fil
 // ============================================================================
