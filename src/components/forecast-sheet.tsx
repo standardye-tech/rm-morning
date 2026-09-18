@@ -36,6 +36,7 @@ const MOVEMENT_TONE: Record<ForecastMovement, "neutral" | "positive" | "warning"
   sorti: "danger",
   nouveau: "positive",
   non_comparable: "neutral",
+  signee: "positive",
 };
 
 export type SheetRow = ForecastV2Row & {

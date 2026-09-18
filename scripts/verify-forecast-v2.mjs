@@ -132,24 +132,42 @@ check("FC6. Kanban M et M+1 disjoints", crossover.length === 0, `${crossover.len
 
 // FC7 — le matching Perspective est inchangé : mêmes lignes, mêmes montants
 // que ceux produits par Forecast V1.
+//
+// EXCEPTION assumée depuis la famille « Signé » : Forecast V1 ignore
+// entièrement `travaux` et ne sait donc pas qu'une affaire encore active à son
+// sens vient de signer. Quand `officialSignedGmv` le sait, la ligne V2 bascule
+// en ligne signée — elle sort légitimement du « encore au pipe », exactement
+// comme une affaire déjà signée sort des `exits` de V1. Cette divergence est
+// donc attendue et bornée aux seules affaires signées dans le mois ; toute
+// autre divergence reste une vraie régression.
 const { buildForecastBoard } = await import(lib("forecast-board"));
 const v1 = buildForecastBoard(0);
+const signedRowIds = new Set(rows.filter((r) => r.isSignedRow).map((r) => r.opportunityId));
 const worst7 = Math.abs(
   v1.salespeople.reduce((t, s) => t + s.perspectiveGmv, 0) -
     M.salespeople.reduce((t, s) => t + s.perspectiveGmv, 0),
 );
-const matchedV1 = v1.salespeople.flatMap((s) => s.opportunities).filter((o) => o.perspectiveMonth === v1.month).length;
+const matchedV1 = v1.salespeople
+  .flatMap((s) => s.opportunities)
+  .filter((o) => o.perspectiveMonth === v1.month && !signedRowIds.has(o.opportunityId)).length;
 const matchedV2 = rows.filter((o) => o.perspectiveMonth === M.month).length;
 check(
-  "FC7. Perspective conserve son matching V1",
+  "FC7. Perspective conserve son matching V1, hors affaires tout juste signées",
   worst7 === 0 && matchedV1 === matchedV2,
-  `${matchedV2} lignes matchées · écart ${eur(worst7)} · snapshot ${M.perspectiveDate ?? "—"}`,
+  `${matchedV2} lignes matchées · écart ${eur(worst7)} · ${signedRowIds.size} affaire(s) signée(s) sortie(s) du pipe · snapshot ${M.perspectiveDate ?? "—"}`,
 );
 
 // FC8 — l'Expected de Forecast est exactement celui du service C6.1.
+//
+// MÊME EXCEPTION qu'en FC7 : le service Expected note ses probabilités à son
+// propre rythme et peut encore scorer une affaire tout juste signée. Une ligne
+// signée porte volontairement `expectedGmv: null` — elle est réalisée, plus
+// une prévision — donc son écart au service n'est pas une divergence de
+// modèle, c'est la correction que ce lot apporte.
 let worst8 = 0;
 let mismatched = 0;
 for (const r of rows) {
+  if (r.isSignedRow) continue;
   const e = service.opportunities.find((o) => o.opportunityId === r.opportunityId);
   if (!e) {
     if ((r.expectedGmv ?? 0) !== 0) mismatched += 1;
@@ -161,11 +179,15 @@ for (const r of rows) {
     Math.abs((r.expectedProbability ?? 0) - e.pMonthEnd),
   );
 }
+const signedStillScored = signedRowIds.size
+  ? [...signedRowIds].reduce((t, id) => t + (service.opportunities.find((o) => o.opportunityId === id)?.expectedMonthEnd ?? 0), 0)
+  : 0;
+const regionGap = Math.abs(M.region.expectedRemaining - service.region.expectedRemaining);
 check(
-  "FC8. Expected de Forecast = Expected du service",
-  worst8 === 0 && mismatched === 0,
+  "FC8. Expected de Forecast = Expected du service, hors affaires tout juste signées",
+  worst8 === 0 && mismatched === 0 && Math.abs(regionGap - signedStillScored) < 1,
   `écart max ${eur(worst8)} · ${mismatched} valeur(s) sans source` +
-    ` · Région ${eur(Math.abs(M.region.expectedRemaining - service.region.expectedRemaining))}`,
+    ` · Région ${eur(regionGap)} (dont ${eur(signedStillScored)} encore scorés par le service pour des affaires déjà signées)`,
 );
 
 // FC9 — les valeurs M+1 viennent du modèle M+1, jamais du modèle du mois.

@@ -33,6 +33,7 @@ const MOVEMENT_TONE: Record<ForecastMovement, "neutral" | "positive" | "warning"
   sorti: "danger",
   nouveau: "positive",
   non_comparable: "neutral",
+  signee: "positive",
 };
 
 const DIVERGENCE_TONE: Record<Divergence["level"], "neutral" | "positive" | "warning" | "danger"> = {

@@ -14,7 +14,8 @@ export type ForecastMovement =
   | "revenu"
   | "sorti"
   | "nouveau"
-  | "non_comparable";
+  | "non_comparable"
+  | "signee";
 
 export const MOVEMENT_LABEL: Record<ForecastMovement, string> = {
   stable: "Stable",
@@ -24,6 +25,7 @@ export const MOVEMENT_LABEL: Record<ForecastMovement, string> = {
   sorti: "Sorti du forecast",
   nouveau: "Nouveau",
   non_comparable: "Non comparable",
+  signee: "Signé",
 };
 
 /**

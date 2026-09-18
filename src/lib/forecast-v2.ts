@@ -87,6 +87,12 @@ export type ForecastV2Row = Omit<ForecastRow, "expectedProbability" | "expectedG
   frozenMonthEnd: boolean;
   /** L'affaire est scorée mais absente du Kanban de ce mois. */
   outsideKanban: boolean;
+  /**
+   * Affaire signée dans le mois affiché, au sens `official-signed` (réalisé,
+   * source unique). Une ligne signée n'est ni projetée, ni probable, ni
+   * challengeable : elle est acquise. Voir `isVisibleInForecast`.
+   */
+  isSignedRow: boolean;
 };
 
 export type ForecastV2Salesperson = Omit<ForecastSalespersonBlock, "opportunities"> & {
@@ -182,11 +188,13 @@ export function isProbableOnMonth(row: ForecastV2Row): boolean {
  * faire figurer dans la feuille du mois inviterait à le challenger alors que
  * l'arbitrage est déjà rendu.
  *
- * Les affaires signées et abandonnées, elles, ne remontent pas jusqu'ici : le
- * périmètre du mois écarte les affaires terminales (`forecast-board`) et le
+ * Les affaires abandonnées, elles, ne remontent pas jusqu'ici : le périmètre du
+ * mois écarte les affaires terminales non signées (`forecast-board`) et le
  * service Expected écarte les affaires devenues terminales ou disparues de la
  * source (`expected-gmv-live`). L'exclusion est faite à la donnée, pas à
- * l'affichage — c'est ce qui la rend vraie sur tous les écrans à la fois.
+ * l'affichage — c'est ce qui la rend vraie sur tous les écrans à la fois. Les
+ * affaires SIGNÉES, elles, sont réintroduites explicitement par
+ * `buildForecastV2` (famille A) : voir `isVisibleInForecast`.
  */
 export function isFrozenOut(row: ForecastV2Row, today: string): boolean {
   return row.isStandby && row.standbyUntil != null && row.standbyUntil.slice(0, 10) > today;
@@ -195,19 +203,22 @@ export function isFrozenOut(row: ForecastV2Row, today: string): boolean {
 /**
  * LA règle de visibilité du Forecast. Une seule, sans exception ni dépliage.
  *
- *   1. déclarée par le commercial sur ce mois → visible, quelle que soit sa
+ *   1. signée dans le mois affiché (réalisé, source `official-signed`) →
+ *      toujours visible. C'est un fait acquis, pas une prévision : aucun seuil
+ *      de probabilité, aucun stand-by ne peut l'écarter ;
+ *   2. déclarée par le commercial sur ce mois → visible, quelle que soit sa
  *      probabilité. C'est son engagement, il doit pouvoir être confronté ;
- *   2. non déclarée → visible seulement à partir de 25 % de chance de signer
+ *   3. non déclarée → visible seulement à partir de 25 % de chance de signer
  *      d'ici la fin du mois ;
- *   3. stand-by dont la date de réveil est devant nous → jamais visible.
+ *   4. stand-by dont la date de réveil est devant nous → jamais visible.
  *
  * Une affaire non déclarée sous le seuil est ABSENTE de la page : pas de ligne,
  * pas d'accordéon, pas de compteur qui propose de l'afficher. Forecast sert à
  * arbitrer un mois, pas à explorer le pipe faible — celui-ci reste entier dans
  * Expected GMV, dans Monitoring et dans Salesforce.
  *
- * Les affaires signées et abandonnées ne remontent pas jusqu'ici : elles sont
- * écartées à la donnée (`forecast-board` exclut les affaires terminales,
+ * Les affaires abandonnées ne remontent pas jusqu'ici : elles sont écartées à
+ * la donnée (`forecast-board` exclut les affaires terminales non signées,
  * `expected-gmv-live` écarte celles devenues terminales ou disparues de la
  * source), ce qui les rend absentes de tous les écrans à la fois.
  */
@@ -216,6 +227,7 @@ export function isVisibleInForecast(
   month: MonthKey,
   today: string,
 ): boolean {
+  if (row.isSignedRow) return true;
   if (isFrozenOut(row, today)) return false;
   return isDeclaredOnMonth(row, month) || isProbableOnMonth(row);
 }
@@ -311,6 +323,7 @@ export function buildForecastV2(monthOffset: number, objective?: number | null):
         standbyUntil: (horizon === 1 ? p?.standbyUntil : e?.standbyUntil) ?? null,
         frozenMonthEnd: (horizon === 1 ? p?.frozenM1 : e?.frozenMonthEnd) ?? false,
         outsideKanban: false,
+        isSignedRow: false,
       };
     });
 
@@ -373,6 +386,7 @@ export function buildForecastV2(monthOffset: number, objective?: number | null):
       standbyUntil: o.standbyUntil,
       frozenMonthEnd: o.frozenM1,
       outsideKanban: true,
+      isSignedRow: false,
     };
     const list = extras.get(o.owner) ?? [];
     list.push(row);
@@ -405,10 +419,73 @@ export function buildForecastV2(monthOffset: number, objective?: number | null):
         standbyUntil: e.standbyUntil,
         frozenMonthEnd: e.frozenMonthEnd,
         outsideKanban: true,
+        isSignedRow: false,
       };
       const list = extras.get(e.owner) ?? [];
       list.push(row);
       extras.set(e.owner, list);
+    }
+  }
+
+  // --- Famille A : affaires SIGNÉES dans le mois affiché.
+  //
+  // Réalisé, jamais prévision : une ligne signée ne porte ni probabilité ni
+  // motif de challenge (FC11 et les tests Forecast l'exigent), et son GMV vient
+  // de la même source unique que le total « Signé » de la bande au-dessus
+  // (`official-signed`), pour que la ligne et le total ne puissent jamais
+  // diverger. Un même dossier peut porter plusieurs lignes Travaux dans le mois
+  // (avenant, moins-value) : elles sont fusionnées en une seule ligne par
+  // affaire, sinon la même OpportunityId apparaîtrait deux fois (FC5).
+  const signedRowsByOwner = new Map<string, ForecastV2Row[]>();
+  const signedIds = new Set<string>();
+  {
+    const byOpportunity = new Map<
+      string,
+      { opportunityId: string; client: string; owner: string; gmv: number }
+    >();
+    for (const line of official.rows) {
+      const key = line.opportunityId ?? `travaux:${line.travauxId}`;
+      const existing = byOpportunity.get(key);
+      if (existing) existing.gmv += line.gmv;
+      else
+        byOpportunity.set(key, {
+          opportunityId: key,
+          client: line.client ?? key,
+          owner: line.salesperson ?? "",
+          gmv: line.gmv,
+        });
+    }
+    for (const [id, deal] of byOpportunity) {
+      if (!deal.owner) continue;
+      signedIds.add(id);
+      const row: ForecastV2Row = {
+        opportunityId: id,
+        client: clientLabel(deal.client),
+        owner: deal.owner,
+        stage: null,
+        gmv: deal.gmv,
+        kanbanMonth: null,
+        kanbanRaw: null,
+        isStandby: false,
+        perspectiveMonth: null,
+        perspectiveGmv: null,
+        perspectiveRawGmv: null,
+        perspectiveConfidence: null,
+        movement: "signee",
+        nextExpectedEvent: null,
+        nextExpectedLabel: null,
+        milestoneStatus: null,
+        reading: null,
+        expectedProbability: null,
+        expectedGmv: null,
+        standbyUntil: null,
+        frozenMonthEnd: false,
+        outsideKanban: true,
+        isSignedRow: true,
+      };
+      const list = signedRowsByOwner.get(deal.owner) ?? [];
+      list.push(row);
+      signedRowsByOwner.set(deal.owner, list);
     }
   }
 
@@ -425,7 +502,16 @@ export function buildForecastV2(monthOffset: number, objective?: number | null):
   const salespeople: ForecastV2Salesperson[] = [...owners]
     .map((owner) => {
       const block = board.salespeople.find((s) => s.salesperson === owner);
-      const rows = [...attach(block?.opportunities ?? []), ...(extras.get(owner) ?? [])];
+      // Une affaire tout juste signée peut rester un instant dans le Kanban ou
+      // dans le scoring Expected, le temps du prochain import : la ligne signée
+      // prime toujours, pour qu'aucun dossier ne compte deux fois (FC5) ni ne
+      // reste « à challenger » (test F : signée = jamais challengée).
+      const notYetSigned = (r: ForecastV2Row) => !signedIds.has(r.opportunityId);
+      const rows = [
+        ...attach(block?.opportunities ?? []).filter(notYetSigned),
+        ...(extras.get(owner) ?? []).filter(notYetSigned),
+        ...(signedRowsByOwner.get(owner) ?? []),
+      ];
       const expectedGmv = rows.reduce((t, r) => t + (r.expectedGmv ?? 0), 0);
       const signedGmvActual = signedByOwner.get(owner) ?? 0;
       const kanbanGmv = block?.kanbanGmv ?? 0;

@@ -220,11 +220,12 @@ export default async function ForecastPage({
             l'absence d'une affaire est un choix ou un oubli.
           */}
           <p className="mt-1 max-w-2xl text-xs text-ink-faint">
-            Sont affichées les affaires déclarées sur le mois par le commercial, et celles à
-            au moins {Math.round(FORECAST_VISIBILITY.minProbability * 100)} % de chance de
-            signer d&apos;ici la fin du mois. Les autres n&apos;apparaissent pas ici : elles
-            restent consultables dans Expected GMV. Les stand-by en cours et les affaires
-            signées ou abandonnées sont exclus.
+            Sont affichées les affaires déjà signées ce mois-ci, celles déclarées sur le mois
+            par le commercial, et celles à au moins{" "}
+            {Math.round(FORECAST_VISIBILITY.minProbability * 100)} % de chance de signer
+            d&apos;ici la fin du mois. Les autres n&apos;apparaissent pas ici : elles restent
+            consultables dans Expected GMV. Les stand-by en cours et les affaires abandonnées
+            sont exclus.
           </p>
         </div>
         <ForecastV2Freshness board={board} />
