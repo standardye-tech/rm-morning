@@ -1,5 +1,5 @@
 /**
- * Contrôles — lien Salesforce standardisé.
+ * Contrôles — lien Salesforce standardisé (affaires ET pistes).
  *
  *   npm run links:verify
  *
@@ -25,7 +25,7 @@ process.env.RM_DB_PATH = path.relative(process.cwd(), WORK).replace(/\\/g, "/");
 delete process.env.SF_INSTANCE_URL;
 
 const url = (n) => pathToFileURL(path.resolve(process.cwd(), n)).href;
-const { salesforceOpportunityUrl } = await import(url("src/lib/salesforce-link.ts"));
+const { salesforceOpportunityUrl, salesforceRecordUrl } = await import(url("src/lib/salesforce-link.ts"));
 const { SALESFORCE_RECORD_BASE } = await import(url("src/lib/config.ts"));
 
 let failures = 0;
@@ -46,6 +46,18 @@ check("fallback : sans SF_INSTANCE_URL, le domaine de l'org", /^https:\/\/renova
 for (const bad of [null, undefined, "", "   ", "TESTPV_HOT", "006Sb0000", "006Sb00000c7jfF/../x", "javascript:alert(1)", `${ID15}x`]) {
   check(`aucun Id exploitable (${JSON.stringify(bad)}) → null : pas de faux lien`, salesforceOpportunityUrl(bad) === null);
 }
+
+section("1 bis — Helper généralisé : Lead et Opportunity, une seule logique");
+const LEAD15 = "00QbF00000LlJW9";
+const LEAD18 = "00QbF00000LlJW9UAN";
+check("LeadId à 15 caractères → URL de la fiche", salesforceRecordUrl(LEAD15) === `${SALESFORCE_RECORD_BASE}/${LEAD15}`, salesforceRecordUrl(LEAD15));
+check("LeadId à 18 caractères → URL de la fiche", salesforceRecordUrl(LEAD18) === `${SALESFORCE_RECORD_BASE}/${LEAD18}`, salesforceRecordUrl(LEAD18));
+check("l'URL d'une piste pointe le domaine Salesforce et l'Id exact", /^https:\/\/[a-z0-9-]+\.my\.salesforce\.com\/00Q[a-zA-Z0-9]{12,15}$/.test(salesforceRecordUrl(LEAD18)));
+for (const bad of [null, undefined, "", "  ", "00Q", "00QbF00000LlJW9UA", "Camille BELLEDENT", "camille@exemple.fr", "00QbF00000LlJW9UAN?x=1", "00QbF00000LlJW9UAN/../", `${LEAD18}Z`]) {
+  check(`Id de piste invalide (${JSON.stringify(bad)}) → aucun lien`, salesforceRecordUrl(bad) === null);
+}
+check("non-régression : salesforceOpportunityUrl est LA MÊME fonction (aucun code dupliqué)", salesforceOpportunityUrl === salesforceRecordUrl);
+check("non-régression : les Id d'affaires donnent exactement les mêmes URL", salesforceOpportunityUrl(ID15) === salesforceRecordUrl(ID15) && salesforceOpportunityUrl(ID18) === salesforceRecordUrl(ID18));
 
 section("2 — SF_INSTANCE_URL est respectée (processus séparé)");
 const child = spawnSync(
@@ -86,7 +98,9 @@ const comp = read("src/components/salesforce-link.tsx");
 check('ouverture dans un nouvel onglet, sans fuite (target="_blank", rel="noopener noreferrer")', /target="_blank"/.test(comp) && /rel="noopener noreferrer"/.test(comp));
 check("sans Id exploitable : texte simple (aucun <a>)", /if \(!href\) return <span/.test(comp));
 check("style discret : souligné pointillé, aucun bouton ni icône", /decoration-dotted/.test(comp) && !/<button|<svg|<img/.test(comp));
-check("l'URL vient du helper partagé", /salesforceOpportunityUrl/.test(comp) && !/https?:\/\//.test(comp.replace(/\/\*[\s\S]*?\*\//g, "")));
+check("l'URL vient du helper partagé (salesforceRecordUrl)", /salesforceRecordUrl/.test(comp) && !/https?:\/\//.test(comp.replace(/\/\*[\s\S]*?\*\//g, "")));
+
+check("SalesforceRecordLink porte la logique ; SalesforceOpportunityLink n'en est qu'un habillage", /export function SalesforceRecordLink/.test(comp) && /<SalesforceRecordLink recordId=\{opportunityId\}/.test(comp) && (comp.match(/target="_blank"/g) || []).length === 1);
 
 section("5 — Inventaire : chaque surface qui affiche une affaire porte le lien");
 const surfaces = [
@@ -101,6 +115,11 @@ const surfaces = [
   ["Ma semaine · gros dossiers", "src/components/week.tsx", 1],
   ["Ma semaine · affaire de la semaine", "src/components/deal-of-week.tsx", 2],
 ];
+{
+  const mon = read("src/components/monitoring.tsx");
+  check("Monitoring · Pistes : le nom de la piste ouvre sa fiche (LeadId)", /<SalesforceRecordLink recordId=\{lead\.leadId\}>/.test(mon) && /from "@\/components\/salesforce-link"/.test(mon));
+  check("Monitoring · Pistes : aucun Id reconstruit depuis le nom ou l'e-mail", !/email|Email/.test(mon.slice(mon.indexOf("LeadTodo"))));
+}
 for (const [label, file, min] of surfaces) {
   const src = read(file);
   const n = (src.match(/<SalesforceOpportunityLink/g) || []).length;
@@ -123,6 +142,18 @@ const withId = all.filter((e) => e.opportunityId);
 const withoutId = all.filter((e) => !e.opportunityId);
 check("Blocs 1 et 2 : un message rattaché à une affaire reçoit un lien", withId.every((e) => salesforceOpportunityUrl(e.opportunityId) !== null), `${withId.length} rattaché(s)`);
 check("Blocs 1 et 2 : un message sans affaire reste du texte (pas de faux lien)", withoutId.every((e) => salesforceOpportunityUrl(e.opportunityId) === null), `${withoutId.length} sans affaire`);
+
+section("7 — Pistes du stock Monitoring : Id original, lien exact");
+const { loadLeads } = await import(url("src/lib/lead-store.ts"));
+const { leadMonitoringView } = await import(url("src/lib/monitoring-view.ts"));
+const leads = loadLeads();
+const linkable = leads.filter((l) => salesforceRecordUrl(l.leadId) !== null);
+check("le stock de pistes est non vide (sinon le contrôle est vide)", leads.length > 0, `${leads.length} piste(s)`);
+check("chaque piste porte son Id Salesforce original (15 ou 18 car., préfixe 00Q)", linkable.length === leads.length && leads.every((l) => /^00Q/.test(l.leadId)), `${linkable.length}/${leads.length}`);
+check("chaque URL cible exactement le LeadId de la piste", linkable.every((l) => salesforceRecordUrl(l.leadId) === `${SALESFORCE_RECORD_BASE}/${l.leadId.trim()}`));
+const shown = leadMonitoringView(null).items.map((i) => i.lead);
+check("pistes AFFICHÉES dans Monitoring → Pistes : toutes liables", shown.every((l) => salesforceRecordUrl(l.leadId) !== null), `${shown.length} affichée(s)`);
+check("aucun Id n'est reconstruit : un identifiant altéré ne donne aucun lien", salesforceRecordUrl(`${leads[0]?.leadId ?? "x"}!`) === null);
 
 console.log(failures === 0 ? "\nTous les contrôles passent." : `\n${failures} contrôle(s) en échec.`);
 process.exit(failures === 0 ? 0 : 1);

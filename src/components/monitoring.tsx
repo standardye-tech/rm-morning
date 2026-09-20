@@ -1,3 +1,4 @@
+import { SalesforceRecordLink } from "@/components/salesforce-link";
 import { OPERATIONAL_LABEL, type LeadOperationalStatus } from "@/lib/lead-rules";
 import type { OwnerLeadMetrics, TeamLeadMetrics } from "@/lib/lead-metrics";
 import type { LeadMonitoringView } from "@/lib/monitoring-view";
@@ -200,7 +201,7 @@ export function LeadTodo({ view, owner }: { view: LeadMonitoringView; owner: str
           {items.map(({ lead, reason, verdict }) => (
             <li key={lead.leadId} className="px-4 md:px-6 py-3">
               <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-                <p className="text-[15px] font-medium">{lead.name ?? lead.leadId}</p>
+                <p className="text-[15px] font-medium"><SalesforceRecordLink recordId={lead.leadId}>{lead.name ?? lead.leadId}</SalesforceRecordLink></p>
                 <div className="flex shrink-0 items-center gap-3">
                   <p className="text-xs text-ink-soft">{lead.owner}</p>
                   <LireButton scope="piste" itemId={lead.leadId} />

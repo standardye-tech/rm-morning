@@ -1,27 +1,28 @@
 import type { ReactNode } from "react";
 
-import { salesforceOpportunityUrl } from "@/lib/salesforce-link";
+import { salesforceRecordUrl } from "@/lib/salesforce-link";
 
 /**
- * Le nom d'une affaire, cliquable vers sa fiche Salesforce (nouvel onglet).
+ * Le nom d'un enregistrement Salesforce (affaire, piste), cliquable vers sa fiche
+ * (nouvel onglet).
  *
- * Règle produit : partout où un élément affiché correspond à une Opportunity qui
- * porte un `OpportunityId`, le nom est ce lien. Style volontairement discret — un
- * pointillé sous le texte, pas de bouton, pas d'icône — pour ne pas alourdir les
- * lignes. Sans identifiant exploitable, le texte reste du texte : aucun faux lien.
+ * Règle produit : partout où un élément affiché correspond à un enregistrement
+ * Salesforce qui porte un Id, son nom est ce lien. Style volontairement discret —
+ * un pointillé sous le texte, pas de bouton, pas d'icône — pour ne pas alourdir les
+ * lignes. Sans Id exploitable, le texte reste du texte : aucun faux lien.
  *
  * Composant sans état : utilisable dans les composants serveur comme client.
  */
-export function SalesforceOpportunityLink({
-  opportunityId,
+export function SalesforceRecordLink({
+  recordId,
   children,
   className = "",
 }: {
-  opportunityId: string | null | undefined;
+  recordId: string | null | undefined;
   children: ReactNode;
   className?: string;
 }) {
-  const href = salesforceOpportunityUrl(opportunityId);
+  const href = salesforceRecordUrl(recordId);
   if (!href) return <span className={className || undefined}>{children}</span>;
   return (
     <a
@@ -33,5 +34,25 @@ export function SalesforceOpportunityLink({
     >
       {children}
     </a>
+  );
+}
+
+/**
+ * Nom d'usage pour une AFFAIRE : le même composant, sous la propriété
+ * `opportunityId`. Aucune logique n'y est dupliquée.
+ */
+export function SalesforceOpportunityLink({
+  opportunityId,
+  children,
+  className,
+}: {
+  opportunityId: string | null | undefined;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <SalesforceRecordLink recordId={opportunityId} className={className}>
+      {children}
+    </SalesforceRecordLink>
   );
 }
