@@ -10,6 +10,7 @@
  * `expected-gmv-live`, et cette couche ne fait que les formater (EC8).
  */
 
+import { SalesforceOpportunityLink } from "@/components/salesforce-link";
 import { Badge, Card, SectionTitle } from "@/components/ui";
 import type {
   ExpectedGmvOpportunity,
@@ -73,7 +74,7 @@ export function ExpectedGmvChallenge({
   const rest = items.slice(limit);
   const row = (e: ForecastV2Examine) => (
     <tr key={e.row.opportunityId} className="border-b border-line bg-warning-soft/60 last:border-0">
-      <td className="px-4 md:px-6 py-2 font-medium">{e.row.client}</td>
+      <td className="px-4 md:px-6 py-2 font-medium"><SalesforceOpportunityLink opportunityId={e.row.opportunityId}>{e.row.client}</SalesforceOpportunityLink></td>
       <td className="px-3 py-2 text-xs text-ink-soft">{e.row.owner}</td>
       <td className="tabular px-3 py-2 text-right font-medium">{kEur(e.row.gmv)}</td>
       <td className="tabular px-3 py-2 text-right">
@@ -919,7 +920,7 @@ export function ExpectedGmvOpportunities({
             {rows.map((o) => (
               <tr key={o.opportunityId} className="border-b border-line/70 align-top last:border-0">
                 <td className="px-4 md:px-6 py-1.5">
-                  <span className="font-medium">{o.client}</span>
+                  <span className="font-medium"><SalesforceOpportunityLink opportunityId={o.opportunityId}>{o.client}</SalesforceOpportunityLink></span>
                   {o.city ? <span className="block text-xs text-ink-faint">{o.city}</span> : null}
                 </td>
                 <td className="truncate px-3 py-1.5 text-xs text-ink-soft">{o.owner}</td>

@@ -1,3 +1,4 @@
+import { SalesforceOpportunityLink } from "@/components/salesforce-link";
 import Link from "next/link";
 
 import { Badge, Card, EmptyState, SectionTitle, Stat } from "@/components/ui";
@@ -237,11 +238,14 @@ export function BigDeals({ deals }: { deals: BigDeal[] }) {
           {deals.map((d) => (
             <li key={d.opportunityId} className="px-4 py-3 md:px-6 md:py-4">
               <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                <Link href={`/forecast?commercial=${encodeURIComponent(d.owner)}`} className="text-sm font-semibold hover:underline">
-                  {d.client}
-                </Link>
+                <span className="text-sm font-semibold">
+                  <SalesforceOpportunityLink opportunityId={d.opportunityId}>{d.client}</SalesforceOpportunityLink>
+                </span>
                 <span className="tabular text-sm font-medium">{kEur(d.gmv)}</span>
-                <span className="text-xs text-ink-faint">{d.firstName}</span>
+                {/* Le nom de l'affaire ouvre Salesforce ; l'accès au Forecast du commercial passe par son prénom. */}
+                <Link href={`/forecast?commercial=${encodeURIComponent(d.owner)}`} className="text-xs text-ink-faint hover:underline">
+                  {d.firstName}
+                </Link>
                 <Badge tone={d.urgent ? "danger" : "neutral"}>{OBJECTIVE_LABEL[d.objective]}</Badge>
               </div>
               <p className="mt-1 text-sm text-ink-soft">{d.reason}</p>

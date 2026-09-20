@@ -1,5 +1,6 @@
 "use client";
 
+import { SalesforceOpportunityLink } from "@/components/salesforce-link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -47,7 +48,7 @@ function Suggestion({
   return (
     <div className={primary ? "" : "border-t border-line pt-3"}>
       <p className={`${primary ? "text-[15px]" : "text-sm"} font-semibold`}>
-        {c.firstName} — {c.client} — {kEur(c.gmv)}
+        {c.firstName} — <SalesforceOpportunityLink opportunityId={c.opportunityId}>{c.client}</SalesforceOpportunityLink> — {kEur(c.gmv)}
         {c.stage ? <span className="font-normal text-ink-soft"> — {c.stage}</span> : null}
       </p>
       <p className="mt-1 text-sm text-ink-soft">{r.reason}</p>
@@ -214,7 +215,7 @@ export function DealOfWeek({ current, recommendation, ignoredThisWeek, candidate
     body = (
       <div>
         <p className="text-sm font-semibold">
-          {current.firstName} — {current.client}
+          {current.firstName} — <SalesforceOpportunityLink opportunityId={current.record.opportunityId}>{current.client}</SalesforceOpportunityLink>
           {current.gmv != null ? ` — ${kEur(current.gmv)}` : ""}
           {current.stage ? <span className="font-normal text-ink-soft"> — {current.stage}</span> : null}
         </p>

@@ -70,7 +70,7 @@ export type MorningPlan = {
   hot: MorningEvent[];
   waiting: MorningEvent[];
   /** Affaires écartées du haut de Morning faute de signe de vie. */
-  silentButStrong: { client: string; salesperson: string; gmv: number | null; expected: number }[];
+  silentButStrong: { opportunityId: string; client: string; salesperson: string; gmv: number | null; expected: number }[];
 };
 
 const TODO: Record<MorningReason, (owner: string, client: string) => string> = {
@@ -209,7 +209,7 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
     )
     .sort((a, b) => b.expectedMonthEnd - a.expectedMonthEnd)
     .slice(0, 5)
-    .map((o) => ({ client: o.client ?? o.opportunityId, salesperson: o.owner, gmv: o.gmv, expected: o.expectedMonthEnd }));
+    .map((o) => ({ opportunityId: o.opportunityId, client: o.client ?? o.opportunityId, salesperson: o.owner, gmv: o.gmv, expected: o.expectedMonthEnd }));
 
   const byCategory: Record<string, number> = {};
   for (const c of candidates) byCategory[c.category] = (byCategory[c.category] ?? 0) + 1;

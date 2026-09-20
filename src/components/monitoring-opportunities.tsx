@@ -1,3 +1,4 @@
+import { SalesforceOpportunityLink } from "@/components/salesforce-link";
 import { formatEurShort } from "@/lib/normalize";
 import {
   MILESTONE_LABEL,
@@ -108,7 +109,7 @@ export function ValueBlock({
           {items.map(({ opportunity: o, action, verdict }) => (
             <li key={o.opportunityId} className="px-4 md:px-6 py-3">
               <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-                <p className="text-[15px] font-medium">{o.client ?? o.opportunityId}</p>
+                <p className="text-[15px] font-medium"><SalesforceOpportunityLink opportunityId={o.opportunityId}>{o.client ?? o.opportunityId}</SalesforceOpportunityLink></p>
                 <div className="flex shrink-0 items-center gap-3">
                   <p className="tabular text-[15px] font-semibold">{formatEurShort(o.gmv)}</p>
                   <LireButton scope="opportunite" itemId={o.opportunityId} />
@@ -241,7 +242,7 @@ export function ExceptionBlock({
             <li key={o.opportunityId} className="px-4 md:px-6 py-2.5">
               <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{o.client ?? o.opportunityId}</p>
+                  <p className="truncate text-sm font-medium"><SalesforceOpportunityLink opportunityId={o.opportunityId}>{o.client ?? o.opportunityId}</SalesforceOpportunityLink></p>
                   <p className="text-xs text-ink-faint">
                     {o.owner} · {MILESTONE_LABEL[o.milestoneStatus]}
                     {o.isLegacy ? " · retard initial" : ""}
@@ -264,7 +265,7 @@ export function ExceptionBlock({
             {reactivable.map((o) => (
               <li key={o.opportunityId} className="flex justify-between gap-4 text-xs">
                 <span className="truncate text-ink-soft">
-                  {o.client} — {o.owner} — {o.stage}
+                  <SalesforceOpportunityLink opportunityId={o.opportunityId}>{o.client}</SalesforceOpportunityLink> — {o.owner} — {o.stage}
                 </span>
                 <span className="tabular font-medium">{formatEurShort(o.gmv)}</span>
               </li>

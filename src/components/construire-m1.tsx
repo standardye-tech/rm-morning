@@ -1,6 +1,6 @@
 import { Badge, Card, EmptyState, SectionTitle } from "@/components/ui";
 import type { ConstruireM1 } from "@/lib/build-m1";
-import { SALESFORCE_RECORD_BASE } from "@/lib/config";
+import { SalesforceOpportunityLink } from "@/components/salesforce-link";
 import { formatFrenchDate } from "@/lib/normalize";
 import { LABEL, kEur } from "@/lib/vocabulary";
 
@@ -145,14 +145,7 @@ export function ConstruireM1Block({ data }: { data: ConstruireM1 }) {
                   <tr key={d.opportunityId} className="align-top">
                     <td className="px-4 py-2.5 text-xs text-ink-soft md:px-6">{d.ownerFirstName}</td>
                     <td className="px-3 py-2.5 font-medium">
-                      <a
-                        href={`${SALESFORCE_RECORD_BASE}/${d.opportunityId}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="underline decoration-dotted hover:text-ink-soft"
-                      >
-                        {d.client}
-                      </a>
+                      <SalesforceOpportunityLink opportunityId={d.opportunityId}>{d.client}</SalesforceOpportunityLink>
                     </td>
                     <td className="tabular px-3 py-2.5 text-right">{kEur(d.gmv)}</td>
                     <td className="px-3 py-2.5 text-xs text-ink-soft">{d.stage ?? "—"}</td>

@@ -1,3 +1,4 @@
+import { SalesforceOpportunityLink } from "@/components/salesforce-link";
 import { formatEur, formatEurShort, formatFrenchDate } from "@/lib/normalize";
 import type { WeekForecast } from "@/lib/forecast";
 import { GMAIL_SIGNAL_LABEL } from "@/lib/scoring";
@@ -24,7 +25,7 @@ export function TopDeals({ deals }: { deals: ScoredDeal[] }) {
               </span>
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-                  <p className="truncate text-[15px] font-medium">{deal.client}</p>
+                  <p className="truncate text-[15px] font-medium"><SalesforceOpportunityLink opportunityId={deal.opportunity.opportunityId}>{deal.client}</SalesforceOpportunityLink></p>
                   <p className="tabular text-[15px] font-semibold">{formatEur(deal.gmv)}</p>
                 </div>
                 <p className="mt-0.5 text-xs text-ink-soft">{deal.owner}</p>
@@ -156,7 +157,7 @@ export function WeekForecastBlock({ forecast }: { forecast: WeekForecast }) {
               <ul className="mt-2 space-y-2">
                 {forecast.toChallenge.map((item) => (
                   <li key={`${item.opportunityId}-${item.detail}`}>
-                    <p className="truncate text-xs font-medium">{item.client}</p>
+                    <p className="truncate text-xs font-medium"><SalesforceOpportunityLink opportunityId={item.opportunityId}>{item.client}</SalesforceOpportunityLink></p>
                     <p className="text-xs text-ink-soft">
                       {item.owner} · {item.detail}
                     </p>

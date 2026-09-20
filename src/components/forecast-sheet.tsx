@@ -1,5 +1,6 @@
 "use client";
 
+import { SalesforceOpportunityLink } from "@/components/salesforce-link";
 import { useState } from "react";
 
 import { Badge } from "@/components/ui";
@@ -122,7 +123,7 @@ function Row({
       }`}
     >
       <td className="py-[3px] pl-6 pr-3">
-        <span className="font-medium">{row.client}</span>
+        <span className="font-medium"><SalesforceOpportunityLink opportunityId={row.opportunityId}>{row.client}</SalesforceOpportunityLink></span>
         {row.nextExpectedLabel || row.isStandby ? (
           <span className="ml-2 text-xs text-ink-faint">
             {row.isStandby

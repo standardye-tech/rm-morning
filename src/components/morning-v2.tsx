@@ -9,6 +9,7 @@ import {
   type MorningAction,
   type MorningEvent,
 } from "@/lib/morning-types";
+import { SalesforceOpportunityLink } from "@/components/salesforce-link";
 import { kEur } from "@/lib/vocabulary";
 
 /**
@@ -216,7 +217,9 @@ function MobileEventRow({
     <li className="px-4 py-3">
       <div className="flex items-baseline justify-between gap-3">
         <span className="min-w-0 flex-1 truncate text-[15px] font-medium">
-          {event.client ?? "Client non identifié"}
+          <SalesforceOpportunityLink opportunityId={event.opportunityId}>
+            {event.client ?? "Client non identifié"}
+          </SalesforceOpportunityLink>
         </span>
         <span className="tabular shrink-0 text-[15px] font-medium">{kEur(event.gmv)}</span>
       </div>
@@ -291,7 +294,11 @@ function EventTable({
                 className="group/row border-b border-line/70 align-middle last:border-0 hover:bg-canvas/60"
               >
                 <td className="truncate px-4 md:px-6 py-1">
-                  <span className="font-medium">{e.client ?? "Client non identifié"}</span>
+                  <span className="font-medium">
+                    <SalesforceOpportunityLink opportunityId={e.opportunityId}>
+                      {e.client ?? "Client non identifié"}
+                    </SalesforceOpportunityLink>
+                  </span>
                 </td>
                 <td className="truncate px-3 py-1 text-xs text-ink-soft">
                   {e.salesperson ?? "—"}
@@ -521,7 +528,10 @@ export function TodayPlan({
                 </span>
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                    <span className="font-medium">{a.title}</span>
+                    <span className="font-medium">
+                      {a.ownerFirstName ?? "Commercial à identifier"} —{" "}
+                      <SalesforceOpportunityLink opportunityId={a.opportunityId}>{a.client}</SalesforceOpportunityLink>
+                    </span>
                     <Badge tone={REASON_TONE[a.reason] ?? "neutral"}>{ASK_LABEL[a.reason]}</Badge>
                   </div>
                   {/*
@@ -661,7 +671,7 @@ export function MorningBoard({
 export function SilentButStrong({
   items,
 }: {
-  items: { client: string; salesperson: string; gmv: number | null; expected: number }[];
+  items: { opportunityId: string; client: string; salesperson: string; gmv: number | null; expected: number }[];
 }) {
   if (items.length === 0) return null;
   return (
@@ -681,7 +691,9 @@ export function SilentButStrong({
       <ul className="divide-y divide-line border-t border-line">
         {items.map((s) => (
           <li key={s.client} className="flex flex-wrap items-baseline gap-x-4 px-4 py-2 text-sm md:px-6">
-            <span className="font-medium">{s.client}</span>
+            <span className="font-medium">
+              <SalesforceOpportunityLink opportunityId={s.opportunityId}>{s.client}</SalesforceOpportunityLink>
+            </span>
             <span className="text-xs text-ink-soft">{s.salesperson}</span>
             <span className="tabular text-xs">{kEur(s.gmv)}</span>
             <span className="tabular text-xs text-ink-faint">

@@ -9,6 +9,7 @@
  * l'onglet Expected GMV, qui n'est pas dupliqué ici.
  */
 
+import { SalesforceOpportunityLink } from "@/components/salesforce-link";
 import { Badge, Card, SectionTitle } from "@/components/ui";
 import { FORECAST_DIVERGENCE } from "@/lib/config";
 import { MOVEMENT_LABEL, type ForecastMovement } from "@/lib/forecast-board";
@@ -437,7 +438,7 @@ function ChallengeRow({ item }: { item: ForecastV2Examine }) {
   const r = item.row;
   return (
     <tr className="border-b border-line bg-warning-soft/60 last:border-0">
-      <td className="px-4 md:px-6 py-2 font-medium">{r.client}</td>
+      <td className="px-4 md:px-6 py-2 font-medium"><SalesforceOpportunityLink opportunityId={r.opportunityId}>{r.client}</SalesforceOpportunityLink></td>
       <td className="px-3 py-2 text-xs text-ink-soft">{r.owner}</td>
       <td className="tabular px-3 py-2 text-right font-medium">{formatEur(r.gmv)}</td>
       <td className="px-3 py-2 text-xs text-ink-soft">{r.stage ?? "—"}</td>
@@ -475,7 +476,7 @@ function Row({
       className={`border-b border-line last:border-0 ${challenge ? "bg-warning-soft/60" : ""}`}
     >
       <td className="px-4 md:px-6 py-2">
-        <span className="font-medium">{row.client}</span>
+        <span className="font-medium"><SalesforceOpportunityLink opportunityId={row.opportunityId}>{row.client}</SalesforceOpportunityLink></span>
         {row.isStandby ? (
           <span className="block text-xs text-warning">
             gelée jusqu&apos;au {formatFrenchDate(row.standbyUntil?.slice(0, 10) ?? null)}

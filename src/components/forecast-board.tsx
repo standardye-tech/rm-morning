@@ -1,3 +1,4 @@
+import { SalesforceOpportunityLink } from "@/components/salesforce-link";
 import Link from "next/link";
 
 import {
@@ -106,7 +107,7 @@ function Row({ row }: { row: ForecastRow }) {
   return (
     <tr className="border-b border-line last:border-0">
       <td className="px-4 md:px-6 py-2">
-        <p className="truncate font-medium">{row.client}</p>
+        <p className="truncate font-medium"><SalesforceOpportunityLink opportunityId={row.opportunityId}>{row.client}</SalesforceOpportunityLink></p>
       </td>
       <td className="px-3 py-2 text-xs text-ink-soft">{row.stage ?? "—"}</td>
       <td className="tabular px-3 py-2 text-right font-medium">{formatEur(row.gmv)}</td>
@@ -280,7 +281,7 @@ export function ForecastExits({
               className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-4 md:px-6 py-2"
             >
               <div className="min-w-0">
-                <p className="truncate text-sm">{e.client}</p>
+                <p className="truncate text-sm"><SalesforceOpportunityLink opportunityId={e.opportunityId}>{e.client}</SalesforceOpportunityLink></p>
                 <p className="text-xs text-ink-faint">
                   {e.owner} · {e.destination}
                 </p>
@@ -314,7 +315,7 @@ export function ForecastCandidates({
             className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-4 md:px-6 py-2"
           >
             <div className="min-w-0">
-              <p className="truncate text-sm">{c.client}</p>
+              <p className="truncate text-sm"><SalesforceOpportunityLink opportunityId={c.opportunityId}>{c.client}</SalesforceOpportunityLink></p>
               <p className="text-xs text-ink-faint">
                 {c.owner} · {c.stage} · projetée {c.kanbanMonth}
               </p>

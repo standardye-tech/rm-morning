@@ -128,7 +128,7 @@ const comp = readFileSync(path.resolve(process.cwd(), "src/components/construire
 check("le bloc dit que la prévision n'est PAS la somme des affaires", /n&apos;est pas la somme des affaires/.test(comp) && /pas la prévision/.test(comp));
 check("le bloc affiche « Objectif non renseigné » quand l'objectif manque", /Objectif non renseigné/.test(comp));
 check("aucune ventilation « pipe identifié / GMV futur » n'est fabriquée", /aucune n&apos;est affichée/.test(comp));
-check("lien Salesforce par affaire", /SALESFORCE_RECORD_BASE/.test(comp) && /opportunityId/.test(comp));
+check("lien Salesforce par affaire, via le composant partagé", /SalesforceOpportunityLink/.test(comp) && !/SALESFORCE_RECORD_BASE/.test(comp) && /opportunityId/.test(comp));
 
 // ============================================================================
 section("7 — Route de saisie /api/objective");
