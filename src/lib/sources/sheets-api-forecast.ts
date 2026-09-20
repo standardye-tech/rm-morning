@@ -48,7 +48,7 @@ type ServiceAccountKey = {
 const base64url = (value: object): string =>
   Buffer.from(JSON.stringify(value)).toString("base64url");
 
-async function loadKey(): Promise<ServiceAccountKey> {
+export async function loadKey(): Promise<ServiceAccountKey> {
   const file = path.resolve(/* turbopackIgnore: true */ process.cwd(), GOOGLE_SHEETS.keyFile);
   let raw: string;
   try {
@@ -80,7 +80,7 @@ async function loadKey(): Promise<ServiceAccountKey> {
  */
 let cachedToken: { value: string; expiresAt: number } | null = null;
 
-async function getAccessToken(key: ServiceAccountKey): Promise<string> {
+export async function getAccessToken(key: ServiceAccountKey): Promise<string> {
   if (cachedToken && cachedToken.expiresAt > Date.now() + 60_000) return cachedToken.value;
 
   const now = Math.floor(Date.now() / 1000);
@@ -128,7 +128,7 @@ async function getAccessToken(key: ServiceAccountKey): Promise<string> {
   return cachedToken.value;
 }
 
-async function callSheets<T>(token: string, url: string): Promise<T> {
+export async function callSheets<T>(token: string, url: string): Promise<T> {
   const response = await fetch(url, { headers: { authorization: `Bearer ${token}` } });
   if (response.status === 403 || response.status === 404) {
     throw new ForecastAuthError(

@@ -42,6 +42,7 @@ import {
   type ExpectedM1Snapshot,
 } from "./expected-m1";
 import { officialSignedGmv } from "./official-signed";
+import type { AdjustedPerspective } from "./sources/adjusted-perspective-parser";
 import { clientLabel } from "./vocabulary";
 
 export type DivergenceLevel = "proche" | "prudent" | "fort" | "non_qualifie";
@@ -121,11 +122,13 @@ export type ForecastV2Region = ForecastMonthBoard["region"] & {
   /** Atterrissage commercial = Signé à date + reste annoncé. Information secondaire. */
   commercialLanding: number;
   /**
-   * Perspective ajustée : analyse manuelle de Sami, onglet du mois affiché. Nulle
-   * tant que le fichier manuel n'est pas branché — jamais remplacée par une autre
-   * valeur.
+   * Perspective ajustée : analyse manuelle de la Région, onglet du mois affiché.
+   * Rattachée par la page (lecture du classeur, asynchrone) ; nulle ici, et nulle
+   * si le classeur est illisible — jamais remplacée par une autre valeur.
    */
-  adjustedPerspective: { gmv: number; snapshotDate: string | null } | null;
+  adjustedPerspective: AdjustedPerspective | null;
+  /** Pourquoi elle est absente, quand elle l'est. */
+  adjustedPerspectiveNote: string | null;
   expectedFinish: number;
   p10: number;
   p50: number;
@@ -617,6 +620,7 @@ export function buildForecastV2(monthOffset: number, objective?: number | null):
     declaredOpenCount,
     commercialLanding: signedGmvActual + declaredOpenGmv,
     adjustedPerspective: null,
+    adjustedPerspectiveNote: null,
     expectedFinish,
     p10,
     p50,

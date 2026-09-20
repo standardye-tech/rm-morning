@@ -21,6 +21,7 @@
     "expected:refresh": "npm run expected:today && npm run expected:score && npm run expected:verify",
     "forecast:verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs scripts/verify-forecast-v2.mjs",
     "forecast:perspectives-verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/verify-forecast-perspectives.mjs",
+    "forecast:adjusted-verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs scripts/verify-forecast-adjusted.mjs",
     "forecast:signed-verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/verify-forecast-signed.mjs",
     "forecast:reconcile": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs scripts/reconcile-forecast.mjs",
     "morning:verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs scripts/verify-morning.mjs",

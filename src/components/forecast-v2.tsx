@@ -74,12 +74,14 @@ export function ForecastV2Totals({ board }: { board: ForecastV2Board }) {
         value={r.adjustedPerspective ? kEur(r.adjustedPerspective.gmv) : "—"}
         hint={
           r.adjustedPerspective
-            ? `Analyse régionale · snapshot du ${
-                r.adjustedPerspective.snapshotDate
-                  ? formatFrenchDate(r.adjustedPerspective.snapshotDate)
-                  : "—"
-              }`
-            : "Analyse régionale · fichier manuel non connecté"
+            ? r.adjustedPerspective.source === "snapshot"
+              ? `Analyse régionale · snapshot ${
+                  r.adjustedPerspective.snapshotDate
+                    ? formatFrenchDate(r.adjustedPerspective.snapshotDate).slice(0, 5)
+                    : "—"
+                }`
+              : `Analyse régionale · sélection manuelle · ${r.adjustedPerspective.count} affaires`
+            : `Analyse régionale · ${r.adjustedPerspectiveNote ?? "indisponible"}`
         }
       />
       {/*
@@ -201,8 +203,10 @@ export function ForecastV2Scopes({ board }: { board: ForecastV2Board }) {
         <div>
           <dt className="font-medium">{LABEL.adjustedPerspective}</dt>
           <dd className="text-ink-soft">
-            L&apos;analyse manuelle de la Région (onglet du mois affiché). Elle retraite le
-            déclaratif ; elle n&apos;est pas encore branchée à RM Morning.
+            L&apos;analyse manuelle de la Région, lue dans le classeur « Perspectives M+1
+            (&gt; 50 % de probabilité) », onglet du mois affiché : GMV du dernier snapshot
+            réellement renseigné ou, pour un mois futur sans snapshot, sélection manuelle du
+            mois. Elle retraite le déclaratif ; ce n&apos;est ni le Kanban ni RM Morning.
           </dd>
         </div>
         <div>

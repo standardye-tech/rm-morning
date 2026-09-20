@@ -49,6 +49,8 @@ export type SheetGroup = {
   signedGmv: number;
   /** Reste annoncé : GMV brut ouvert de la Perspective M, signé exclu. */
   declaredOpenGmv: number;
+  /** Perspective ajustée du commercial ; null si le classeur manuel est indisponible. */
+  adjustedGmv: number | null;
   kanbanGmv: number;
   /** Part de la Perspective encore ouverte : c'est ce que la colonne totalise. */
   perspectiveGmv: number;
@@ -201,6 +203,7 @@ function Group({
               {group.signedGmv > 0
                 ? ` · Signé ${kEur(group.signedGmv)} · Atterrissage ${kEur(group.declaredOpenGmv + group.signedGmv)}`
                 : ""}
+              {group.adjustedGmv != null ? ` · Perspective ajustée ${kEur(group.adjustedGmv)}` : ""}
               {showExpected ? ` · GMV probable ${kEur(group.expectedGmv)}` : ""}
               {` · ${rows.length} affaire${rows.length > 1 ? "s" : ""}`}
             </span>

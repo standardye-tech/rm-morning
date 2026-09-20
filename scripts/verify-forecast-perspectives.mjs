@@ -78,7 +78,7 @@ console.log(`\nMois ${MONTH} / ${NEXT}`);
 check("1. Reste annoncé = GMV brut des lignes OUVERTES de Perspective M (100 000 €)", r.declaredOpenGmv === 100000 && r.declaredOpenCount === 1, `${r.declaredOpenGmv} € · ${r.declaredOpenCount} ligne(s)`);
 check("1b. gagnée / perdue / repoussée exclues du reste annoncé", r.declaredOpenGmv < 100000 + 30000 + 20000 + 10000);
 check("1c. non pondéré : ≠ Σ GMV × confiance de l'onglet", r.declaredOpenGmv !== r.perspectiveSnapshotGmv, `pondérée ${r.perspectiveSnapshotGmv}`);
-check("2. Perspective ajustée absente tant que le fichier manuel n'est pas branché", r.adjustedPerspective === null && M1.region.adjustedPerspective === null);
+check("2. le moteur n'invente aucune Perspective ajustée (la page la rattache depuis le classeur manuel)", r.adjustedPerspective === null && M1.region.adjustedPerspective === null);
 check("3. septembre ne lit pas octobre", !rows.some((x) => x.opportunityId === "TESTPERSP_NEXT") && r.declaredOpenGmv !== 70000 && r.declaredOpenGmv !== 170000);
 check("4. M+1 lit l'onglet du mois suivant (70 000 €)", M1.region.declaredOpenGmv === 70000, `${M1.region.declaredOpenGmv} €`);
 check("5. Signé = Travaux officiels", Math.abs(r.signedGmvActual - officialM.bySalesperson.reduce((t, s) => t + s.gmv, 0)) < 1e-6);

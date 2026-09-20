@@ -542,6 +542,21 @@ export const FORECAST_SHEET = {
   manualDir: "forecast-exports",
 } as const;
 
+/**
+ * Classeur MANUEL « Perspectives M+1 (> 50 % de probabilité) », tenu par la Région :
+ * source de « Perspective ajustée ». Un onglet par mois cible (« Septembre 2026 »).
+ * Même compte de service que ci-dessus, à partager en « Lecteur ».
+ */
+export const ADJUSTED_PERSPECTIVE_SHEET = {
+  spreadsheetId: "1W5dMzbdbe-1GAlIHVq1x852OlDxmlX16stLy86p3kQo",
+  /** Lecture en direct mise en cache : la Région retouche ce classeur à la main. */
+  cacheMs: 10 * 60_000,
+  /** Un échec (accès, réseau) n'est pas rejoué à chaque page vue. */
+  failureCacheMs: 60_000,
+  /** Plage lue dans l'onglet du mois : le tableau d'affaires tient largement dedans. */
+  range: "A1:AZ400",
+} as const;
+
 /** URL d'export CSV d'un onglet, par son nom. */
 export function forecastSheetCsvUrl(sheetName: string): string {
   const id = FORECAST_SHEET.spreadsheetId;

@@ -11,6 +11,7 @@ import {
 import { Card, EmptyState } from "@/components/ui";
 import { monthLabel, shiftMonth } from "@/lib/forecast-board";
 import { applyTableMode, buildForecastV2, isVisibleInForecast } from "@/lib/forecast-v2";
+import { loadAdjustedPerspective } from "@/lib/adjusted-perspective";
 import { FORECAST_VISIBILITY } from "@/lib/config";
 import { todayIso } from "@/lib/normalize";
 import { chanceInMonth, LABEL } from "@/lib/vocabulary";
@@ -49,7 +50,17 @@ export default async function ForecastPage({
   // Deux lectures du TABLEAU seulement : le bandeau ne change jamais de définition.
   const remainingOnly = query.affaires === "reste";
 
-  const board = buildForecastV2(offset);
+  const baseBoard = buildForecastV2(offset);
+  // Perspective ajustée : classeur manuel de la Région, onglet du mois affiché.
+  const adjusted = await loadAdjustedPerspective(baseBoard.month, offset > 0);
+  const board = {
+    ...baseBoard,
+    region: {
+      ...baseBoard.region,
+      adjustedPerspective: adjusted.ok ? adjusted.value : null,
+      adjustedPerspectiveNote: adjusted.ok ? null : adjusted.reason,
+    },
+  };
   // Libellés des trois onglets. Dérivés du mois de la vue courante par simple
   // décalage : construire deux planches complètes juste pour lire leur titre
   // coûterait deux passes de base de données pour rien.
@@ -114,6 +125,7 @@ export default async function ForecastPage({
         salesperson: sp.salesperson,
         signedGmv: sp.signedGmvActual,
         declaredOpenGmv: sp.declaredOpenGmv,
+        adjustedGmv: adjusted.ok ? (adjusted.value.byOwner[sp.salesperson] ?? 0) : null,
         kanbanGmv: rows.reduce((t, o) => t + (o.outsideKanban ? 0 : o.gmv ?? 0), 0),
         perspectiveGmv: rows.reduce((t, o) => t + (o.perspectiveGmv ?? 0), 0),
         perspectiveSnapshotGmv: sp.perspectiveSnapshotGmv,
@@ -162,6 +174,10 @@ export default async function ForecastPage({
             .filter((sp) => !ownerFilter || sp.salesperson === ownerFilter)
             .reduce((t, sp) => t + sp.declaredOpenCount, 0),
           commercialLanding: sheetTotals.signed + sheetTotals.declaredOpen,
+          adjustedPerspective:
+            adjusted.ok && ownerFilter
+              ? { ...adjusted.value, gmv: adjusted.value.byOwner[ownerFilter] ?? 0 }
+              : board.region.adjustedPerspective,
           expectedFinish: sheetTotals.signed + sheetTotals.expected,
         },
       }
