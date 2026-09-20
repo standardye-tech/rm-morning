@@ -1,3 +1,4 @@
+import { ConstruireM1Block } from "@/components/construire-m1";
 import { ExpectedGmvChallenge } from "@/components/expected-gmv";
 import {
   ExpectedGmvBacktest,
@@ -10,6 +11,7 @@ import {
   ExpectedGmvSummary,
 } from "@/components/expected-gmv";
 import { Card, EmptyState, SectionTitle } from "@/components/ui";
+import { buildConstruireM1, FUTURE_SHARE_M1 as FUTURE_SHARE_M1_SHARED, FUTURE_SHARE_M2 as FUTURE_SHARE_M2_SHARED } from "@/lib/build-m1";
 import { buildExpectedGmvSnapshot, type ExpectedGmvOpportunity } from "@/lib/expected-gmv-live";
 import { buildForecastV2 } from "@/lib/forecast-v2";
 import { officialMonthlyReference } from "@/lib/official-signed";
@@ -56,6 +58,28 @@ export default async function ExpectedGmvPage({
     query.tri === "probabilite" || query.tri === "gmv" ? query.tri : "contribution";
   const showAll = query.tout === "1";
   const detail = query.detail === "1";
+
+  // Vue M+1 : « Construire M+1 ». Même écran, autre lecture — pas d'onglet de navigation
+  // de plus. Elle ne dépend pas du scoring du mois en cours.
+  if (query.vue === "m1") {
+    const m1 = await buildConstruireM1();
+    return (
+      <div className="space-y-6 py-8">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Expected GMV</h1>
+          <div className="mt-3 flex gap-1 rounded-lg bg-canvas p-1 ring-1 ring-line w-fit">
+            <a href="/expected-gmv" className="inline-flex min-h-9 items-center rounded-md px-3 py-2 text-sm text-ink-soft transition-colors hover:bg-surface hover:text-ink md:min-h-0 md:py-1.5">
+              Ce mois-ci
+            </a>
+            <a href="/expected-gmv?vue=m1" className="inline-flex min-h-9 items-center rounded-md bg-surface px-3 py-2 text-sm font-medium text-ink md:min-h-0 md:py-1.5">
+              Construire M+1
+            </a>
+          </div>
+        </div>
+        <ConstruireM1Block data={m1} />
+      </div>
+    );
+  }
 
   const snap = buildExpectedGmvSnapshot();
   // Une seule source pour la prévision commerciale et pour les affaires à
@@ -167,8 +191,8 @@ export default async function ExpectedGmvPage({
   // d'après. Les valeurs de C8 (29 % et 54 %) étaient mesurées sur les montants
   // d'opportunités et sous-estimaient le pipe futur, parce que les avenants et
   // les annulations s'accrochent à des affaires créées après l'observation.
-  const FUTURE_SHARE_M1 = "46 %";
-  const FUTURE_SHARE_M2 = "61 %";
+  const FUTURE_SHARE_M1 = FUTURE_SHARE_M1_SHARED;
+  const FUTURE_SHARE_M2 = FUTURE_SHARE_M2_SHARED;
   const m1Declarative = {
     label: boardM1.monthLabel,
     kanbanGmv: boardM1.region.kanbanGmv,
@@ -213,6 +237,15 @@ export default async function ExpectedGmvPage({
           {snap.modelVersion} · Scoré le{" "}
           {new Date(snap.scoredAt).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" })}
         </p>
+      </div>
+
+      <div className="flex gap-1 rounded-lg bg-canvas p-1 ring-1 ring-line w-fit">
+        <a href="/expected-gmv" className="inline-flex min-h-9 items-center rounded-md bg-surface px-3 py-2 text-sm font-medium text-ink md:min-h-0 md:py-1.5">
+          Ce mois-ci
+        </a>
+        <a href="/expected-gmv?vue=m1" className="inline-flex min-h-9 items-center rounded-md px-3 py-2 text-sm text-ink-soft transition-colors hover:bg-surface hover:text-ink md:min-h-0 md:py-1.5">
+          Construire M+1
+        </a>
       </div>
 
       <ExpectedGmvFreshness snap={snap} />

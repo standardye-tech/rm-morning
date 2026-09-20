@@ -1,5 +1,6 @@
 import { GmailSyncButton } from "@/components/gmail-sync-button";
 import { ImportButton } from "@/components/import-button";
+import { ObjectiveForm, type ObjectiveRow } from "@/components/objective-form";
 import { TeamScope } from "@/components/team-scope";
 import { Card, EmptyState, SectionTitle, Stat } from "@/components/ui";
 import { latestSync, mailSignalCount } from "@/lib/mail-store";
@@ -16,6 +17,9 @@ import { outOfScopeSummary } from "@/lib/morning-events";
 import { freshnessReport } from "@/lib/sync/freshness";
 import { RUN_STATUS_LABEL, humanDateTime, humanDuration } from "@/lib/sync/labels";
 import { recentRuns } from "@/lib/sync/store";
+import { businessMonth } from "@/lib/business-time";
+import { monthLabel } from "@/lib/forecast-board";
+import { getObjective } from "@/lib/objective-store";
 import { allTeamMembers, teamCandidates } from "@/lib/team-store";
 
 export const dynamic = "force-dynamic";
@@ -51,6 +55,11 @@ export default async function DonneesPage({
   const runs = recentRuns(20);
   const team = allTeamMembers();
   const candidates = teamCandidates();
+  const objectiveRows: ObjectiveRow[] = [0, 1, 2, 3].map((i) => {
+    const month = businessMonth(new Date(), i);
+    const o = getObjective(month);
+    return { month, label: monthLabel(month), amount: o?.amount ?? null, updatedAt: o?.updatedAt ?? null };
+  });
   // Trois sondes de connexion, lancées EN PARALLÈLE.
   //
   // Elles étaient enchaînées, et la page mettait douze secondes à s'ouvrir :
@@ -300,6 +309,18 @@ export default async function DonneesPage({
         />
         <div className="px-4 py-4 md:px-6">
           <TeamScope members={team} candidates={candidates} />
+        </div>
+      </Card>
+
+      {/*
+        L'objectif mensuel de la Région est une donnée de pilotage, saisie ici et
+        nulle part ailleurs. Aucun montant n'est proposé par défaut : un mois vide
+        est « non renseigné », et Construire M+1 n'invente alors aucune couverture.
+      */}
+      <Card className="mt-6">
+        <SectionTitle eyebrow="Pilotage" title="Objectif mensuel de la Région" aside="saisie manuelle" />
+        <div className="px-4 py-2 md:px-6">
+          <ObjectiveForm rows={objectiveRows} />
         </div>
       </Card>
 

@@ -407,14 +407,11 @@ export function WaitingClients({ events, board }: { events: MorningEvent[]; boar
 // --- Plan du jour -----------------------------------------------------------
 
 const REASON_TONE: Record<string, "neutral" | "positive" | "warning" | "danger"> = {
-  client_motive: "positive",
-  client_attend: "warning",
-  affaire_decisive: "neutral",
-  a_challenger_vivante: "warning",
-  a_challenger_figee: "warning",
-  proche_signature: "positive",
-  pipe_faible: "danger",
-  affaires_figees: "warning",
+  securiser: "warning",
+  basculer: "positive",
+  bloque: "danger",
+  upside: "neutral",
+  divergence: "warning",
 };
 
 /**
@@ -455,16 +452,6 @@ function DoneCheckbox({
   );
 }
 
-/**
- * Une action du plan qui ne fait que recopier un message des blocs 1 ou 2.
- *
- * Seules ces deux raisons quittent le plan quand le message est traité en
- * haut de page. Une affaire décisive ou en signature dont le client a écrit
- * reste : sa raison d'être dans le plan n'est pas ce message.
- */
-const echoesMessage = (a: MorningAction) =>
-  a.messageId != null && (a.reason === "client_motive" || a.reason === "client_attend");
-
 export function TodayPlan({
   actions,
   doneToday = 0,
@@ -477,14 +464,11 @@ export function TodayPlan({
 }) {
   const done = board.doneActions;
 
-  // Ce qui a été traité dans les blocs du dessus sort du plan, tout de suite.
-  // Ce qui a été coché ICI reste visible, estompé : c'est le geste habituel.
-  // Le Plan est court par construction (7 situations au plus, voir
-  // `MORNING_PLAN`) : il n'y a ni « voir tout » ni pagination.
-  const visible = actions.filter(
-    (a) => !(echoesMessage(a) && board.handledAbove.has(a.messageId!) && !done.has(a.key)),
-  );
-  const removed = actions.length - visible.length;
+  // Le Plan est court par construction (7 affaires au plus, voir `MORNING_PLAN`) :
+  // il n'y a ni « voir tout » ni pagination. Ce qui a été coché ICI reste visible,
+  // estompé : c'est le geste habituel. Une ligne = une affaire ; les messages des
+  // Blocs 1 et 2 n'y sont plus recopiés.
+  const visible = actions;
   const remainingActions = visible.filter((a) => !done.has(a.key));
   const remaining = remainingActions.length;
   // Pas de total GMV en en-tête : une situation « N affaires figées » embarque
@@ -496,7 +480,7 @@ export function TodayPlan({
     <Card className="ring-1 ring-ink/5">
       <SectionTitle
         eyebrow="Plan du jour"
-        title={`${visible.length} situation${visible.length > 1 ? "s" : ""} prioritaire${visible.length > 1 ? "s" : ""}`}
+        title={`${visible.length} affaire${visible.length > 1 ? "s" : ""} prioritaire${visible.length > 1 ? "s" : ""}`}
         aside={
           <span className="flex items-center gap-3">
             {doneToday > 0 ? (
@@ -511,16 +495,11 @@ export function TodayPlan({
           </span>
         }
       />
-      {removed > 0 ? (
-        <p className="border-b border-line px-4 py-2 text-xs text-ink-faint md:px-6">
-          {removed} situation(s) retirée(s) : déjà traitée(s) dans les blocs ci-dessus.
-        </p>
-      ) : null}
       {visible.length === 0 ? (
         <EmptyState>
           {doneToday > 0
-            ? `Plan du jour terminé — ${doneToday} situation(s) traitée(s) aujourd'hui.`
-            : "Aucune situation ne demande votre attention ce matin."}
+            ? `Plan du jour terminé — ${doneToday} affaire(s) traitée(s) aujourd'hui.`
+            : "Aucune affaire ne peut modifier fortement le mois ce matin."}
         </EmptyState>
       ) : (
         <>
@@ -543,7 +522,7 @@ export function TodayPlan({
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
                     <span className="font-medium">{a.title}</span>
-                    <Badge tone={REASON_TONE[a.reason] ?? "neutral"}>{a.ask ?? ASK_LABEL[a.reason]}</Badge>
+                    <Badge tone={REASON_TONE[a.reason] ?? "neutral"}>{ASK_LABEL[a.reason]}</Badge>
                   </div>
                   {/*
                     La justification ne dit que ce qui a compté au score : GMV,

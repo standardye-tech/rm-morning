@@ -86,102 +86,77 @@ export type MorningEvent = {
   isLatestHotInThread: boolean;
 };
 
-export type MorningReason =
-  | "client_motive"
-  | "client_attend"
-  | "affaire_decisive"
-  | "a_challenger_vivante"
-  | "a_challenger_figee"
-  | "proche_signature"
-  | "pipe_faible"
-  | "affaires_figees";
+/**
+ * Raison d'entrée d'une affaire dans le Plan du jour (une famille = une raison).
+ *
+ *   securiser   A — annoncée sur M, RM Morning la juge fragile ou bloquée
+ *   basculer    B — prévue M+1, peut signer sur M
+ *   bloque      C — gros GMV bloqué
+ *   upside      D — hors forecast, crédible (pMonthEnd ou signal dur)
+ *   divergence  E — annoncée sur M, RM Morning nettement en dessous
+ */
+export type MorningReason = "securiser" | "basculer" | "bloque" | "upside" | "divergence";
 
 export const REASON_LABEL: Record<MorningReason, string> = {
-  client_motive: "Le client veut avancer",
-  client_attend: "Le client attend une réponse",
-  affaire_decisive: "Affaire décisive pour le mois",
-  a_challenger_vivante: "Affaire à challenger, et le client donne signe de vie",
-  a_challenger_figee: "Affaire à challenger, sans mouvement",
-  proche_signature: "Proche de la signature",
-  pipe_faible: "Pipe insuffisant",
-  affaires_figees: "Affaires figées",
+  securiser: "GMV annoncé à sécuriser",
+  basculer: "Peut basculer de M+1 sur M",
+  bloque: "Gros GMV bloqué",
+  upside: "Hors forecast crédible",
+  divergence: "Écart Forecast / RM Morning",
 };
 
-/**
- * Ce que le manager demande, en un mot : c'est l'étiquette affichée sur la
- * ligne. Sami ne relance pas les clients, il fait relancer.
- */
+/** Ce que le manager demande, en un mot : l'étiquette affichée sur la ligne. */
 export const ASK_LABEL: Record<MorningReason, string> = {
-  client_motive: "Faire traiter",
-  client_attend: "Faire répondre",
-  affaire_decisive: "Challenger",
-  a_challenger_vivante: "Challenger",
-  a_challenger_figee: "Challenger",
-  proche_signature: "Sécuriser",
-  pipe_faible: "Reconstituer le pipe",
-  affaires_figees: "Débloquer",
+  securiser: "À sécuriser",
+  basculer: "Peut basculer",
+  bloque: "À débloquer",
+  upside: "À challenger",
+  divergence: "À challenger",
 };
 
-/** Famille de la situation. C'est aussi le préfixe de `key`. */
-export type PlanFamily =
-  | "chaud"
-  | "attente"
-  | "decisive"
-  | "challenge"
-  | "signature"
-  | "pipe_faible"
-  | "figees";
+/** Famille de la situation. C'est aussi le libellé de catégorie du journal. */
+export type PlanFamily = MorningReason;
 
 /** D'où vient le signal principal. */
 export type MorningSource = "gmail" | "forecast" | "salesforce";
 
+/**
+ * Une ligne du Plan = UNE affaire (un OpportunityId).
+ */
 export type MorningAction = {
+  /** `affaire:<OpportunityId>` : stable pour une affaire, quelle que soit sa famille. */
   key: string;
   reason: MorningReason;
-  /** Famille de la situation (chaud, attente, decisive, …). */
+  /** Famille de l'affaire (identique à `reason`). */
   category: PlanFamily;
-  /** Signal principal : un mail, le forecast déclaré, ou l'état Salesforce. */
+  /** Signal principal : le forecast déclaré, ou l'état Salesforce. */
   source: MorningSource;
-  /** Pourquoi maintenant, en une phrase. */
+  /** Pourquoi cette affaire peut modifier l'atterrissage, en une phrase. */
   why: string;
   /** Ce qu'il faut faire, à l'impératif. */
   todo: string;
-  /** « Commercial — situation » : ce que le manager lit d'abord. */
+  /** « Commercial — Client » : ce que le manager lit d'abord. */
   title: string;
-  /** Justification courte, tirée uniquement des données qui ont compté au score. */
+  /** « GMV · stade · raison » : tirée uniquement des données qui ont compté au score. */
   detail: string;
-  /** Vide pour une situation qui ne porte sur aucune affaire précise. */
   client: string;
-  /** Commercial concerné. Null seulement si le message n'a pu être rattaché. */
+  /** Commercial de l'affaire : qui challenger. */
   owner: string | null;
   ownerFirstName: string | null;
   /** Identique à `owner` : conservé pour les lecteurs existants. */
   salesperson: string | null;
+  /** GMV RÉELLE de l'affaire (jamais plafonnée). */
   gmv: number | null;
   stage: string | null;
   /** Indicateurs utiles, déjà formatés en langage métier. */
   facts: string[];
-  /** Le message à l'origine, quand il y en a un : permet de l'acquitter. */
+  /** Toujours nul : le Plan ne porte plus de message (les Blocs 1 et 2 s'en chargent). */
   messageId: string | null;
   receivedAt: string | null;
   opportunityId: string | null;
-  /**
-   * Toutes les affaires que cette situation couvre : une seule pour une affaire,
-   * plusieurs pour « 3 affaires figées ». Sert à ne jamais compter deux fois la
-   * même affaire dans le Plan.
-   */
+  /** Une seule affaire : conservé pour les lecteurs existants. */
   opportunityIds: string[];
-  /**
-   * Situations nées d'un mail seulement : les motifs managériaux qui ont donné
-   * accès au Plan (voir `MORNING_PLAN.mailMotive`). Jamais vide dans le Plan.
-   */
-  motives?: string[];
-  /**
-   * Étiquette du badge quand le motif dominant n'est pas la famille du mail
-   * (« Challenger », « Sécuriser », « Débloquer »). Absente : `ASK_LABEL[reason]`.
-   */
-  ask?: string;
-  /** Interne, jamais affiché. */
+  /** Impact en euros (voir `MORNING_PLAN`), score de tri. Interne, jamais affiché. */
   score: number;
 };
 

@@ -81,7 +81,7 @@ function actionFor(plan, messageId) {
 }
 
 // ============================================================================
-// 1 — Traitement INDIVIDUEL d'un événement chaud retire son action du Plan
+// 1 — Traitement INDIVIDUEL d'un événement chaud le retire du Bloc 1
 // ============================================================================
 
 section("1 — Traitement individuel Bloc 1 (chaud) => l'action correspondante quitte le Plan");
@@ -97,14 +97,15 @@ insertMorningEvent({ id: MSG_G1, threadId: THREAD_G1, sentAt: hoursAgo(2), categ
 
 const planG1Before = buildMorningPlan();
 const actionG1Before = actionFor(planG1Before, MSG_G1);
-check("l'action « client_motive » apparaît dans le Plan", actionG1Before?.reason === "client_motive", JSON.stringify(actionG1Before?.key));
+// Plan par affaires : un message n'est JAMAIS une ligne du Plan. Il vit dans le Bloc 1.
+check("le message chaud est dans le Bloc 1", planG1Before.hot.some((e) => e.messageId === MSG_G1) && actionG1Before === undefined);
 
 acknowledgeEvent(MSG_G1);
 const planG1After = buildMorningPlan();
-check("l'action a disparu du Plan après acquittement individuel", actionFor(planG1After, MSG_G1) === undefined);
+check("le message a disparu du Bloc 1 après acquittement individuel", !planG1After.hot.some((e) => e.messageId === MSG_G1));
 
 const planG1Reload = buildMorningPlan();
-check("reload : l'action reste absente", actionFor(planG1Reload, MSG_G1) === undefined);
+check("reload : le message reste absent du Bloc 1", !planG1Reload.hot.some((e) => e.messageId === MSG_G1));
 
 // ============================================================================
 // 2 — Traitement GLOBAL (Bloc 2, "Tout traiter") retire les actions du Plan
@@ -123,14 +124,14 @@ insertMorningEvent({ id: MSG_G2, threadId: THREAD_G2, sentAt: hoursAgo(3), categ
 
 const planG2Before = buildMorningPlan();
 const actionG2Before = actionFor(planG2Before, MSG_G2);
-check("l'action « client_attend » apparaît dans le Plan", actionG2Before?.reason === "client_attend", JSON.stringify(actionG2Before?.key));
+check("le message en attente est dans le Bloc 2 (jamais dans le Plan)", planG2Before.waiting.some((e) => e.messageId === MSG_G2) && actionG2Before === undefined);
 
 acknowledgeAllEvents("attente");
 const planG2After = buildMorningPlan();
-check("l'action a disparu du Plan après « Tout traiter » Bloc 2", actionFor(planG2After, MSG_G2) === undefined);
+check("le message a disparu du Bloc 2 après « Tout traiter » Bloc 2", !planG2After.waiting.some((e) => e.messageId === MSG_G2));
 
 const planG2Reload = buildMorningPlan();
-check("reload : l'action reste absente", actionFor(planG2Reload, MSG_G2) === undefined);
+check("reload : le message reste absent du Bloc 2", !planG2Reload.waiting.some((e) => e.messageId === MSG_G2));
 
 // ============================================================================
 // 3 — Changement du filtre awaitingReply (F) => l'action du Plan disparaît
@@ -148,7 +149,7 @@ insertMailSignal({ id: MSG_G3, threadId: THREAD_G3, opportunityId: OPP_G3, sentA
 insertMorningEvent({ id: MSG_G3, threadId: THREAD_G3, sentAt: hoursAgo(4), category: tG3.category, reason: tG3.reason });
 
 const planG3Before = buildMorningPlan();
-check("l'action « client_attend » apparaît dans le Plan avant réponse", actionFor(planG3Before, MSG_G3)?.reason === "client_attend");
+check("le message en attente est dans le Bloc 2 avant réponse", planG3Before.waiting.some((e) => e.messageId === MSG_G3));
 
 // Une réponse RM synchronisée, SANS jamais appeler acknowledgeEvent : le
 // message n'est pas « traité » par un geste utilisateur, seul le fil a changé.
@@ -156,7 +157,7 @@ const MSG_G3_REPLY = "TESTG_MSG3_REPLY";
 insertMailSignal({ id: MSG_G3_REPLY, threadId: THREAD_G3, opportunityId: OPP_G3, sentAt: hoursAgo(0.5), direction: "sortant", subject: "Re: Devis" });
 
 const planG3After = buildMorningPlan();
-check("l'action a disparu du Plan, bien qu'aucun geste manuel n'ait été fait", actionFor(planG3After, MSG_G3) === undefined);
+check("le message a disparu du Bloc 2, bien qu'aucun geste manuel n'ait été fait", !planG3After.waiting.some((e) => e.messageId === MSG_G3));
 
 // ============================================================================
 // 4 — « Tout traiter » du Plan du jour lui-même

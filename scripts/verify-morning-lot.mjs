@@ -173,9 +173,8 @@ check("plus aucune action « Le client veut avancer » dans le plan", !planAfter
 // doivent rester. « À challenger, et le client donne signe de vie » dépend par
 // définition d'un message ouvert : une fois celui-ci traité, le signe de vie
 // est traité aussi — comportement existant de buildMorningPlan, inchangé ici.
-// Plan V2 : les situations de fond comptent aussi les affaires à challenger
-// figées et les absences de signal par commercial — aucune ne recopie un mail.
-const keptKinds = ["affaire_decisive", "proche_signature", "a_challenger_vivante", "a_challenger_figee", "affaires_figees", "pipe_faible"];
+// Plan par affaires : toutes les lignes sont des affaires d'impact GMV (cinq familles).
+const keptKinds = ["securiser", "basculer", "bloque", "upside", "divergence"];
 const strongKinds = ["affaire_decisive", "proche_signature"];
 const before = planBefore.actions.filter((a) => strongKinds.includes(a.reason)).map((a) => a.key).sort();
 const after = planAfter.actions.filter((a) => strongKinds.includes(a.reason)).map((a) => a.key).sort();

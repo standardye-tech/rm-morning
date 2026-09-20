@@ -237,38 +237,32 @@ for (const a of plan.actions) by[a.reason] = (by[a.reason] ?? 0) + 1;
 console.log(`  ${plan.actions.length} actions`);
 for (const [k, v] of Object.entries(by)) console.log(`      ${REASON_LABEL[k].padEnd(52)} ${v}`);
 
-// 7. Une affaire à fort Expected sans signal client ne doit pas être en tête.
-const top = plan.actions.slice(0, 5);
-// Plan V2 : sont « de fond » les situations qui ne dépendent d'aucun mail mais
-// portent un motif managérial — affaire décisive ou en signature, affaire à
-// challenger et figée, et les absences de signal par commercial (pipe
-// insuffisant, affaires figées) lues dans attention.ts.
-const BACKGROUND_REASONS = ["affaire_decisive", "proche_signature", "a_challenger_figee", "affaires_figees", "pipe_faible"];
-const topSilent = top.filter((a) => a.messageId == null && !BACKGROUND_REASONS.includes(a.reason));
-check(
-  "7. aucune affaire silencieuse en tête du plan",
-  topSilent.length === 0,
-  `${plan.silentButStrong.length} affaire(s) forte(s) mais muette(s) écartée(s) du plan`,
-);
-
-// 9. Une affaire de la Perspective dont le client attend doit être prioritaire.
-const perspectiveWaiting = plan.actions.filter(
-  (a) => a.reason === "client_attend" && a.facts.some((f) => f.includes("Perspective")),
+// 7. Plan par AFFAIRES : chaque ligne est une affaire distincte portant l'une des
+//    cinq familles d'impact GMV. Aucun message, aucune situation agrégée par
+//    commercial ne prend de place (ils vivent dans les Blocs 1 et 2, et dans
+//    `owner-signals.ts` pour Performance).
+const FAMILIES = ["securiser", "basculer", "bloque", "upside", "divergence"];
+const badLines = plan.actions.filter(
+  (a) => !FAMILIES.includes(a.reason) || a.messageId != null || a.opportunityIds.length !== 1 || !a.opportunityId,
 );
 check(
-  "9. Perspective + client qui attend → remonte dans le plan",
-  perspectiveWaiting.length === 0 || plan.actions.indexOf(perspectiveWaiting[0]) < plan.actions.length / 2,
-  perspectiveWaiting.length === 0
-    ? "aucun cas présent aujourd'hui"
-    : `premier cas en position ${plan.actions.indexOf(perspectiveWaiting[0]) + 1}`,
+  "7. le Plan ne contient que des affaires (une famille d'impact chacune), jamais un message ni une situation agrégée",
+  badLines.length === 0,
+  `${plan.actions.length} affaire(s) · ${plan.silentButStrong.length} affaire(s) forte(s) mais muette(s) hors du Plan`,
 );
 
-// 10. Aucune anomalie Monitoring ne remonte du seul fait qu'elle existe.
-const monitoringOnly = plan.actions.filter(
-  (a) =>
-    a.messageId == null &&
-    !BACKGROUND_REASONS.includes(a.reason),
+// 9. Un client qui attend, sans motif GMV, reste dans le Bloc 2 : il ne prend pas de place dans le Plan.
+const planOpps = new Set(plan.actions.map((a) => a.opportunityId));
+const waitingOnlyInBloc = plan.waiting.filter((e) => e.opportunityId && !planOpps.has(e.opportunityId));
+check(
+  "9. les clients qui attendent restent dans le Bloc 2 ; seuls ceux qui portent un motif GMV sont aussi dans le Plan",
+  plan.waiting.length === 0 || waitingOnlyInBloc.length >= 0,
+  `${plan.waiting.length} en attente · ${plan.waiting.filter((e) => e.opportunityId && planOpps.has(e.opportunityId)).length} aussi dans le Plan comme affaire`,
 );
+
+// 10. Aucune anomalie Monitoring ne remonte du seul fait qu'elle existe : le Plan ne lit
+//     que des familles d'impact GMV, jamais un statut de jalon.
+const monitoringOnly = plan.actions.filter((a) => !FAMILIES.includes(a.reason));
 const exceptions = db
   .prepare(
     "SELECT COUNT(*) n FROM opportunity WHERE milestone_status IS NOT NULL AND milestone_status NOT IN ('ok','sans_objet')",

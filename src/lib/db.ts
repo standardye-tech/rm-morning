@@ -714,6 +714,17 @@ CREATE TABLE IF NOT EXISTS morning_plan_log (
   PRIMARY KEY (plan_date, action_key)
 );
 
+-- Objectif mensuel de la Région. Aucune valeur par défaut : un mois sans ligne est
+-- « objectif non renseigné », et aucune couverture n'est alors calculée.
+-- Le champ scope vaut « region » en V1 ; il laisse la place à un objectif par commercial.
+CREATE TABLE IF NOT EXISTS monthly_objective (
+  month      TEXT NOT NULL,
+  scope      TEXT NOT NULL,
+  amount     REAL NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (month, scope)
+);
+
 -- Monitoring — état de lecture d'un élément de liste, et photo des champs vus
 -- au moment de la lecture.
 --

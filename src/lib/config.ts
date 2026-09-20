@@ -640,76 +640,61 @@ export const MORNING_PRIORITY = {
 } as const;
 
 /**
- * Plan du jour V2 — « quelles situations managériales méritent mon attention
- * aujourd'hui ? ».
+ * Plan du jour — « les affaires qui peuvent le plus faire bouger la GMV de M ».
  *
- * Le score reste additif et hérite de `MORNING_PRIORITY`. Ce bloc ne porte que
- * ce que la V2 ajoute : les plafonds, et les deux situations d'absence de
- * signal (pipe insuffisant, affaires figées), dont les règles de déclenchement
- * restent dans `ATTENTION` (`attention.ts`) et ne sont pas dupliquées ici.
+ * L'unité de sélection est l'AFFAIRE (un OpportunityId), jamais le commercial :
+ * aucun plafond par commercial, aucune situation agrégée. Le commercial est une
+ * information (« qui challenger »), pas un critère de sélection. Les signaux par
+ * commercial (pipe insuffisant, N affaires figées) restent calculés dans
+ * `owner-signals.ts` / `attention.ts` pour Performance et « Ma semaine ».
  *
- * Plafonds ABSOLUS : le Plan ne déborde jamais. Une situation en trop n'est pas
- * reportée à demain, elle est simplement absente ; demain le Plan repart de
- * l'état courant.
+ * FORMULE DE L'IMPACT (V1, lisible, une seule ligne par famille) — c'est aussi le
+ * score de tri. `g` = min(GMV, `scoreGmvCap`) : le plafond ne joue QUE dans le
+ * score, la GMV réelle est toujours affichée.
+ *
+ *   A  M annoncé à sécuriser       impact = g × 0,75 × (1 − pMonthEnd)   ↓ GMV annoncé en risque
+ *   E  Divergence Forecast / RM    impact = g × 0,75 × (1 − pMonthEnd)   ↓ (même famille de risque)
+ *   B  M+1 pouvant basculer sur M  impact = g × 0,50                     ↑ upside
+ *   C  Gros GMV bloqué             impact = g × 0,30                     ↑ upside
+ *   D  Hors forecast crédible      impact = g × 0,30                     ↑ upside
+ *
+ * Doctrine : sécuriser le GMV annoncé > accélérer M+1 vers M > chercher de
+ * l'upside hors forecast. Les coefficients sont une hiérarchisation produit V1,
+ * PAS un modèle statistique ; il n'y a aucun autre facteur. La crédibilité
+ * (pMonthEnd, signal dur) agit comme une PORTE d'éligibilité, pas comme un
+ * multiplicateur. Égalité de score : GMV réelle décroissante.
+ *
+ * Plafond ABSOLU de `maxSituations` affaires par journée métier, traitées
+ * comprises (budget journalier) : jamais de remplissage artificiel, le Plan peut
+ * n'en compter que quatre.
  */
-export const MORNING_PLAN = {
-  /** Nombre maximal de situations affichées. */
-  maxSituations: 7,
-  /** Nombre maximal de situations par commercial, avant le plafond global. */
-  maxPerOwner: 2,
-  /**
-   * Nombre maximal de situations NÉES D'UN MAIL, PAR FAMILLE (client motivé,
-   * client qui attend). Les Blocs 1 et 2 listent déjà tous les mails ; le Plan
-   * est l'endroit des situations managériales. Sans ce plafond, les messages —
-   * dont le poids de base est le plus haut — occupent les sept places et rien
-   * d'autre ne peut apparaître : ni affaire à challenger, ni pipe insuffisant,
-   * ni affaires figées. Par famille, et non au total : un client qui attend une
-   * réponse est un levier managérial aussi net qu'un client motivé, mais son
-   * poids de base est plus bas et il ne passerait jamais. Ce n'est pas un
-   * rempli-force : s'il y a moins de situations, le Plan est plus court.
-   */
-  maxPerMailFamily: 2,
-  /**
-   * PORTE D'ENTRÉE des situations nées d'un mail. « Le client veut avancer »,
-   * « le client attend » ou « message reçu ce matin » ne suffisent PAS à prendre
-   * une place dans le Plan : ces messages restent intégralement dans les Blocs 1
-   * et 2. Il faut en plus au moins un motif managérial fort, parmi ceux que le
-   * moteur calcule déjà :
-   *   — gros dossier : GMV au moins égal à `bigGmv` (le point où le poids GMV du
-   *     score sature, `MORNING_PRIORITY.gmvReference`) ;
-   *   — affaire à challenger (liste de Forecast, qui porte aussi les fortes
-   *     divergences déclaré / Expected par affaire) ;
-   *   — absence de mouvement anormale (règle « figée » d'`attention.ts`) ;
-   *   — stade de signature (`advancedStage`) ;
-   *   — attente client anormale : un client sans réponse depuis au moins
-   *     `abnormalWaitDays` jours (famille « attente » seulement).
-   * Une affaire en Examen devis à 138 k€ dont le client a écrit il y a trois
-   * heures n'est donc pas une situation managériale : c'est un message à traiter.
-   */
-  mailMotive: {
-    bigGmv: 250_000,
-    advancedStage: "Signature",
-    abnormalWaitDays: 5,
-  },
+/**
+ * Base des liens vers une affaire Salesforce : `<base>/<OpportunityId>`. Domaine de
+ * l'org (non secret) ; surchargeable par `SF_INSTANCE_URL`.
+ */
+export const SALESFORCE_RECORD_BASE = process.env.SF_INSTANCE_URL ?? "https://renovationman.my.salesforce.com";
 
-  /**
-   * Base des absences de signal. Volontairement SOUS une affaire précise à
-   * challenger (400 + modulations) : « Challenger Daravith sur Dupont, sans
-   * mouvement depuis 9 jours » est plus actionnable que « 12 affaires figées ».
-   */
-  weightFrozen: 380,
-  /** Bonus de « N affaires figées » proportionnel à la part du pipe actif qui est figée (0 à 100 %). */
-  weightFrozenShare: 100,
-  weightLowPipe: 330,
-  /**
-   * GMV à partir duquel le poids d'une situation PAR COMMERCIAL est saturé. Plus
-   * haut que `MORNING_PRIORITY.gmvReference` : un pipe figé pèse des centaines de
-   * milliers d'euros, et à 250 k€ trois commerciaux très différents auraient le
-   * même score.
-   */
-  ownerGmvReference: 1_000_000,
-  /** Bonus d'une affaire individuelle sans mouvement depuis `ATTENTION.stagnantDays` jours. */
-  bonusStalled: 40,
+export const MORNING_PLAN = {
+  /** Nombre maximal d'affaires par journée métier, traitées comprises. */
+  maxSituations: 7,
+  /** GMV minimale pour prendre une place, sans exception (pas même en Signature). */
+  minGmv: 50_000,
+  /** Plafond de la GMV dans le CALCUL du score uniquement. */
+  scoreGmvCap: 250_000,
+  /** Coefficients de l'impact, par famille. */
+  coefficient: { securiser: 0.75, basculer: 0.5, bloque: 0.3, upside: 0.3 },
+  /** Affaire hors forecast : pMonthEnd minimale, ou signal dur récent. */
+  minPUpside: 0.1,
+  /** Gros GMV bloqué : plancher de pMonthEnd, en plus des autres critères. */
+  minPBlocked: 0.03,
+  /** Affaire annoncée sur M : sous cette pMonthEnd, divergence Forecast / RM Morning. */
+  divergenceMaxP: 0.1,
+  /** « Gros dossier » de la famille C, en GMV réelle. */
+  bigGmv: 250_000,
+  /** Au-delà, une affaire sans activité est jugée morte : elle ne remonte pas en famille C. */
+  deadDays: 90,
+  /** Fenêtre d'un signal dur « récent », en jours (message entrant, visite). */
+  hardSignalDays: 7,
 } as const;
 
 /**

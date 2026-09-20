@@ -1,20 +1,17 @@
 /**
- * Contrôles LOT 1 — Plan du jour V2.
+ * Contrôles — Plan du jour par AFFAIRES.
  *
  *   npm run morning:plan-v2-verify
  *
- * Le Plan est une liste COURTE de situations managériales, recalculée en entier
- * depuis l'état courant. Ces contrôles couvrent les plafonds (7 au total, 2 par
- * commercial), l'unicité des affaires, la porte du motif managérial, les
- * absences de signal, le geste « Traité » et « Tout traiter », le lendemain,
- * l'absence de tâche persistante et le journal.
+ * Le Plan sélectionne au plus 7 AFFAIRES (un OpportunityId par ligne), classées
+ * par impact GMV actionnable. Aucun plafond par commercial, aucune situation
+ * agrégée, aucun remplissage. Ces contrôles couvrent la formule d'impact famille
+ * par famille, les portes (GMV, stand-by, crédibilité, signal dur), la sélection,
+ * le budget journalier, « Tout traiter », le journal et l'absence de tâche
+ * persistante.
  *
  * ÉCRIT DANS UNE COPIE DE LA BASE : affaires, mails et snapshots fictifs, gestes
  * « Traité ». Jamais sur les données réelles.
- *
- * Les contrôles 12 à 14 de la liste du chantier (mois métier identique partout,
- * signé officiel, affaires distinctes) vivent dans `business-time:verify` et
- * `signed:verify`.
  */
 
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -36,21 +33,15 @@ const lib = (n) => pathToFileURL(path.resolve(process.cwd(), `src/lib/${n}.ts`))
 const { getDb } = await import(lib("db"));
 const { parisDate } = await import(lib("business-time"));
 const { ATTENTION, MORNING_PLAN } = await import(lib("config"));
-const {
-  absenceSignals,
-  hasManagerialMotive,
-  selectSituations,
-  mailMotives,
-  mailWording,
-} = await import(lib("morning-plan-select"));
+const { evaluateAffaire, hardSignals, selectAffaires } = await import(lib("morning-plan-select"));
 const { buildMorningPlan } = await import(lib("morning-priority"));
 const { triage, markActionDone, doneActionKeys, completeShownActions } = await import(lib("morning-events"));
 const { recordPlanLog } = await import(lib("morning-plan-log"));
 const { loadTeam } = await import(lib("team-store"));
-const { computeMetrics } = await import(lib("metrics"));
+const { buildOwnerSignals } = await import(lib("owner-signals"));
+const { stagnantDeals } = await import(lib("stagnation"));
 const { loadOpportunities } = await import(lib("repository"));
 const { loadStageStability } = await import(lib("stage-history"));
-const { stagnantDeals } = await import(lib("stagnation"));
 
 let failures = 0;
 const check = (label, ok, detail = "") => {
@@ -58,256 +49,148 @@ const check = (label, ok, detail = "") => {
   console.log(`  ${ok ? "ok   " : "ÉCHEC"} ${label}${detail ? ` — ${detail}` : ""}`);
 };
 const section = (t) => console.log(`\n${t}`);
+const near = (a, b, eps = 0.5) => Math.abs(a - b) < eps;
 
 const db = getDb();
 const nowMs = Date.now();
 const HOUR = 36e5;
 const DAY = 24 * HOUR;
-const hoursAgo = (h) => new Date(nowMs - h * HOUR).toISOString();
 const now = new Date(nowMs);
-// Date de la copie locale : ses snapshots et ses mails datent de ce jour-là. Les
-// invariants sont contrôlés aux DEUX dates, pour ne pas dépendre de l'âge de la copie.
-const dataDay = new Date("2026-09-10T16:00:00Z");
 const today = parisDate(now);
 const dayOffset = (n) => parisDate(new Date(nowMs + n * DAY));
-
+const hoursAgo = (h) => new Date(nowMs - h * HOUR).toISOString();
 const MAX = MORNING_PLAN.maxSituations;
-const PER_OWNER = MORNING_PLAN.maxPerOwner;
 
-// --- Candidats synthétiques ----------------------------------------------------
-let seq = 0;
-const cand = ({ owner, score, category = "decisive", ids }) => {
-  seq += 1;
-  const opportunityIds = ids ?? [`SYN_OPP_${seq}`];
-  return {
-    key: `${category}:SYN_${seq}`,
-    reason: "affaire_decisive",
-    category,
-    source: "forecast",
-    why: "",
-    todo: "",
-    title: "",
-    detail: "",
-    client: "",
-    owner,
-    ownerFirstName: owner,
-    salesperson: owner,
-    gmv: 50_000,
-    stage: null,
-    facts: [],
-    messageId: null,
-    receivedAt: null,
-    opportunityId: opportunityIds[0] ?? null,
-    opportunityIds,
-    score,
-  };
-};
+// ---- entrées synthétiques ---------------------------------------------------------
+const aff = (o = {}) => ({
+  opportunityId: "OPP", client: "Client", owner: "Commercial", gmv: 100_000, stage: "Examen devis", pMonthEnd: 0.05, scored: true,
+  declaredOnM: false, kanbanMonth: null, challengeKind: null, stalled: false, stalledDays: null, daysSinceActivity: 5,
+  standby: false, frozenMonthEnd: false, hard: [], ...o,
+});
+const MSG = [{ kind: "message", label: "client actif aujourd'hui" }];
+const VIS = [{ kind: "visite", label: "visite planifiée le 22/09" }];
 
 // ============================================================================
-section("A — Règles de sélection (pures)");
+section("A — Formule d'impact, famille par famille (le replay validé)");
 
+const chanville = evaluateAffaire(aff({ gmv: 186_773, pMonthEnd: 0.026, declaredOnM: true, stalled: true, stalledDays: 15, challengeKind: "declaree_fragile" }));
+check("A : De Chanville = g × 0,75 × (1 − p) = 136 k", chanville.eligible && chanville.family === "securiser" && near(chanville.impact, 186_773 * 0.75 * (1 - 0.026), 1) && Math.round(chanville.impact / 1000) === 136, chanville.impact?.toFixed(0));
+const falcon = evaluateAffaire(aff({ gmv: 826_066, pMonthEnd: 0.034, stalled: true, stalledDays: 34, daysSinceActivity: 20, challengeKind: "absente_du_mois" }));
+check("C : Falcon = min(GMV, 250 k) × 0,30 = 75 k, GMV réelle non plafonnée", falcon.eligible && falcon.family === "bloque" && near(falcon.impact, 75_000) && falcon.cappedGmv === 250_000);
+const cyril = evaluateAffaire(aff({ gmv: 137_507, pMonthEnd: 0.034, challengeKind: "prevue_mois_suivant", standby: true, hard: MSG }));
+check("B : Cyril LAGEL = g × 0,50 = 68,8 k (aucune décote supplémentaire)", cyril.eligible && cyril.family === "basculer" && near(cyril.impact, 137_507 * 0.5, 1), cyril.impact?.toFixed(0));
+const boisdron = evaluateAffaire(aff({ gmv: 131_000, pMonthEnd: 0.039, challengeKind: "absente_du_mois", hard: VIS }));
+check("D : Boisdron = g × 0,30 = 39,3 k (aucune décote supplémentaire)", boisdron.eligible && boisdron.family === "upside" && near(boisdron.impact, 131_000 * 0.3, 1), boisdron.impact?.toFixed(0));
+const e = evaluateAffaire(aff({ gmv: 90_000, pMonthEnd: 0.05, declaredOnM: true }));
+check("E : annoncée sur M, RM Morning < 10 % → divergence, même coefficient que A", e.eligible && e.family === "divergence" && near(e.impact, 90_000 * 0.75 * 0.95, 1));
+check("doctrine : sécuriser l'annoncé > M+1 vers M > upside hors forecast", chanville.impact > cyril.impact && cyril.impact > boisdron.impact);
+const big = evaluateAffaire(aff({ gmv: 1_000_000, pMonthEnd: 0.5, declaredOnM: true, stalled: true, stalledDays: 20 }));
+check("le plafond GMV joue partout : 1 M€ pèse comme 250 k€ dans le score", big.eligible && near(big.impact, 250_000 * 0.75 * 0.5, 1));
+const coefs = MORNING_PLAN.coefficient;
+check("coefficients V1 : 0,75 / 0,50 / 0,30 / 0,30", coefs.securiser === 0.75 && coefs.basculer === 0.5 && coefs.bloque === 0.3 && coefs.upside === 0.3);
+
+section("A' — Portes d'éligibilité");
+
+check("GMV : 49 999 € est écarté, 50 000 € passe", !evaluateAffaire(aff({ gmv: 49_999, declaredOnM: true, stalled: true, stalledDays: 20 })).eligible && evaluateAffaire(aff({ gmv: 50_000, declaredOnM: true, stalled: true, stalledDays: 20 })).eligible);
+const pecout = evaluateAffaire(aff({ gmv: 7_686, stage: "Signature", pMonthEnd: 0.7, declaredOnM: true, stalled: true, stalledDays: 20 }));
+check("Thomas PÉCOUT (7,7 k€, Signature) ne prend aucune place : pas d'exception Signature", !pecout.eligible, pecout.why);
+check("stand-by sans signal : exclu", !evaluateAffaire(aff({ standby: true, declaredOnM: true, stalled: true, stalledDays: 20 })).eligible);
+check("stand-by + message entrant récent : redevient candidate", evaluateAffaire(aff({ standby: true, challengeKind: "prevue_mois_suivant", hard: MSG })).eligible);
+check("stand-by au-delà de la fin du mois sans signal : exclu", !evaluateAffaire(aff({ frozenMonthEnd: true, declaredOnM: true, stalled: true, stalledDays: 20 })).eligible);
+check("hors forecast p = 9,9 % sans signal dur : exclu", !evaluateAffaire(aff({ pMonthEnd: 0.099, challengeKind: "absente_du_mois" })).eligible);
+check("hors forecast p = 10 % : passe", evaluateAffaire(aff({ pMonthEnd: 0.1, challengeKind: "absente_du_mois" })).eligible);
+check("hors forecast p = 4 % + signal dur (visite) : passe", evaluateAffaire(aff({ pMonthEnd: 0.04, challengeKind: "absente_du_mois", hard: VIS })).eligible);
+check("M+1 → M à 7 % sans signal dur (Quentin LETELLIER, Claire BASTARD) : exclu", !evaluateAffaire(aff({ pMonthEnd: 0.07, challengeKind: "prevue_mois_suivant" })).eligible);
+check("gros GMV bloqué : p = 2,9 % exclu (BRIE 0,8 %), p = 3 % passe (Falcon 3,4 %)", !evaluateAffaire(aff({ gmv: 250_000, pMonthEnd: 0.029, stalled: true, stalledDays: 35 })).eligible && evaluateAffaire(aff({ gmv: 250_000, pMonthEnd: 0.03, stalled: true, stalledDays: 35 })).eligible);
+check("gros GMV sans activité depuis plus de 90 j : mort, exclu", !evaluateAffaire(aff({ gmv: 800_000, pMonthEnd: 0.2, stalled: true, stalledDays: 35, daysSinceActivity: 200 })).eligible);
+check("annoncée sur M, crédible et en mouvement : pas une situation", !evaluateAffaire(aff({ declaredOnM: true, pMonthEnd: 0.5 })).eligible);
+check("annoncée sur M mais NON scorée : probabilité inconnue, aucune divergence fabriquée", !evaluateAffaire(aff({ declaredOnM: true, pMonthEnd: 0, scored: false })).eligible);
+check("annoncée sur M, non scorée mais immobile : reste à sécuriser (le blocage est mesuré)", evaluateAffaire(aff({ declaredOnM: true, pMonthEnd: 0, scored: false, stalled: true, stalledDays: 20 })).eligible);
+
+section("A'' — Signal dur : restreint (message entrant, visite) — jamais devis / stade / montant / date");
+
+const nowD = new Date("2026-09-20T12:00:00Z");
+check("aucun signal : liste vide", hardSignals({ lastInboundAt: null, nextVisitAt: null }, nowD).length === 0);
+check("message entrant d'aujourd'hui : « client actif aujourd'hui »", hardSignals({ lastInboundAt: "2026-09-20T08:00:00Z", nextVisitAt: null }, nowD)[0]?.label === "client actif aujourd'hui");
+check("message entrant il y a 3 jours : signal dur", hardSignals({ lastInboundAt: "2026-09-17T08:00:00Z", nextVisitAt: null }, nowD).length === 1);
+check("message entrant il y a 8 jours : plus récent", hardSignals({ lastInboundAt: "2026-09-12T08:00:00Z", nextVisitAt: null }, nowD).length === 0);
+check("visite planifiée dans 2 jours : signal dur", hardSignals({ lastInboundAt: null, nextVisitAt: "2026-09-22T09:00:00Z" }, nowD)[0]?.kind === "visite");
+check("visite réalisée il y a 3 jours : signal dur", /réalisée/.test(hardSignals({ lastInboundAt: null, nextVisitAt: "2026-09-17T09:00:00Z" }, nowD)[0]?.label ?? ""));
+check("visite dans 10 jours : hors fenêtre", hardSignals({ lastInboundAt: null, nextVisitAt: "2026-09-30T09:00:00Z" }, nowD).length === 0);
+const src = readFileSync(path.resolve(process.cwd(), "src/lib/morning-plan-select.ts"), "utf8");
+const hs = src.slice(src.indexOf("export function hardSignals"), src.indexOf("// --- Éligibilité"));
+check("`hardSignals` ne lit ni devis, ni estimation, ni étape, ni montant, ni date de signature", !/devisSent|estimationSent|StageName|changeObserved|Amount|CloseDate|amount/.test(hs));
+
+section("A''' — Sélection : max 7, aucun plafond par commercial, jamais de remplissage");
+
+const cand = (i, owner, impact, gmv = 100_000) => ({ key: `affaire:C${i}`, owner, impact, gmv });
+check("jamais plus de 7 affaires (20 candidates)", selectAffaires(Array.from({ length: 20 }, (_, i) => cand(i, `O${i}`, 1000 - i))).length === MAX);
 {
-  const many = Array.from({ length: 30 }, (_, i) => cand({ owner: `Commercial ${i}`, score: 1000 - i }));
-  const sel = selectSituations(many);
-  check("1. jamais plus de 7 situations (30 candidates)", sel.length === MAX, `${sel.length}`);
-  check("1b. ce sont les 7 meilleurs scores", sel.every((a, i) => a.score === 1000 - i));
+  const four = [1, 2, 3, 4].map((i) => cand(i, "Guillaume H.", 900 - i));
+  const others = [5, 6, 7, 8, 9].map((i) => cand(i, `Autre ${i}`, 100 - i));
+  const sel = selectAffaires([...four, ...others]);
+  check("aucun plafond par commercial : les 4 affaires du même commercial apparaissent toutes", four.every((f) => sel.some((s) => s.key === f.key)), `${sel.filter((s) => s.owner === "Guillaume H.").length}/4`);
+  check("… et elles restent en tête (impact), sans équilibrage artificiel", sel.slice(0, 4).every((s) => s.owner === "Guillaume H."));
 }
+check("jamais de remplissage : 4 candidates → 4 lignes", selectAffaires([1, 2, 3, 4].map((i) => cand(i, `O${i}`, 100 - i))).length === 4);
+check("aucune candidate → Plan vide", selectAffaires([]).length === 0);
 {
-  const one = Array.from({ length: 12 }, (_, i) => cand({ owner: "Anthony", score: 900 - i }));
-  const others = [cand({ owner: "David", score: 100 }), cand({ owner: "Mathis", score: 90 })];
-  const sel = selectSituations([...one, ...others]);
-  const anthony = sel.filter((a) => a.owner === "Anthony").length;
-  check("2. jamais plus de 2 situations par commercial", anthony === PER_OWNER, `${anthony}`);
-  check("2b. les autres commerciaux passent devant le 3e d'Anthony", sel.some((a) => a.owner === "David") && sel.some((a) => a.owner === "Mathis"));
+  const sel = selectAffaires([cand(1, "A", 500), cand(1, "A", 400), cand(2, "B", 300)]);
+  check("une affaire = une ligne (aucun doublon d'OpportunityId)", sel.length === 2 && new Set(sel.map((s) => s.key)).size === 2);
 }
+check("égalité d'impact : la GMV réelle départage", selectAffaires([cand(1, "A", 75_000, 250_000), cand(2, "B", 75_000, 826_000)])[0].key === "affaire:C2");
+check("budget : max 0 → aucune affaire", selectAffaires([cand(1, "A", 10)], 0).length === 0);
 {
-  // La même affaire sous trois familles, et une situation « N affaires » qui la recouvre.
-  const a = cand({ owner: "Anthony", score: 900, category: "chaud", ids: ["OPP_X"] });
-  const b = cand({ owner: "Anthony", score: 800, category: "decisive", ids: ["OPP_X"] });
-  const c = cand({ owner: "David", score: 700, category: "signature", ids: ["OPP_X"] });
-  const d = cand({ owner: "Guillaume", score: 600, category: "figees", ids: ["OPP_X", "OPP_Y"] });
-  const e = cand({ owner: "Guillaume", score: 500, category: "decisive", ids: ["OPP_Y"] });
-  const sel = selectSituations([a, b, c, d, e]);
-  const ids = sel.flatMap((s) => s.opportunityIds);
-  check("3. aucun doublon d'OpportunityId", new Set(ids).size === ids.length, ids.join(","));
-  check("3b. le meilleur score garde l'affaire", sel.some((s) => s.key === a.key) && !sel.some((s) => s.key === b.key));
-}
-{
-  // Situations sans affaire (pipe faible) : jamais dédoublonnées entre elles par erreur.
-  const p1 = cand({ owner: "Guillaume", score: 300, category: "pipe_faible", ids: [] });
-  const p2 = cand({ owner: "Mathis", score: 290, category: "pipe_faible", ids: [] });
-  check("3c. deux pipes faibles de commerciaux différents coexistent", selectSituations([p1, p2]).length === 2);
-}
-{
-  // Les mails ne monopolisent pas le Plan : les Blocs 1 et 2 les listent déjà.
-  const mails = Array.from({ length: 10 }, (_, i) => cand({ owner: `M${i}`, score: 1200 - i, category: i % 2 ? "attente" : "chaud" }));
-  const structural = Array.from({ length: 6 }, (_, i) => cand({ owner: `S${i}`, score: 500 - i, category: "challenge" }));
-  const sel = selectSituations([...mails, ...structural]);
-  const hotN = sel.filter((s) => s.category === "chaud").length;
-  const waitN = sel.filter((s) => s.category === "attente").length;
-  const cap = MORNING_PLAN.maxPerMailFamily;
-  check(`plafond par famille née d'un mail (${cap} chaud, ${cap} attente)`, hotN === cap && waitN === cap, `${hotN} chaud · ${waitN} attente`);
-  check("le Plan reste plein grâce aux situations structurelles", sel.length === MAX);
-  // Une famille ne prive pas l'autre : des « chauds » (poids de base plus haut) ne
-  // doivent pas empêcher un client qui attend d'apparaître.
-  const hotOnly = Array.from({ length: 6 }, (_, i) => cand({ owner: `H${i}`, score: 1300 - i, category: "chaud" }));
-  const oneWaiting = cand({ owner: "W", score: 800, category: "attente" });
-  const mix = selectSituations([...hotOnly, oneWaiting]);
-  check("un client qui attend passe même derrière six clients motivés", mix.some((s) => s.key === oneWaiting.key), `${mix.length} situations`);
-  const fewer = selectSituations([...mails.slice(0, 2), structural[0]]);
-  check("jamais de remplissage artificiel : peu de situations, Plan court", fewer.length === 3, `${fewer.length}`);
-}
-
-section("A'' — Porte d'entrée des mails : un mail seul ne prend pas de place dans le Plan");
-
-{
-  const base = { family: "attente", gmv: 138_000, stage: "Examen devis", inChallenge: false, stalled: false, waitDays: 0.1 };
-  check("Cyril LAGEL : attend une réponse, 138 k€, Examen devis, il y a 3 h → aucun motif", mailMotives(base).length === 0);
-  check(
-    "Louisa KACI : veut avancer, 13 k€, il y a 2 j → aucun motif",
-    mailMotives({ family: "chaud", gmv: 13_000, stage: "Examen devis", inChallenge: false, stalled: false, waitDays: 2 }).length === 0,
-  );
-  check("« message reçu ce matin » ne suffit pas", mailMotives({ ...base, gmv: 20_000, waitDays: 0.2 }).length === 0);
-  check("gros dossier (826 k€) → motif", mailMotives({ ...base, gmv: 826_000 }).includes("gros dossier"));
-  check("à challenger → motif", mailMotives({ ...base, inChallenge: true }).includes("à challenger"));
-  check("absence de mouvement anormale → motif", mailMotives({ ...base, stalled: true }).includes("sans mouvement anormal"));
-  check("phase de signature → motif", mailMotives({ ...base, stage: "Signature" }).includes("en phase de signature"));
-  check("attente client anormale (6 jours) → motif", mailMotives({ ...base, waitDays: 6 }).some((m) => m.startsWith("attente anormale")));
-  check("l'ancienneté ne compte que pour une ATTENTE : un « chaud » de 6 jours reste sans motif", mailMotives({ ...base, family: "chaud", waitDays: 6 }).length === 0);
-  check("un seuil juste en dessous ne passe pas (249 k€)", mailMotives({ ...base, gmv: 249_000 }).length === 0);
-}
-
-section("A''' — Formulation : le titre suit le motif dominant, le mail n'est que de la fraîcheur");
-
-{
-  const base = {
-    first: "Valentin", client: "Cyril LAGEL", family: "attente", gmv: 137_507, stage: "Examen devis",
-    inChallenge: false, challengeKind: null, stalled: false, waitDays: 0.125, hours: 3, moveText: null,
-    expectedText: "3 % de chance de signer ce mois", receivedText: "il y a 3 h",
-  };
-  const cyril = mailWording({ ...base, inChallenge: true, challengeKind: "prevue_mois_suivant" });
-  check("challenge M+1 → « peut basculer sur ce mois »", cyril.title === "Valentin — Cyril LAGEL peut basculer sur ce mois", cyril.title);
-  check("sous-texte : 138 k€ · prévu M+1 · pourrait signer M · client actif aujourd'hui", cyril.detail === "138 k€ · prévu M+1 · pourrait signer M · client actif aujourd'hui", cyril.detail);
-  check("le badge suit le motif : Challenger", cyril.ask === "Challenger");
-  check("le titre ne dit plus « attend une réponse »", !/attend une réponse|veut avancer/.test(cyril.title));
-  const abs = mailWording({ ...base, inChallenge: true, challengeKind: "absente_du_mois" });
-  check("challenge « hors prévision » → formulation challenge", /à challenger : hors prévision du mois/.test(abs.title), abs.title);
-  const frag = mailWording({ ...base, inChallenge: true, challengeKind: "declaree_fragile" });
-  check("challenge « fragile » → formulation challenge", /à challenger : prévue ce mois, mais fragile/.test(frag.title), frag.title);
-  const sig = mailWording({ ...base, stage: "Signature" });
-  check("signature → formulation signature", sig.title === "Valentin — Cyril LAGEL en signature, à sécuriser" && sig.ask === "Sécuriser", sig.title);
-  const stall = mailWording({ ...base, family: "chaud", stalled: true, moveText: "aucun mouvement depuis au moins 34 jours" });
-  check("affaire figée → formulation immobilité", stall.title === "Valentin — Cyril LAGEL ne bouge plus" && /aucun mouvement depuis au moins 34 jours/.test(stall.detail) && stall.ask === "Débloquer", `${stall.title} | ${stall.detail}`);
-  const wait = mailWording({ ...base, waitDays: 6.4, hours: 154 });
-  check("attente anormale → formulation attente", wait.title === "Valentin — Cyril LAGEL attend une réponse depuis 6 jours", wait.title);
-  const big = mailWording({ ...base, gmv: 826_000 });
-  check("gros dossier → formulation gros dossier", /pèse lourd/.test(big.title) && /client actif aujourd'hui/.test(big.detail), `${big.title} | ${big.detail}`);
-  check(
-    "ordre de dominance : challenge > signature > immobilité",
-    mailWording({ ...base, stage: "Signature", stalled: true, inChallenge: true, challengeKind: "declaree_fragile" }).ask === "Challenger" &&
-      mailWording({ ...base, stage: "Signature", stalled: true }).ask === "Sécuriser",
-  );
-  check("fraîcheur lisible : hier, puis « dernier message »", /client actif hier/.test(mailWording({ ...base, gmv: 300_000, hours: 30 }).detail) && /dernier message il y a 3 j/.test(mailWording({ ...base, gmv: 300_000, hours: 72, receivedText: "il y a 3 j" }).detail));
-}
-
-section("A' — Motif managérial et absences de signal (pures)");
-
-check(
-  "4. une grosse affaire qui avance normalement n'a pas de motif",
-  hasManagerialMotive({ inChallenge: false, stalled: false, clientSpoke: false }) === false,
-);
-check("4b. à challenger → motif", hasManagerialMotive({ inChallenge: true, stalled: false, clientSpoke: false }));
-check("4c. figée → motif", hasManagerialMotive({ inChallenge: false, stalled: true, clientSpoke: false }));
-check("4d. le client écrit → motif", hasManagerialMotive({ inChallenge: false, stalled: false, clientSpoke: true }));
-
-{
-  const base = { salesperson: "X", firstName: "X", staleCount: 0 };
-  const low = absenceSignals({ ...base, activeCount: 6, activeGmv: 210_000, stagnant: { count: 0, minProvenDays: 0, examples: [] } });
-  check("5. pipe insuffisant remonte quand le signal existe", low.pipe != null, low.pipe?.detail ?? "");
-  const ok = absenceSignals({ ...base, activeCount: 6, activeGmv: ATTENTION.lowPipeGmv + 1, stagnant: { count: 0, minProvenDays: 0, examples: [] } });
-  check("5b. pipe suffisant : pas de situation", ok.pipe == null);
-  const frozen = absenceSignals({ ...base, activeCount: 6, activeGmv: 900_000, stagnant: { count: 4, minProvenDays: 21, examples: ["A", "B", "C"] } });
-  check("6. plusieurs affaires figées → une situation agrégée", frozen.frozen != null, frozen.frozen?.detail ?? "");
-  const few = absenceSignals({ ...base, activeCount: 6, activeGmv: 900_000, stagnant: { count: 2, minProvenDays: 21, examples: [] } });
-  check("6b. deux affaires figées seulement : rien (seuil d'attention.ts)", few.frozen == null);
-  const diluted = absenceSignals({ ...base, activeCount: 20, activeGmv: 900_000, stagnant: { count: 4, minProvenDays: 21, examples: [] } });
-  check("6c. 4 figées sur 20 : rien (part du pipe sous le seuil)", diluted.frozen == null);
+  // Le classement validé : De Chanville, Falcon, Cyril, Boisdron.
+  const order = [["Chanville", chanville], ["Falcon", falcon], ["Cyril", cyril], ["Boisdron", boisdron]].map(([n, v]) => ({ key: n, impact: v.impact, gmv: 1 }));
+  check("classement validé : De Chanville, Falcon, Cyril, Boisdron", selectAffaires(order.reverse()).map((s) => s.key).join(",") === "Chanville,Falcon,Cyril,Boisdron");
 }
 
 // ============================================================================
 section("B — Sur les données réelles (lecture seule)");
 
-const tables = () =>
-  db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map((r) => r.name);
-const counts = () => {
-  const out = {};
-  for (const t of tables()) out[t] = db.prepare(`SELECT COUNT(*) n FROM ${t}`).get().n;
-  return out;
-};
-
+const tables = () => db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map((r) => r.name);
+const counts = () => Object.fromEntries(tables().map((t) => [t, db.prepare(`SELECT COUNT(*) n FROM ${t}`).get().n]));
 const tablesBefore = tables();
 const countsBefore = counts();
 const planReal = buildMorningPlan(now);
-const planData = buildMorningPlan(dataDay);
+const planData = buildMorningPlan(new Date("2026-09-10T16:00:00Z"));
 const countsAfter = counts();
 
 for (const [label, plan] of [["aujourd'hui", planReal], ["date des données (10/09)", planData]]) {
-  const byOwner = new Map();
-  for (const a of plan.actions) byOwner.set(a.owner ?? "?", (byOwner.get(a.owner ?? "?") ?? 0) + 1);
-  const ids = plan.actions.flatMap((a) => a.opportunityIds);
-  check(`${label} — au plus ${MAX} situations`, plan.actions.length <= MAX, `${plan.actions.length}`);
-  check(`${label} — au plus ${PER_OWNER} par commercial`, [...byOwner.values()].every((n) => n <= PER_OWNER), JSON.stringify(Object.fromEntries(byOwner)));
-  check(`${label} — aucune affaire en double`, new Set(ids).size === ids.length);
-  check(
-    `${label} — chaque situation porte owner, catégorie, source, raison, score`,
-    plan.actions.every((a) => a.category && a.source && a.reason && Number.isFinite(a.score) && (a.owner || a.category === "chaud" || a.category === "attente")),
-  );
-  check(`${label} — chaque situation a un titre et une justification`, plan.actions.every((a) => a.title.includes(" — ") && a.detail.length > 0));
-  check(
-    `${label} — le titre commence par le commercial`,
-    plan.actions.every((a) => a.title.startsWith(a.ownerFirstName ?? "Commercial à identifier")),
-  );
+  const ids = plan.actions.map((a) => a.opportunityId);
+  check(`${label} — au plus ${MAX} affaires`, plan.actions.length <= MAX, `${plan.actions.length}`);
+  check(`${label} — une ligne = une affaire distincte`, ids.every(Boolean) && new Set(ids).size === ids.length && plan.actions.every((a) => a.opportunityIds.length === 1 && a.key === `affaire:${a.opportunityId}`));
+  check(`${label} — GMV réelle ≥ 50 k€ pour chaque ligne`, plan.actions.every((a) => (a.gmv ?? 0) >= MORNING_PLAN.minGmv));
+  check(`${label} — impact décroissant`, plan.actions.every((a, i) => i === 0 || plan.actions[i - 1].score >= a.score));
+  check(`${label} — aucune situation agrégée ni ligne « pipe insuffisant »`, plan.actions.every((a) => !/affaires figées|pipe insuffisant/.test(a.title)) && !plan.pool.keys.some((k) => !k.startsWith("affaire:")));
+  check(`${label} — « Commercial — Client » puis « GMV · stade · raison »`, plan.actions.every((a) => a.title === `${a.ownerFirstName} — ${a.client}` && a.detail.startsWith(`${Math.round((a.gmv ?? 0) / 1000)} k€`) && a.detail.split(" · ").length >= 3));
 }
+check("le calcul du Plan n'écrit rien en base", JSON.stringify(countsBefore) === JSON.stringify(countsAfter));
+check("le vivier explique ses exclusions", Object.keys(planReal.pool.excluded).length > 0 && Object.values(planReal.pool.excluded).every((w) => typeof w === "string" && w.length > 0));
 
-check("9. le calcul du Plan n'écrit rien en base", JSON.stringify(countsBefore) === JSON.stringify(countsAfter));
+section("B' — Signaux par commercial : conservés, hors du Plan");
 
-// Pipe faible et affaires figées : mêmes règles qu'attention.ts, recalculées indépendamment.
 {
-  const team = loadTeam().filter((m) => !ATTENTION.excluded.includes(m.name));
+  const signals = buildOwnerSignals(now);
+  check("les signaux par commercial restent calculés", signals.length > 0 && signals.every((s) => Array.isArray(s.stagnant)));
+  check("Sami (directeur) exclu des signaux par commercial", !signals.some((s) => ATTENTION.excluded.includes(s.owner)));
   const opps = loadOpportunities();
-  const pipe = new Map(computeMetrics(opps, today).owners.map((o) => [o.owner, o]));
   const stab = loadStageStability(today);
-  const wantLow = [];
-  const wantFrozen = [];
-  for (const m of team) {
-    const mine = opps.filter((o) => o.isActive && o.owner === m.name);
-    if ((pipe.get(m.name)?.activeGmv ?? 0) < ATTENTION.lowPipeGmv) wantLow.push(`pipe_faible:${m.name}`);
-    const s = stagnantDeals(mine, stab, today).length;
-    if (s >= ATTENTION.stagnantMinCount && mine.length > 0 && s / mine.length >= ATTENTION.stagnantShare) wantFrozen.push(`figees:${m.name}`);
-  }
-  const has = (k) => planReal.pool.keys.includes(k);
-  check(
-    `5. « pipe insuffisant » : ${wantLow.length} commercial(aux) attendu(s), tous dans le vivier`,
-    wantLow.every(has) && planReal.pool.keys.filter((k) => k.startsWith("pipe_faible:")).length === wantLow.length,
-    wantLow.join(", ") || "aucun",
-  );
-  check(
-    `6. « affaires figées » : ${wantFrozen.length} commercial(aux) attendu(s), tous dans le vivier`,
-    wantFrozen.every(has) && planReal.pool.keys.filter((k) => k.startsWith("figees:")).length === wantFrozen.length,
-    wantFrozen.join(", ") || "aucun",
-  );
-  const sami = ATTENTION.excluded[0];
-  check("Sami est exclu des absences de signal", !planReal.pool.keys.some((k) => k === `pipe_faible:${sami}` || k === `figees:${sami}`));
+  const one = signals.find((s) => s.stagnant.length > 0);
+  const recomputed = one ? stagnantDeals(opps.filter((o) => o.isActive && o.owner === one.owner), stab, today).length : 0;
+  check("liste exhaustive des affaires figées par commercial (même règle que Ma semaine)", !one || recomputed === one.stagnant.length, one ? `${one.owner} : ${one.stagnant.length}` : "aucun cas");
+  check("pipe insuffisant / affaires figées exposés comme raisons d'attention.ts", signals.every((s) => s.pipe === null || s.pipe.key === "pipe_faible") && signals.every((s) => s.frozen === null || s.frozen.key === "affaires_figees"));
 }
 
 // ============================================================================
-section("C1 — Une grosse affaire sans motif managérial n'entre pas ; la même, figée, entre");
+section("C — Fixtures : aucun plafond par commercial, portes, mails hors du Plan");
 
 const kanbanYear = Number(today.slice(0, 4));
 const kanbanMonth = Number(today.slice(5, 7));
-const cleanup = { opportunities: [], messages: [], snapshots: [] };
+const cleanup = { opportunities: [], messages: [] };
 
-function insertOpportunity({ id, owner, gmv = 60_000, lastActivity = null, kanban = false }) {
+function insertOpportunity({ id, owner, gmv, lastActivity = null, kanban = true }) {
   db.prepare(
     `INSERT INTO opportunity
        (opportunity_id, name, client_contact, owner, gmv, stage, kanban_month, kanban_year, last_activity_at,
@@ -323,247 +206,135 @@ function insertSnapshot(id, owner, date, stage) {
        (snapshot_date, opportunity_id, import_id, owner, gmv, stage, is_standby, is_signed, is_active)
      VALUES (?, ?, 0, ?, 300000, ?, 0, 0, 1)`,
   ).run(date, id, owner, stage);
-  cleanup.snapshots.push([date, id]);
 }
-
-// Un commercial pour qui l'ajout de deux affaires n'allume PAS « N affaires figées » :
-// sinon la situation agrégée absorberait légitimement l'affaire figée du test.
-const opps0 = loadOpportunities();
-const stab0 = loadStageStability(today);
-const owner = loadTeam()
-  .filter((m) => !ATTENTION.excluded.includes(m.name))
-  .find((m) => {
-    const mine = opps0.filter((o) => o.isActive && o.owner === m.name);
-    const s = stagnantDeals(mine, stab0, today).length + 1;
-    return !(s >= ATTENTION.stagnantMinCount && s / (mine.length + 2) >= ATTENTION.stagnantShare);
-  })?.name;
-check("un commercial de test est disponible", owner != null, owner ?? "aucun");
-
-const BIG_MOVING = "TESTPV_BIG_MOVING";
-const BIG_STALLED = "TESTPV_BIG_STALLED";
-const recent = new Date(nowMs - 1 * DAY).toISOString().slice(0, 10);
+const stall = (id, owner) => {
+  insertSnapshot(id, owner, dayOffset(-25), "Examen devis");
+  insertSnapshot(id, owner, today, "Examen devis");
+};
 const old = new Date(nowMs - 40 * DAY).toISOString().slice(0, 10);
+const owner = loadTeam().find((m) => !ATTENTION.excluded.includes(m.name))?.name;
 
-insertOpportunity({ id: BIG_MOVING, owner, gmv: 300_000, lastActivity: recent, kanban: true });
-insertSnapshot(BIG_MOVING, owner, dayOffset(-3), "Examen estimation");
-insertSnapshot(BIG_MOVING, owner, today, "Examen devis"); // l'étape vient de changer
+// Quatre affaires annoncées, immobiles, TRÈS lourdes, du MÊME commercial.
+const FOUR = ["TESTPV_F1", "TESTPV_F2", "TESTPV_F3", "TESTPV_F4"];
+for (const id of FOUR) { insertOpportunity({ id, owner, gmv: 1_000_000, lastActivity: old }); stall(id, owner); }
+// Une petite affaire annoncée immobile (sous le plancher), et une qui avance normalement.
+insertOpportunity({ id: "TESTPV_SMALL", owner, gmv: 40_000, lastActivity: old }); stall("TESTPV_SMALL", owner);
+insertOpportunity({ id: "TESTPV_MOVING", owner, gmv: 900_000, lastActivity: new Date(nowMs - 1 * DAY).toISOString().slice(0, 10) });
+insertSnapshot("TESTPV_MOVING", owner, dayOffset(-3), "Examen estimation");
+insertSnapshot("TESTPV_MOVING", owner, today, "Examen devis");
 
-insertOpportunity({ id: BIG_STALLED, owner, gmv: 300_000, lastActivity: old, kanban: true });
-insertSnapshot(BIG_STALLED, owner, dayOffset(-25), "Examen devis");
-insertSnapshot(BIG_STALLED, owner, today, "Examen devis"); // 25 jours sans changement
+const planC = buildMorningPlan(now);
+const mine = planC.actions.filter((a) => FOUR.includes(a.opportunityId));
+check("4 affaires d'un même commercial : les 4 apparaissent (aucun plafond par commercial)", mine.length === 4, `${mine.length}/4`);
+check("elles portent la famille A (GMV annoncé à sécuriser)", mine.every((a) => a.reason === "securiser"));
+check("GMV réelle affichée (1 M€), score plafonné à 250 k€ × 0,75", mine.every((a) => a.gmv === 1_000_000 && near(a.score, 250_000 * 0.75, 1)), mine.map((a) => Math.round(a.score)).join(","));
+check("une affaire sous 50 k€ n'entre pas, même annoncée et immobile", !planC.pool.keys.includes("affaire:TESTPV_SMALL") && /plancher/.test(planC.pool.excluded.TESTPV_SMALL ?? ""), planC.pool.excluded.TESTPV_SMALL);
+check("une grosse affaire annoncée qui avance normalement n'est pas une situation", !planC.pool.keys.includes("affaire:TESTPV_MOVING"), planC.pool.excluded.TESTPV_MOVING);
+check("toujours au plus 7, sans doublon", planC.actions.length <= MAX && new Set(planC.actions.map((a) => a.opportunityId)).size === planC.actions.length);
 
-const planC1 = buildMorningPlan(now);
-check(
-  "4. une affaire de 300 k€ qui avance normalement n'est PAS une situation",
-  !planC1.pool.keys.includes(`decisive:${BIG_MOVING}`) && !planC1.actions.some((a) => a.opportunityIds.includes(BIG_MOVING)),
-);
-check(
-  "4e. la même affaire, sans mouvement depuis 25 jours, EST une situation candidate",
-  planC1.pool.keys.includes(`decisive:${BIG_STALLED}`),
-);
-const stalledAction = planC1.actions.find((a) => a.opportunityIds.includes(BIG_STALLED));
-if (stalledAction) {
-  check("4f. sa justification dit « aucun mouvement depuis au moins N jours »", /aucun mouvement depuis au moins \d+ jours/.test(stalledAction.detail), stalledAction.detail);
-  check("4g. le titre nomme le commercial", stalledAction.title.startsWith(stalledAction.ownerFirstName), stalledAction.title);
-}
-
-// ============================================================================
-section("C2 — « Traité » : disparaît pour la journée, revient le lendemain, ne crée aucune tâche");
-
+// Un mail chaud sur une petite affaire n'entre PAS dans le Plan : il reste dans le Bloc 1.
 const PIPE = { match_kind: "affaire_pipe", opportunity_stage: null, lead_status: null, stage: "Examen devis", is_terminal: 0, owner: null, ext_owner: null, lead_owner: null, rm_to: null, rm_cc: null };
-const OPP_H = "TESTPV_HOT";
-const MSG_H = "TESTPV_MSG_HOT";
-insertOpportunity({ id: OPP_H, owner, gmv: 300_000, lastActivity: recent });
+insertOpportunity({ id: "TESTPV_HOT", owner, gmv: 90_000, lastActivity: new Date(nowMs - 1 * DAY).toISOString().slice(0, 10), kanban: false });
 const tH = triage({ ...PIPE, direction: "entrant", subject: "Devis", summary: "Nous souhaitons avancer, quelle est la prochaine etape ?", blocker: null, signal_type: "neutre" });
 db.prepare(
   `INSERT INTO mail_signal
      (gmail_message_id, thread_id, sent_at, from_email, from_name, subject, direction, filter_rule,
       opportunity_id, match_level, match_reason, salesperson, signal_type, summary, sync_id)
    VALUES (?, ?, ?, 'client@example.com', 'Client Test', 'Devis', 'entrant', 'conserve', ?, 'A', 'test', ?, 'neutre', ?, 0)`,
-).run(MSG_H, "TESTPV_THREAD_HOT", hoursAgo(1), OPP_H, owner, "Nous souhaitons avancer, quelle est la prochaine etape ?");
-cleanup.messages.push(MSG_H);
+).run("TESTPV_MSG", "TESTPV_THREAD", hoursAgo(1), "TESTPV_HOT", owner, "Nous souhaitons avancer, quelle est la prochaine etape ?");
 db.prepare(
   `INSERT INTO morning_event (gmail_message_id, thread_id, sent_at, category, reason, opportunity_id, match_level, status, acknowledged_at, first_seen_at)
    VALUES (?, ?, ?, ?, ?, NULL, NULL, 'nouveau', NULL, ?)`,
-).run(MSG_H, "TESTPV_THREAD_HOT", hoursAgo(1), tH.category, tH.reason, new Date(nowMs).toISOString());
-cleanup.messages.push(MSG_H);
+).run("TESTPV_MSG", "TESTPV_THREAD", hoursAgo(1), tH.category, tH.reason, new Date(nowMs).toISOString());
+cleanup.messages.push("TESTPV_MSG");
+const planMail = buildMorningPlan(now);
+check("un mail chaud sur une affaire sans motif GMV n'entre pas dans le Plan", !planMail.actions.some((a) => a.opportunityId === "TESTPV_HOT") && !planMail.pool.keys.includes("affaire:TESTPV_HOT"));
+check("… il reste intégralement visible dans le Bloc 1", planMail.hot.some((e) => e.messageId === "TESTPV_MSG"));
+check("aucune ligne du Plan n'est un message (messageId nul)", planMail.actions.every((a) => a.messageId === null));
 
-const HOT_KEY = `chaud:${MSG_H}`;
-const planH = buildMorningPlan(now);
-const hotAction = planH.actions.find((a) => a.key === HOT_KEY);
-check("la situation « client motivé » est dans le Plan", hotAction != null, planH.actions.map((a) => a.key).join(", "));
-if (hotAction) {
-  check("son titre est au format « Commercial — situation », selon le motif (gros dossier)", /^.+ — .+ pèse lourd, le client est actif$/.test(hotAction.title), hotAction.title);
-  check("sa justification est tirée des données (GMV, étape, fraîcheur du mail)", /300 k€/.test(hotAction.detail) && /Examen devis/.test(hotAction.detail) && /client actif aujourd'hui/.test(hotAction.detail), hotAction.detail);
-  check("son motif est conservé pour l'audit", (hotAction.motives ?? []).includes("gros dossier"));
+// ============================================================================
+section("D — « Traité », budget journalier, « Tout traiter », lendemain");
+
+const CAND = [];
+for (let i = 1; i <= 5; i++) {
+  const id = `TESTPV_X${i}`;
+  insertOpportunity({ id, owner, gmv: 1_000_000 - i * 1000, lastActivity: old });
+  stall(id, owner);
+  CAND.push(id);
 }
-
-// Porte d'entrée sur données de test : le même mail, sur une affaire de 90 k€ qui
-// avance normalement, reste dans le Bloc 1 et n'entre PAS dans le Plan.
-{
-  const OPP_L = "TESTPV_SMALL";
-  const MSG_L = "TESTPV_MSG_SMALL";
-  insertOpportunity({ id: OPP_L, owner, gmv: 90_000, lastActivity: recent });
-  db.prepare(
-    `INSERT INTO mail_signal
-       (gmail_message_id, thread_id, sent_at, from_email, from_name, subject, direction, filter_rule,
-        opportunity_id, match_level, match_reason, salesperson, signal_type, summary, sync_id)
-     VALUES (?, ?, ?, 'client@example.com', 'Client Test', 'Devis', 'entrant', 'conserve', ?, 'A', 'test', ?, 'neutre', ?, 0)`,
-  ).run(MSG_L, "TESTPV_THREAD_SMALL", hoursAgo(0.5), OPP_L, owner, "Nous souhaitons avancer, quelle est la prochaine etape ?");
-  db.prepare(
-    `INSERT INTO morning_event (gmail_message_id, thread_id, sent_at, category, reason, opportunity_id, match_level, status, acknowledged_at, first_seen_at)
-     VALUES (?, ?, ?, ?, ?, NULL, NULL, 'nouveau', NULL, ?)`,
-  ).run(MSG_L, "TESTPV_THREAD_SMALL", hoursAgo(0.5), tH.category, tH.reason, new Date(nowMs).toISOString());
-  cleanup.messages.push(MSG_L);
-  const p = buildMorningPlan(now);
-  check("un mail sans motif fort n'est PAS candidat au Plan", !p.pool.keys.includes(`chaud:${MSG_L}`) && !p.actions.some((a) => a.key === `chaud:${MSG_L}`));
-  check("… mais il reste intégralement visible dans le Bloc 1", p.hot.some((e) => e.messageId === MSG_L));
-  check("… et il est compté parmi les mails sans motif", p.pool.mailWithoutMotive >= 1, `${p.pool.mailWithoutMotive}`);
-  check("toute situation née d'un mail dans le Plan porte au moins un motif", p.actions.filter((a) => a.category === "chaud" || a.category === "attente").every((a) => (a.motives ?? []).length > 0));
-}
-
-// Traité : le geste « action_faite » n'écrit que morning_action_done — le message
-// reste en attente, comme une situation cochée dans le Plan sans acquitter le mail.
-markActionDone(HOT_KEY, now);
-const planH2 = buildMorningPlan(now);
-check("7. traitée : elle disparaît du Plan pour la journée", !planH2.actions.some((a) => a.key === HOT_KEY));
-check("7b. elle est comptée comme traitée aujourd'hui", planH2.doneToday >= 1 && doneActionKeys(now).has(HOT_KEY));
-
+const p0 = buildMorningPlan(now);
+check("le vivier dépasse 7 (9 candidates fictives + réelles) : le Plan est plafonné à 7", p0.pool.total > MAX && p0.actions.length === MAX, `${p0.pool.total} candidates / ${p0.actions.length}`);
+const top = p0.actions[0];
+markActionDone(top.key, now);
+const p1 = buildMorningPlan(now);
+check("7. traitée : l'affaire disparaît pour la journée", !p1.actions.some((a) => a.key === top.key) && p1.doneToday >= 1);
+check("budget : traiter 1 affaire ne fait PAS remonter une 8e (au plus 6 restent)", p1.actions.length <= MAX - 1, `${p1.actions.length}`);
 const tomorrow = new Date(nowMs + DAY);
-const planNext = buildMorningPlan(tomorrow);
-check("8. le lendemain, le jour est vierge (rien n'est reporté)", planNext.doneToday === 0, `${planNext.doneToday}`);
-check("8b. le lendemain, la situation revient si elle persiste", planNext.actions.some((a) => a.key === HOT_KEY), planNext.actions.map((a) => a.key).join(", "));
-
-// ============================================================================
-section("C3 — Budget journalier : traiter ne fait pas remonter la huitième");
-
-{
-  const p = buildMorningPlan(tomorrow);
-  const shown = p.actions.map((a) => a.key);
-  // Tout traiter, exactement ce qui est affiché.
-  completeShownActions(p.actions, new Set(shown), tomorrow);
-  const after = buildMorningPlan(tomorrow);
-  check(
-    `budget : ${shown.length} situations traitées → ${MAX - shown.length} au plus restent`,
-    after.actions.length <= MAX - shown.length,
-    `${after.actions.length} restante(s)`,
-  );
-  check("après avoir tout traité, aucune situation ne remplace celles traitées", shown.length < MAX || after.actions.length === 0);
-  check("les situations traitées ne reviennent pas le même jour", after.actions.every((a) => !shown.includes(a.key)));
-}
-
-// Verrou de la règle voulue : une nouvelle urgence en cours de journée ne recrée
-// pas de place dans le Plan, elle reste visible dans les Blocs 1 et 2.
-{
-  const day = new Date(nowMs + 4 * DAY);
-  const p = buildMorningPlan(day);
-  completeShownActions(p.actions, new Set(p.actions.map((a) => a.key)), day); // tout traité
-  check("budget : 7 traitées → le Plan du jour est terminé", buildMorningPlan(day).actions.length === 0 && p.actions.length === MAX);
-
-  // Une urgence fraîche arrive dans la journée (client motivé, message d'il y a 5 minutes).
-  const MSG_U = "TESTPV_MSG_URGENT";
-  const OPP_U = "TESTPV_URGENT";
-  insertOpportunity({ id: OPP_U, owner, gmv: 500_000, lastActivity: recent });
-  const tU = triage({ ...PIPE, direction: "entrant", subject: "Devis", summary: "Nous souhaitons avancer, quelle est la prochaine etape ?", blocker: null, signal_type: "neutre" });
-  const sentAt = new Date(day.getTime() - 5 * 60_000).toISOString();
-  db.prepare(
-    `INSERT INTO mail_signal
-       (gmail_message_id, thread_id, sent_at, from_email, from_name, subject, direction, filter_rule,
-        opportunity_id, match_level, match_reason, salesperson, signal_type, summary, sync_id)
-     VALUES (?, ?, ?, 'client@example.com', 'Client Test', 'Devis', 'entrant', 'conserve', ?, 'A', 'test', ?, 'neutre', ?, 0)`,
-  ).run(MSG_U, "TESTPV_THREAD_URGENT", sentAt, OPP_U, owner, "Nous souhaitons avancer, quelle est la prochaine etape ?");
-  db.prepare(
-    `INSERT INTO morning_event (gmail_message_id, thread_id, sent_at, category, reason, opportunity_id, match_level, status, acknowledged_at, first_seen_at)
-     VALUES (?, ?, ?, ?, ?, NULL, NULL, 'nouveau', NULL, ?)`,
-  ).run(MSG_U, "TESTPV_THREAD_URGENT", sentAt, tU.category, tU.reason, sentAt);
-  cleanup.messages.push(MSG_U);
-
-  const after = buildMorningPlan(day);
-  check("budget : une urgence en cours de journée ne recrée AUCUNE place dans le Plan", after.actions.length === 0, `${after.actions.length} situation(s)`);
-  check("l'urgence est bien un candidat, visible dans le Bloc 1", after.pool.keys.includes(`chaud:${MSG_U}`) && after.hot.some((e) => e.messageId === MSG_U));
-  check("le lendemain, elle peut entrer dans le Plan", buildMorningPlan(new Date(day.getTime() + DAY)).pool.keys.includes(`chaud:${MSG_U}`));
-}
-
-// ============================================================================
-section("C4 — « Tout traiter » ne traite que les situations affichées");
+const p2 = buildMorningPlan(tomorrow);
+check("8. le lendemain : jour vierge, et l'affaire revient si elle persiste", p2.doneToday === 0 && p2.actions.some((a) => a.key === top.key));
 
 {
   const day = new Date(nowMs + 2 * DAY);
   const p = buildMorningPlan(day);
-  const hiddenKey = p.pool.keys.find((k) => !p.actions.some((a) => a.key === k)); // candidate hors Plan
-  check("un vivier plus large que le Plan existe (sinon le contrôle est vide)", hiddenKey != null, `${p.pool.total} candidates / ${p.actions.length} affichées`);
-  const shownSubset = p.actions.slice(0, Math.max(1, p.actions.length - 1)).map((a) => a.key);
-  const notShown = p.actions.slice(shownSubset.length).map((a) => a.key);
-  const ghost = "chaud:MESSAGE_FANTOME";
-  const changed = completeShownActions(p.actions, new Set([...shownSubset, hiddenKey, ghost].filter(Boolean)), day);
+  completeShownActions(p.actions, new Set(p.actions.map((a) => a.key)), day);
+  const after = buildMorningPlan(day);
+  check(`budget : ${MAX} affaires traitées → Plan terminé, aucune ne remplace`, p.actions.length === MAX && after.actions.length === 0, `${after.actions.length}`);
+  // Une nouvelle urgence en cours de journée ne recrée AUCUNE place.
+  insertOpportunity({ id: "TESTPV_URGENT", owner, gmv: 2_000_000, lastActivity: old });
+  stall("TESTPV_URGENT", owner);
+  const urgent = buildMorningPlan(day);
+  check("budget : une nouvelle urgence en cours de journée ne recrée AUCUNE place (elle est candidate, demain)", urgent.actions.length === 0 && urgent.pool.keys.includes("affaire:TESTPV_URGENT"));
+  check("le lendemain, elle peut entrer dans le Plan", buildMorningPlan(new Date(day.getTime() + DAY)).actions.some((a) => a.opportunityId === "TESTPV_URGENT"));
+}
+
+{
+  const day = new Date(nowMs + 4 * DAY);
+  const p = buildMorningPlan(day);
+  const shown = p.actions.slice(0, p.actions.length - 1).map((a) => a.key);
+  const hidden = p.pool.keys.find((k) => !p.actions.some((a) => a.key === k));
+  const lastKey = p.actions[p.actions.length - 1].key;
+  completeShownActions(p.actions, new Set([...shown, hidden, "affaire:FANTOME"].filter(Boolean)), day);
   const done = doneActionKeys(day);
-  check("les situations affichées sont traitées", shownSubset.every((k) => done.has(k)), `${changed}/${shownSubset.length}`);
-  check("une situation non affichée n'est pas traitée", notShown.every((k) => !done.has(k)), notShown.join(", ") || "aucune");
-  check("une candidate hors Plan (8e, filtrée) n'est pas traitée", hiddenKey == null || !done.has(hiddenKey), hiddenKey ?? "");
-  check("une clé inconnue n'est pas traitée", !done.has(ghost));
-  const legacy = buildMorningPlan(new Date(nowMs + 3 * DAY));
-  const n = completeShownActions(legacy.actions, null, new Date(nowMs + 3 * DAY));
-  check("sans liste de clés (appel ancien), le Plan plafonné est traité tel quel", n === legacy.actions.length && n <= MAX, `${n}`);
+  check("« Tout traiter » : les affaires affichées sont traitées", shown.every((k) => done.has(k)));
+  check("… une affaire non affichée ne l'est pas", !done.has(lastKey));
+  check("… ni une candidate hors Plan (8e), ni une clé inconnue", (hidden == null || !done.has(hidden)) && !done.has("affaire:FANTOME"));
+  const n = completeShownActions(buildMorningPlan(new Date(nowMs + 5 * DAY)).actions, null, new Date(nowMs + 5 * DAY));
+  check("sans liste de clés (appel ancien), le Plan plafonné est traité tel quel", n <= MAX, `${n}`);
 }
 
 // ============================================================================
-section("C5 — Aucune tâche persistante, journal idempotent");
+section("E — Aucune tâche persistante, journal idempotent, migration additive");
 
 {
   const tablesAfter = tables();
-  const added = tablesAfter.filter((t) => !tablesBefore.includes(t));
-  check("9. aucune table créée par le Plan ou les gestes", added.length === 0, added.join(", "));
+  const src0 = new DatabaseSync(SOURCE, { readOnly: true });
+  const sourceTables = src0.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all().map((r) => r.name);
+  src0.close();
+  const added = tablesAfter.filter((t) => !sourceTables.includes(t));
+  check("le Plan et les gestes ne créent aucune table", tablesAfter.length === tablesBefore.length);
+  check("migration additive : seules morning_plan_log et monthly_objective peuvent s'ajouter à la base source", added.every((t) => ["morning_plan_log", "monthly_objective"].includes(t)), added.join(", ") || "déjà présentes dans la source");
   const cols = db.prepare("PRAGMA table_info(morning_plan_log)").all().map((c) => c.name);
-  const expected = ["plan_date", "action_key", "owner", "opportunity_id", "category", "score", "rank", "gmv", "reason_code", "created_at"];
-  check("le journal porte exactement les colonnes prévues", JSON.stringify(cols) === JSON.stringify(expected), cols.join(","));
-  check(
-    "le journal n'a aucune colonne de statut, d'échéance, de report ou de rappel",
-    !cols.some((c) => /status|statut|deadline|due|snooze|remind|rappel|echeance|report|backlog|done|traite/i.test(c)),
-  );
+  check("le journal n'a aucune colonne de statut, d'échéance, de report ou de rappel", !cols.some((c) => /status|statut|deadline|due|snooze|remind|rappel|echeance|report|backlog|done|traite/i.test(c)), cols.join(","));
+  const walk = (dir, out = []) => {
+    for (const en of readdirSync(dir)) {
+      const f = path.join(dir, en);
+      if (statSync(f).isDirectory()) walk(f, out);
+      else if (/\.(ts|tsx)$/.test(en)) out.push(f);
+    }
+    return out;
+  };
+  const mentions = walk(path.resolve(process.cwd(), "src")).filter((f) => /morning_plan_log/.test(readFileSync(f, "utf8"))).map((f) => path.basename(f)).sort();
+  check("le Plan ne relit jamais son journal (nommé par db.ts et morning-plan-log.ts seulement)", JSON.stringify(mentions) === JSON.stringify(["db.ts", "morning-plan-log.ts"]), mentions.join(", "));
 
   db.prepare("DELETE FROM morning_plan_log").run();
-  const day = new Date(nowMs + 5 * DAY);
+  const day = new Date(nowMs + 6 * DAY);
   const p = buildMorningPlan(day);
   const first = recordPlanLog(p.actions, day, p.doneToday);
   const second = recordPlanLog(p.actions, day, p.doneToday);
   const rows = db.prepare("SELECT * FROM morning_plan_log WHERE plan_date = ? ORDER BY rank").all(parisDate(day));
-  check("11. premier enregistrement : une ligne par situation", first === p.actions.length && rows.length === p.actions.length, `${first}/${p.actions.length}`);
-  check("11b. second enregistrement le même jour : rien d'ajouté", second === 0 && rows.length === p.actions.length, `${second}`);
-  check("11c. rangs 1..N, montants et raisons renseignés", rows.every((r, i) => r.rank === i + 1 && r.reason_code && r.category && r.score != null));
-  check("11d. owner et OpportunityId conservés", rows.every((r, i) => r.owner === p.actions[i].owner && r.opportunity_id === p.actions[i].opportunityId));
-  const nextDay = new Date(day.getTime() + DAY);
-  const added2 = recordPlanLog(p.actions, nextDay, 0);
-  check("11e. un autre jour : de nouvelles lignes, l'historique du premier jour reste", added2 === p.actions.length && db.prepare("SELECT COUNT(*) n FROM morning_plan_log").get().n === 2 * p.actions.length);
-  // Le journal n'est écrit que par `recordPlanLog` et déclaré dans `db.ts` : aucun
-  // autre module de `src` ne le nomme, donc rien ne peut le relire pour construire
-  // le Plan.
-  const walk = (dir, out = []) => {
-    for (const e of readdirSync(dir)) {
-      const f = path.join(dir, e);
-      if (statSync(f).isDirectory()) walk(f, out);
-      else if (/\.(ts|tsx)$/.test(e)) out.push(f);
-    }
-    return out;
-  };
-  const mentions = walk(path.resolve(process.cwd(), "src"))
-    .filter((f) => /morning_plan_log/.test(readFileSync(f, "utf8")))
-    .map((f) => path.basename(f))
-    .sort();
-  check("le journal n'est nommé que par db.ts (schéma) et morning-plan-log.ts (écriture)", JSON.stringify(mentions) === JSON.stringify(["db.ts", "morning-plan-log.ts"]), mentions.join(", "));
-
-  // Migration : par rapport à la base SOURCE, la seule table ajoutée est le journal.
-  const src = new DatabaseSync(SOURCE, { readOnly: true });
-  const sourceTables = src.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all().map((r) => r.name);
-  src.close();
-  const migrated = tablesAfter.filter((t) => !sourceTables.includes(t));
-  // La base source locale a pu être ouverte (donc migrée) par une autre suite :
-  // la table peut déjà s'y trouver. Ce qui compte, c'est qu'aucune AUTRE table
-  // n'ait été ajoutée, et que le journal existe bien.
-  check(
-    "migration additive : aucune table ajoutée hors morning_plan_log, et le journal existe",
-    migrated.every((t) => t === "morning_plan_log") && tablesAfter.includes("morning_plan_log"),
-    migrated.length === 0 ? "déjà présente dans la source" : migrated.join(", "),
-  );
+  check("11. journal : une ligne par affaire, rangs 1..N", first === p.actions.length && rows.length === p.actions.length && rows.every((r, i) => r.rank === i + 1));
+  check("11b. journal idempotent pour la journée : rien d'ajouté au second passage", second === 0);
+  check("11c. owner, OpportunityId, catégorie (famille), score, GMV et raison conservés", rows.every((r, i) => r.owner === p.actions[i].owner && r.opportunity_id === p.actions[i].opportunityId && r.category === p.actions[i].category && r.reason_code === p.actions[i].reason && r.gmv === p.actions[i].gmv));
 }
 
 // --- Nettoyage ---------------------------------------------------------------
@@ -572,6 +343,8 @@ if (cleanup.opportunities.length > 0) {
   db.prepare(`DELETE FROM opportunity WHERE opportunity_id IN (${ph})`).run(...cleanup.opportunities);
   db.prepare(`DELETE FROM opportunity_snapshot WHERE opportunity_id IN (${ph})`).run(...cleanup.opportunities);
 }
+db.prepare("DELETE FROM opportunity_snapshot WHERE opportunity_id LIKE 'TESTPV_%'").run();
+db.prepare("DELETE FROM opportunity WHERE opportunity_id LIKE 'TESTPV_%'").run();
 if (cleanup.messages.length > 0) {
   const ph = cleanup.messages.map(() => "?").join(",");
   db.prepare(`DELETE FROM mail_signal WHERE gmail_message_id IN (${ph})`).run(...cleanup.messages);
