@@ -29,6 +29,8 @@ import {
   absenceSignals,
   hasManagerialMotive,
   joinDetail,
+  mailMotives,
+  mailWording,
   selectSituations,
   type AbsenceSignals,
 } from "./morning-plan-select";
@@ -92,7 +94,13 @@ export type MorningPlan = {
    * Le vivier avant sélection : combien de situations candidates, par famille, et
    * leurs clés. Observation (journal, contrôles), jamais affiché.
    */
-  pool: { total: number; byCategory: Record<string, number>; keys: string[] };
+  pool: {
+    total: number;
+    byCategory: Record<string, number>;
+    keys: string[];
+    /** Messages chauds / en attente écartés du Plan faute de motif managérial : ils restent dans les Blocs 1 et 2. */
+    mailWithoutMotive: number;
+  };
   hot: MorningEvent[];
   waiting: MorningEvent[];
   /** Affaires écartées du haut de Morning faute de signe de vie. */
@@ -142,6 +150,7 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
     board.salespeople.flatMap((s) => s.opportunities).map((o) => [o.opportunityId, o]),
   );
   const challengeIds = new Set(board.examine.map((e) => e.row.opportunityId));
+  const challengeById = new Map(board.examine.map((e) => [e.row.opportunityId, e]));
   const perspectiveIds = new Set(
     board.salespeople
       .flatMap((s) => s.opportunities)
@@ -205,6 +214,47 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
 
   const candidates: MorningAction[] = [];
   const seen = new Set<string>();
+  let mailWithoutMotive = 0;
+
+  /**
+   * Formulation d'une situation née d'un mail : le motif managérial dominant
+   * donne le titre et le badge ; le mail n'est qu'un signal de fraîcheur.
+   */
+  const mailWordingOf = (e: MorningEvent, family: "chaud" | "attente", first: string, client: string) => {
+    const id = e.opportunityId;
+    const opp = id ? oppById.get(id) : undefined;
+    const h = hoursSince(e.sentAt, now);
+    return mailWording({
+      family,
+      first,
+      client,
+      gmv: e.gmv,
+      stage: e.stage,
+      inChallenge: !!id && challengeIds.has(id),
+      challengeKind: id ? (challengeById.get(id)?.kind ?? null) : null,
+      stalled: opp ? isStagnant(opp, stability, today) : false,
+      waitDays: h == null ? null : h / 24,
+      hours: h,
+      moveText: moveText(id),
+      expectedText: expectedText(id),
+      receivedText: received(e.sentAt, now),
+    });
+  };
+
+  /** Motifs managériaux d'un message client (voir `MORNING_PLAN.mailMotive`). */
+  const motivesOf = (e: MorningEvent, family: "chaud" | "attente"): string[] => {
+    const id = e.opportunityId;
+    const opp = id ? oppById.get(id) : undefined;
+    const h = hoursSince(e.sentAt, now);
+    return mailMotives({
+      family,
+      gmv: e.gmv,
+      stage: e.stage,
+      inChallenge: !!id && challengeIds.has(id),
+      stalled: opp ? isStagnant(opp, stability, today) : false,
+      waitDays: h == null ? null : h / 24,
+    });
+  };
 
   const who = (owner: string | null) => ({
     owner,
@@ -252,6 +302,13 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
     const exp = id ? expectedById.get(id) : undefined;
     const o = who(e.salesperson);
     const client = e.client ?? "Client non identifié";
+    // Porte d'entrée : sans motif managérial fort, le message reste dans le Bloc 1.
+    const motives = motivesOf(e, "chaud");
+    if (motives.length === 0) {
+      mailWithoutMotive += 1;
+      continue;
+    }
+    const wording = mailWordingOf(e, "chaud", nameOf(o.ownerFirstName), client);
     push({
       key: `chaud:${e.messageId}`,
       reason: "client_motive",
@@ -261,14 +318,10 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
       todo: e.salesperson
         ? `Appeler ${e.salesperson} pour qu'il traite ce client aujourd'hui`
         : "Identifier le commercial et faire traiter la demande aujourd'hui",
-      title: `${nameOf(o.ownerFirstName)} — ${client} veut avancer`,
-      detail: joinDetail([
-        e.gmv != null && kEur(e.gmv),
-        e.stage,
-        `message reçu ${received(e.sentAt, now)}`,
-        moveText(id),
-        expectedText(id),
-      ]),
+      title: wording.title,
+      detail: wording.detail,
+      ...(wording.ask ? { ask: wording.ask } : {}),
+      motives,
       client,
       ...o,
       gmv: e.gmv,
@@ -295,6 +348,13 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
     const exp = id ? expectedById.get(id) : undefined;
     const o = who(e.salesperson);
     const client = e.client ?? "Client non identifié";
+    // Porte d'entrée : sans motif managérial fort, le message reste dans le Bloc 2.
+    const motives = motivesOf(e, "attente");
+    if (motives.length === 0) {
+      mailWithoutMotive += 1;
+      continue;
+    }
+    const wording = mailWordingOf(e, "attente", nameOf(o.ownerFirstName), client);
     push({
       key: `attente:${e.messageId}`,
       reason: "client_attend",
@@ -304,14 +364,10 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
       todo: e.salesperson
         ? `Faire répondre ${e.salesperson} aujourd'hui`
         : "Identifier le commercial et faire répondre aujourd'hui",
-      title: `${nameOf(o.ownerFirstName)} — ${client} attend une réponse`,
-      detail: joinDetail([
-        e.gmv != null && kEur(e.gmv),
-        e.stage,
-        `message reçu ${received(e.sentAt, now)}`,
-        moveText(id),
-        expectedText(id),
-      ]),
+      title: wording.title,
+      detail: wording.detail,
+      ...(wording.ask ? { ask: wording.ask } : {}),
+      motives,
       client,
       ...o,
       gmv: e.gmv,
@@ -602,7 +658,7 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
   return {
     actions: proposed,
     doneToday: done.size,
-    pool: { total: candidates.length, byCategory, keys: candidates.map((c) => c.key) },
+    pool: { total: candidates.length, byCategory, keys: candidates.map((c) => c.key), mailWithoutMotive },
     hot,
     waiting,
     silentButStrong,

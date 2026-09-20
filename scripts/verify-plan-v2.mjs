@@ -40,6 +40,8 @@ const {
   absenceSignals,
   hasManagerialMotive,
   selectSituations,
+  mailMotives,
+  mailWording,
 } = await import(lib("morning-plan-select"));
 const { buildMorningPlan } = await import(lib("morning-priority"));
 const { triage, markActionDone, doneActionKeys, completeShownActions } = await import(lib("morning-events"));
@@ -154,6 +156,58 @@ section("A — Règles de sélection (pures)");
   check("un client qui attend passe même derrière six clients motivés", mix.some((s) => s.key === oneWaiting.key), `${mix.length} situations`);
   const fewer = selectSituations([...mails.slice(0, 2), structural[0]]);
   check("jamais de remplissage artificiel : peu de situations, Plan court", fewer.length === 3, `${fewer.length}`);
+}
+
+section("A'' — Porte d'entrée des mails : un mail seul ne prend pas de place dans le Plan");
+
+{
+  const base = { family: "attente", gmv: 138_000, stage: "Examen devis", inChallenge: false, stalled: false, waitDays: 0.1 };
+  check("Cyril LAGEL : attend une réponse, 138 k€, Examen devis, il y a 3 h → aucun motif", mailMotives(base).length === 0);
+  check(
+    "Louisa KACI : veut avancer, 13 k€, il y a 2 j → aucun motif",
+    mailMotives({ family: "chaud", gmv: 13_000, stage: "Examen devis", inChallenge: false, stalled: false, waitDays: 2 }).length === 0,
+  );
+  check("« message reçu ce matin » ne suffit pas", mailMotives({ ...base, gmv: 20_000, waitDays: 0.2 }).length === 0);
+  check("gros dossier (826 k€) → motif", mailMotives({ ...base, gmv: 826_000 }).includes("gros dossier"));
+  check("à challenger → motif", mailMotives({ ...base, inChallenge: true }).includes("à challenger"));
+  check("absence de mouvement anormale → motif", mailMotives({ ...base, stalled: true }).includes("sans mouvement anormal"));
+  check("phase de signature → motif", mailMotives({ ...base, stage: "Signature" }).includes("en phase de signature"));
+  check("attente client anormale (6 jours) → motif", mailMotives({ ...base, waitDays: 6 }).some((m) => m.startsWith("attente anormale")));
+  check("l'ancienneté ne compte que pour une ATTENTE : un « chaud » de 6 jours reste sans motif", mailMotives({ ...base, family: "chaud", waitDays: 6 }).length === 0);
+  check("un seuil juste en dessous ne passe pas (249 k€)", mailMotives({ ...base, gmv: 249_000 }).length === 0);
+}
+
+section("A''' — Formulation : le titre suit le motif dominant, le mail n'est que de la fraîcheur");
+
+{
+  const base = {
+    first: "Valentin", client: "Cyril LAGEL", family: "attente", gmv: 137_507, stage: "Examen devis",
+    inChallenge: false, challengeKind: null, stalled: false, waitDays: 0.125, hours: 3, moveText: null,
+    expectedText: "3 % de chance de signer ce mois", receivedText: "il y a 3 h",
+  };
+  const cyril = mailWording({ ...base, inChallenge: true, challengeKind: "prevue_mois_suivant" });
+  check("challenge M+1 → « peut basculer sur ce mois »", cyril.title === "Valentin — Cyril LAGEL peut basculer sur ce mois", cyril.title);
+  check("sous-texte : 138 k€ · prévu M+1 · pourrait signer M · client actif aujourd'hui", cyril.detail === "138 k€ · prévu M+1 · pourrait signer M · client actif aujourd'hui", cyril.detail);
+  check("le badge suit le motif : Challenger", cyril.ask === "Challenger");
+  check("le titre ne dit plus « attend une réponse »", !/attend une réponse|veut avancer/.test(cyril.title));
+  const abs = mailWording({ ...base, inChallenge: true, challengeKind: "absente_du_mois" });
+  check("challenge « hors prévision » → formulation challenge", /à challenger : hors prévision du mois/.test(abs.title), abs.title);
+  const frag = mailWording({ ...base, inChallenge: true, challengeKind: "declaree_fragile" });
+  check("challenge « fragile » → formulation challenge", /à challenger : prévue ce mois, mais fragile/.test(frag.title), frag.title);
+  const sig = mailWording({ ...base, stage: "Signature" });
+  check("signature → formulation signature", sig.title === "Valentin — Cyril LAGEL en signature, à sécuriser" && sig.ask === "Sécuriser", sig.title);
+  const stall = mailWording({ ...base, family: "chaud", stalled: true, moveText: "aucun mouvement depuis au moins 34 jours" });
+  check("affaire figée → formulation immobilité", stall.title === "Valentin — Cyril LAGEL ne bouge plus" && /aucun mouvement depuis au moins 34 jours/.test(stall.detail) && stall.ask === "Débloquer", `${stall.title} | ${stall.detail}`);
+  const wait = mailWording({ ...base, waitDays: 6.4, hours: 154 });
+  check("attente anormale → formulation attente", wait.title === "Valentin — Cyril LAGEL attend une réponse depuis 6 jours", wait.title);
+  const big = mailWording({ ...base, gmv: 826_000 });
+  check("gros dossier → formulation gros dossier", /pèse lourd/.test(big.title) && /client actif aujourd'hui/.test(big.detail), `${big.title} | ${big.detail}`);
+  check(
+    "ordre de dominance : challenge > signature > immobilité",
+    mailWording({ ...base, stage: "Signature", stalled: true, inChallenge: true, challengeKind: "declaree_fragile" }).ask === "Challenger" &&
+      mailWording({ ...base, stage: "Signature", stalled: true }).ask === "Sécuriser",
+  );
+  check("fraîcheur lisible : hier, puis « dernier message »", /client actif hier/.test(mailWording({ ...base, gmv: 300_000, hours: 30 }).detail) && /dernier message il y a 3 j/.test(mailWording({ ...base, gmv: 300_000, hours: 72, receivedText: "il y a 3 j" }).detail));
 }
 
 section("A' — Motif managérial et absences de signal (pures)");
@@ -319,7 +373,7 @@ section("C2 — « Traité » : disparaît pour la journée, revient le lendemai
 const PIPE = { match_kind: "affaire_pipe", opportunity_stage: null, lead_status: null, stage: "Examen devis", is_terminal: 0, owner: null, ext_owner: null, lead_owner: null, rm_to: null, rm_cc: null };
 const OPP_H = "TESTPV_HOT";
 const MSG_H = "TESTPV_MSG_HOT";
-insertOpportunity({ id: OPP_H, owner, gmv: 90_000, lastActivity: recent });
+insertOpportunity({ id: OPP_H, owner, gmv: 300_000, lastActivity: recent });
 const tH = triage({ ...PIPE, direction: "entrant", subject: "Devis", summary: "Nous souhaitons avancer, quelle est la prochaine etape ?", blocker: null, signal_type: "neutre" });
 db.prepare(
   `INSERT INTO mail_signal
@@ -339,8 +393,33 @@ const planH = buildMorningPlan(now);
 const hotAction = planH.actions.find((a) => a.key === HOT_KEY);
 check("la situation « client motivé » est dans le Plan", hotAction != null, planH.actions.map((a) => a.key).join(", "));
 if (hotAction) {
-  check("son titre est au format « Commercial — situation »", /^.+ — .+ veut avancer$/.test(hotAction.title), hotAction.title);
-  check("sa justification est tirée des données (GMV, étape, fraîcheur)", /90 k€/.test(hotAction.detail) && /message reçu/.test(hotAction.detail), hotAction.detail);
+  check("son titre est au format « Commercial — situation », selon le motif (gros dossier)", /^.+ — .+ pèse lourd, le client est actif$/.test(hotAction.title), hotAction.title);
+  check("sa justification est tirée des données (GMV, étape, fraîcheur du mail)", /300 k€/.test(hotAction.detail) && /Examen devis/.test(hotAction.detail) && /client actif aujourd'hui/.test(hotAction.detail), hotAction.detail);
+  check("son motif est conservé pour l'audit", (hotAction.motives ?? []).includes("gros dossier"));
+}
+
+// Porte d'entrée sur données de test : le même mail, sur une affaire de 90 k€ qui
+// avance normalement, reste dans le Bloc 1 et n'entre PAS dans le Plan.
+{
+  const OPP_L = "TESTPV_SMALL";
+  const MSG_L = "TESTPV_MSG_SMALL";
+  insertOpportunity({ id: OPP_L, owner, gmv: 90_000, lastActivity: recent });
+  db.prepare(
+    `INSERT INTO mail_signal
+       (gmail_message_id, thread_id, sent_at, from_email, from_name, subject, direction, filter_rule,
+        opportunity_id, match_level, match_reason, salesperson, signal_type, summary, sync_id)
+     VALUES (?, ?, ?, 'client@example.com', 'Client Test', 'Devis', 'entrant', 'conserve', ?, 'A', 'test', ?, 'neutre', ?, 0)`,
+  ).run(MSG_L, "TESTPV_THREAD_SMALL", hoursAgo(0.5), OPP_L, owner, "Nous souhaitons avancer, quelle est la prochaine etape ?");
+  db.prepare(
+    `INSERT INTO morning_event (gmail_message_id, thread_id, sent_at, category, reason, opportunity_id, match_level, status, acknowledged_at, first_seen_at)
+     VALUES (?, ?, ?, ?, ?, NULL, NULL, 'nouveau', NULL, ?)`,
+  ).run(MSG_L, "TESTPV_THREAD_SMALL", hoursAgo(0.5), tH.category, tH.reason, new Date(nowMs).toISOString());
+  cleanup.messages.push(MSG_L);
+  const p = buildMorningPlan(now);
+  check("un mail sans motif fort n'est PAS candidat au Plan", !p.pool.keys.includes(`chaud:${MSG_L}`) && !p.actions.some((a) => a.key === `chaud:${MSG_L}`));
+  check("… mais il reste intégralement visible dans le Bloc 1", p.hot.some((e) => e.messageId === MSG_L));
+  check("… et il est compté parmi les mails sans motif", p.pool.mailWithoutMotive >= 1, `${p.pool.mailWithoutMotive}`);
+  check("toute situation née d'un mail dans le Plan porte au moins un motif", p.actions.filter((a) => a.category === "chaud" || a.category === "attente").every((a) => (a.motives ?? []).length > 0));
 }
 
 // Traité : le geste « action_faite » n'écrit que morning_action_done — le message

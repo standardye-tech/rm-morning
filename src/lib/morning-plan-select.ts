@@ -20,6 +20,7 @@
 import { ATTENTION, MORNING_PLAN } from "./config";
 import { evaluateReasons, type AttentionInput, type AttentionReason } from "./attention";
 import type { MorningAction } from "./morning-types";
+import { kEur } from "./vocabulary";
 
 // --- Motif managérial ---------------------------------------------------------
 
@@ -40,6 +41,132 @@ export type MotiveInput = {
  */
 export function hasManagerialMotive(m: MotiveInput): boolean {
   return m.inChallenge || m.stalled || m.clientSpoke;
+}
+
+// --- Porte d'entrée des situations nées d'un mail ------------------------------
+
+export type MailMotiveInput = {
+  family: "chaud" | "attente";
+  gmv: number | null;
+  stage: string | null;
+  /** L'affaire figure dans la liste « À challenger » de Forecast. */
+  inChallenge: boolean;
+  /** Aucun changement d'étape ni activité depuis `ATTENTION.stagnantDays` jours. */
+  stalled: boolean;
+  /** Ancienneté du message client, en jours. Null si inconnue. */
+  waitDays: number | null;
+};
+
+/**
+ * Les motifs managériaux forts d'une situation née d'un mail. Liste vide = le
+ * message reste dans les Blocs 1 et 2, il n'entre pas dans le Plan.
+ * Seuils : `MORNING_PLAN.mailMotive`.
+ */
+export function mailMotives(m: MailMotiveInput, rules = MORNING_PLAN.mailMotive): string[] {
+  const out: string[] = [];
+  if ((m.gmv ?? 0) >= rules.bigGmv) out.push("gros dossier");
+  if (m.inChallenge) out.push("à challenger");
+  if (m.stalled) out.push("sans mouvement anormal");
+  if (m.stage === rules.advancedStage) out.push("en phase de signature");
+  if (m.family === "attente" && m.waitDays != null && m.waitDays >= rules.abnormalWaitDays) {
+    out.push(`attente anormale (${Math.floor(m.waitDays)} j)`);
+  }
+  return out;
+}
+
+// --- Formulation d'une situation née d'un mail -----------------------------------
+
+export type MailWordingInput = MailMotiveInput & {
+  first: string;
+  client: string;
+  /** Nature du challenge (`ChallengeKind` de Forecast), quand l'affaire est à challenger. */
+  challengeKind: string | null;
+  /** Ancienneté du message client, en heures. Null si inconnue. */
+  hours: number | null;
+  /** « aucun mouvement depuis au moins N jours », quand c'est prouvé. */
+  moveText: string | null;
+  /** « 3 % de chance de signer ce mois », quand l'Expected existe. */
+  expectedText: string | null;
+  /** Ancienneté lisible du dernier message (« il y a 3 h »). */
+  receivedText: string;
+};
+
+/**
+ * Le mail est un signal de FRAÎCHEUR, pas le motif affiché : « le client a
+ * écrit aujourd'hui » dit que le dossier est vivant, pas pourquoi le manager
+ * doit s'en occuper. Le titre suit donc le motif managérial dominant, dans cet
+ * ordre : à challenger, signature, immobilité, attente anormale, gros dossier.
+ */
+export function mailWording(m: MailWordingInput, rules = MORNING_PLAN.mailMotive): {
+  title: string;
+  detail: string;
+  ask: string | null;
+} {
+  const gmv = m.gmv != null ? kEur(m.gmv) : null;
+  const fresh =
+    m.hours == null
+      ? null
+      : m.hours <= 24
+        ? "client actif aujourd'hui"
+        : m.hours <= 48
+          ? "client actif hier"
+          : `dernier message ${m.receivedText}`;
+  const head = `${m.first} — ${m.client}`;
+
+  if (m.inChallenge) {
+    if (m.challengeKind === "prevue_mois_suivant") {
+      return {
+        title: `${head} peut basculer sur ce mois`,
+        detail: joinDetail([gmv, "prévu M+1", "pourrait signer M", fresh]),
+        ask: "Challenger",
+      };
+    }
+    if (m.challengeKind === "absente_du_mois") {
+      return {
+        title: `${head} à challenger : hors prévision du mois`,
+        detail: joinDetail([gmv, m.stage, "aucune prévision commerciale sur le mois", m.moveText, fresh]),
+        ask: "Challenger",
+      };
+    }
+    if (m.challengeKind === "declaree_fragile") {
+      return {
+        title: `${head} à challenger : prévue ce mois, mais fragile`,
+        detail: joinDetail([gmv, m.stage, m.expectedText, m.moveText, fresh]),
+        ask: "Challenger",
+      };
+    }
+    return {
+      title: `${head} à challenger`,
+      detail: joinDetail([gmv, m.stage, m.moveText, fresh]),
+      ask: "Challenger",
+    };
+  }
+  if (m.stage === rules.advancedStage) {
+    return {
+      title: `${head} en signature, à sécuriser`,
+      detail: joinDetail([gmv, m.stage, m.expectedText, m.moveText, fresh]),
+      ask: "Sécuriser",
+    };
+  }
+  if (m.stalled) {
+    return {
+      title: `${head} ne bouge plus`,
+      detail: joinDetail([gmv, m.stage, m.moveText, fresh]),
+      ask: "Débloquer",
+    };
+  }
+  if (m.family === "attente" && m.waitDays != null && m.waitDays >= rules.abnormalWaitDays) {
+    return {
+      title: `${head} attend une réponse depuis ${Math.floor(m.waitDays)} jours`,
+      detail: joinDetail([gmv, m.stage, m.moveText, m.expectedText]),
+      ask: null,
+    };
+  }
+  return {
+    title: `${head} pèse lourd, le client est actif`,
+    detail: joinDetail([gmv, m.stage, fresh, m.expectedText]),
+    ask: null,
+  };
 }
 
 // --- Sélection ----------------------------------------------------------------

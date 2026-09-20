@@ -543,7 +543,7 @@ export function TodayPlan({
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
                     <span className="font-medium">{a.title}</span>
-                    <Badge tone={REASON_TONE[a.reason] ?? "neutral"}>{ASK_LABEL[a.reason]}</Badge>
+                    <Badge tone={REASON_TONE[a.reason] ?? "neutral"}>{a.ask ?? ASK_LABEL[a.reason]}</Badge>
                   </div>
                   {/*
                     La justification ne dit que ce qui a compté au score : GMV,

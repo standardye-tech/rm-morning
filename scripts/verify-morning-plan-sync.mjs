@@ -46,12 +46,15 @@ const PIPE = { match_kind: "affaire_pipe", opportunity_stage: null, lead_status:
 
 const cleanup = { opportunities: [], messages: [] };
 
+// Plan V2 : un mail n'entre dans le Plan qu'avec un motif managérial fort. Ces
+// fixtures testent la synchronisation Blocs 1/2 → Plan : elles portent donc un
+// gros dossier (300 k€, au-dessus de `MORNING_PLAN.mailMotive.bigGmv`).
 function insertOpportunity(id, owner = "Commercial Test G") {
   db.prepare(
     `INSERT INTO opportunity
        (opportunity_id, name, owner, gmv, stage, is_signed, is_terminal, is_standby, is_active,
         milestone_status, milestone_is_legacy, client_waiting, milestone_lateness_hours, first_seen_on, last_import_id)
-     VALUES (?, ?, ?, 60000, 'Examen devis', 0, 0, 0, 1, 'normal', 0, 0, 0, ?, 0)`,
+     VALUES (?, ?, ?, 300000, 'Examen devis', 0, 0, 0, 1, 'normal', 0, 0, 0, ?, 0)`,
   ).run(id, `Client ${id}`, owner, today);
   cleanup.opportunities.push(id);
 }

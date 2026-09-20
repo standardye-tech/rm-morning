@@ -171,6 +171,16 @@ export type MorningAction = {
    * même affaire dans le Plan.
    */
   opportunityIds: string[];
+  /**
+   * Situations nées d'un mail seulement : les motifs managériaux qui ont donné
+   * accès au Plan (voir `MORNING_PLAN.mailMotive`). Jamais vide dans le Plan.
+   */
+  motives?: string[];
+  /**
+   * Étiquette du badge quand le motif dominant n'est pas la famille du mail
+   * (« Challenger », « Sécuriser », « Débloquer »). Absente : `ASK_LABEL[reason]`.
+   */
+  ask?: string;
   /** Interne, jamais affiché. */
   score: number;
 };

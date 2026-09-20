@@ -669,6 +669,28 @@ export const MORNING_PLAN = {
    * rempli-force : s'il y a moins de situations, le Plan est plus court.
    */
   maxPerMailFamily: 2,
+  /**
+   * PORTE D'ENTRÉE des situations nées d'un mail. « Le client veut avancer »,
+   * « le client attend » ou « message reçu ce matin » ne suffisent PAS à prendre
+   * une place dans le Plan : ces messages restent intégralement dans les Blocs 1
+   * et 2. Il faut en plus au moins un motif managérial fort, parmi ceux que le
+   * moteur calcule déjà :
+   *   — gros dossier : GMV au moins égal à `bigGmv` (le point où le poids GMV du
+   *     score sature, `MORNING_PRIORITY.gmvReference`) ;
+   *   — affaire à challenger (liste de Forecast, qui porte aussi les fortes
+   *     divergences déclaré / Expected par affaire) ;
+   *   — absence de mouvement anormale (règle « figée » d'`attention.ts`) ;
+   *   — stade de signature (`advancedStage`) ;
+   *   — attente client anormale : un client sans réponse depuis au moins
+   *     `abnormalWaitDays` jours (famille « attente » seulement).
+   * Une affaire en Examen devis à 138 k€ dont le client a écrit il y a trois
+   * heures n'est donc pas une situation managériale : c'est un message à traiter.
+   */
+  mailMotive: {
+    bigGmv: 250_000,
+    advancedStage: "Signature",
+    abnormalWaitDays: 5,
+  },
 
   /**
    * Base des absences de signal. Volontairement SOUS une affaire précise à
