@@ -487,15 +487,16 @@ export function TodayPlan({
   const removed = actions.length - visible.length;
   const remainingActions = visible.filter((a) => !done.has(a.key));
   const remaining = remainingActions.length;
-  // GMV concernée : celle des situations affichées. Une affaire n'est jamais
-  // comptée deux fois (le Plan ne la propose qu'une fois).
-  const concerned = visible.reduce((t, a) => t + (a.gmv ?? 0), 0);
+  // Pas de total GMV en en-tête : une situation « N affaires figées » embarque
+  // presque tout le pipe d'un commercial, et la somme laisserait croire que des
+  // millions sont actionnables aujourd'hui. Les montants restent lisibles
+  // situation par situation.
 
   return (
     <Card className="ring-1 ring-ink/5">
       <SectionTitle
         eyebrow="Plan du jour"
-        title={`${visible.length} situation${visible.length > 1 ? "s" : ""} · ${kEur(concerned)} de GMV concernés`}
+        title={`${visible.length} situation${visible.length > 1 ? "s" : ""} prioritaire${visible.length > 1 ? "s" : ""}`}
         aside={
           <span className="flex items-center gap-3">
             {doneToday > 0 ? (

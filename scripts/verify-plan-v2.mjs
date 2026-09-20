@@ -373,6 +373,38 @@ section("C3 — Budget journalier : traiter ne fait pas remonter la huitième");
   check("les situations traitées ne reviennent pas le même jour", after.actions.every((a) => !shown.includes(a.key)));
 }
 
+// Verrou de la règle voulue : une nouvelle urgence en cours de journée ne recrée
+// pas de place dans le Plan, elle reste visible dans les Blocs 1 et 2.
+{
+  const day = new Date(nowMs + 4 * DAY);
+  const p = buildMorningPlan(day);
+  completeShownActions(p.actions, new Set(p.actions.map((a) => a.key)), day); // tout traité
+  check("budget : 7 traitées → le Plan du jour est terminé", buildMorningPlan(day).actions.length === 0 && p.actions.length === MAX);
+
+  // Une urgence fraîche arrive dans la journée (client motivé, message d'il y a 5 minutes).
+  const MSG_U = "TESTPV_MSG_URGENT";
+  const OPP_U = "TESTPV_URGENT";
+  insertOpportunity({ id: OPP_U, owner, gmv: 500_000, lastActivity: recent });
+  const tU = triage({ ...PIPE, direction: "entrant", subject: "Devis", summary: "Nous souhaitons avancer, quelle est la prochaine etape ?", blocker: null, signal_type: "neutre" });
+  const sentAt = new Date(day.getTime() - 5 * 60_000).toISOString();
+  db.prepare(
+    `INSERT INTO mail_signal
+       (gmail_message_id, thread_id, sent_at, from_email, from_name, subject, direction, filter_rule,
+        opportunity_id, match_level, match_reason, salesperson, signal_type, summary, sync_id)
+     VALUES (?, ?, ?, 'client@example.com', 'Client Test', 'Devis', 'entrant', 'conserve', ?, 'A', 'test', ?, 'neutre', ?, 0)`,
+  ).run(MSG_U, "TESTPV_THREAD_URGENT", sentAt, OPP_U, owner, "Nous souhaitons avancer, quelle est la prochaine etape ?");
+  db.prepare(
+    `INSERT INTO morning_event (gmail_message_id, thread_id, sent_at, category, reason, opportunity_id, match_level, status, acknowledged_at, first_seen_at)
+     VALUES (?, ?, ?, ?, ?, NULL, NULL, 'nouveau', NULL, ?)`,
+  ).run(MSG_U, "TESTPV_THREAD_URGENT", sentAt, tU.category, tU.reason, sentAt);
+  cleanup.messages.push(MSG_U);
+
+  const after = buildMorningPlan(day);
+  check("budget : une urgence en cours de journée ne recrée AUCUNE place dans le Plan", after.actions.length === 0, `${after.actions.length} situation(s)`);
+  check("l'urgence est bien un candidat, visible dans le Bloc 1", after.pool.keys.includes(`chaud:${MSG_U}`) && after.hot.some((e) => e.messageId === MSG_U));
+  check("le lendemain, elle peut entrer dans le Plan", buildMorningPlan(new Date(day.getTime() + DAY)).pool.keys.includes(`chaud:${MSG_U}`));
+}
+
 // ============================================================================
 section("C4 — « Tout traiter » ne traite que les situations affichées");
 

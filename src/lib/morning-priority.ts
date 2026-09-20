@@ -549,6 +549,12 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
   // Sélection : au plus N par commercial, jamais la même affaire deux fois,
   // plafond global absolu.
   //
+  // RÈGLE VOLONTAIRE, à ne pas « corriger » : 7 situations MAXIMUM PAR JOURNÉE
+  // MÉTIER, situations traitées incluses. Le Plan du jour est un arbitrage du
+  // matin, pas une file temps réel : une nouvelle urgence en cours de journée
+  // apparaît dans les Blocs 1 et 2, sans recréer de place dans le Plan.
+  // (Verrouillé par `morning:plan-v2-verify`, section C3.)
+  //
   // Le plafond est un BUDGET JOURNALIER : `maxSituations` moins ce qui a déjà
   // été traité aujourd'hui. Sans cela, traiter les sept situations et recharger
   // la page ferait remonter les sept suivantes — un backlog déguisé, alors que
