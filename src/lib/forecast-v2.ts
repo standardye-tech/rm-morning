@@ -100,6 +100,12 @@ export type ForecastV2Salesperson = Omit<ForecastSalespersonBlock, "opportunitie
   expectedGmv: number;
   /** Signé mesuré sur la transition réelle vers une étape post-signature. */
   signedGmvActual: number;
+  /**
+   * Reste annoncé : GMV brut des lignes OUVERTES de la Perspective M de ce
+   * commercial, hors affaires déjà signées au sens Travaux. Jamais reconstruit.
+   */
+  declaredOpenGmv: number;
+  declaredOpenCount: number;
   expectedFinish: number;
   divergence: Divergence;
 };
@@ -109,6 +115,17 @@ export type ForecastV2Region = ForecastMonthBoard["region"] & {
   scoredCount: number;
   expectedRemaining: number;
   signedGmvActual: number;
+  /** Σ reste annoncé des commerciaux (Perspective M, brut, hors signé). */
+  declaredOpenGmv: number;
+  declaredOpenCount: number;
+  /** Atterrissage commercial = Signé à date + reste annoncé. Information secondaire. */
+  commercialLanding: number;
+  /**
+   * Perspective ajustée : analyse manuelle de Sami, onglet du mois affiché. Nulle
+   * tant que le fichier manuel n'est pas branché — jamais remplacée par une autre
+   * valeur.
+   */
+  adjustedPerspective: { gmv: number; snapshotDate: string | null } | null;
   expectedFinish: number;
   p10: number;
   p50: number;
@@ -230,6 +247,19 @@ export function isVisibleInForecast(
   if (row.isSignedRow) return true;
   if (isFrozenOut(row, today)) return false;
   return isDeclaredOnMonth(row, month) || isProbableOnMonth(row);
+}
+
+export type ForecastTableMode = "all" | "remaining";
+
+/**
+ * Mode de lecture du TABLEAU. « Reste à signer » masque uniquement les lignes déjà
+ * signées ; il ne touche ni le bandeau ni aucun total, qui sont calculés avant.
+ */
+export function applyTableMode<T extends { isSignedRow: boolean }>(
+  rows: T[],
+  mode: ForecastTableMode,
+): T[] {
+  return mode === "remaining" ? rows.filter((r) => !r.isSignedRow) : rows;
 }
 
 function qualify(expected: number, kanban: number, reference: number | null): Divergence {
@@ -489,10 +519,22 @@ export function buildForecastV2(monthOffset: number, objective?: number | null):
     }
   }
 
+  // --- Reste annoncé : lignes ouvertes de la Perspective M, lues telles quelles.
+  // Une ligne encore « ouverte » dans le classeur mais déjà signée côté Travaux
+  // est retirée : elle est comptée dans Signé, la compter ici l'ajouterait deux
+  // fois à l'atterrissage.
+  const declaredByOwner = new Map<string, { gmv: number; count: number }>();
+  for (const l of board.declaredOpen) {
+    if (l.opportunityId && signedIds.has(l.opportunityId)) continue;
+    const cur = declaredByOwner.get(l.owner) ?? { gmv: 0, count: 0 };
+    declaredByOwner.set(l.owner, { gmv: cur.gmv + l.gmv, count: cur.count + 1 });
+  }
+
   const owners = new Set<string>([
     ...board.salespeople.map((s) => s.salesperson),
     ...extras.keys(),
     ...signedByOwner.keys(),
+    ...declaredByOwner.keys(),
   ]);
 
   const reference = available && board.region.kanbanGmv > 0
@@ -526,13 +568,15 @@ export function buildForecastV2(monthOffset: number, objective?: number | null):
         signedCount: block?.signedCount ?? 0,
         signedGmv: block?.signedGmv ?? 0,
         signedGmvActual,
+        declaredOpenGmv: declaredByOwner.get(owner)?.gmv ?? 0,
+        declaredOpenCount: declaredByOwner.get(owner)?.count ?? 0,
         opportunities: rows,
         expectedGmv,
         expectedFinish: signedGmvActual + expectedGmv,
         divergence: qualify(expectedGmv, kanbanGmv, reference),
       };
     })
-    .filter((s) => s.count > 0 || s.signedGmvActual > 0)
+    .filter((s) => s.count > 0 || s.signedGmvActual > 0 || s.declaredOpenGmv > 0)
     .sort((a, b) => a.salesperson.localeCompare(b.salesperson, "fr"));
 
   // Les totaux Région sont resommés depuis les commerciaux, qui sont eux-mêmes
@@ -540,6 +584,8 @@ export function buildForecastV2(monthOffset: number, objective?: number | null):
   const expectedRemaining = salespeople.reduce((t, s) => t + s.expectedGmv, 0);
   const signedGmvActual = salespeople.reduce((t, s) => t + s.signedGmvActual, 0);
   const expectedFinish = signedGmvActual + expectedRemaining;
+  const declaredOpenGmv = salespeople.reduce((t, s) => t + s.declaredOpenGmv, 0);
+  const declaredOpenCount = salespeople.reduce((t, s) => t + s.declaredOpenCount, 0);
 
   // Les quantiles portent sur le restant à signer. Le signé est acquis : il ne
   // se tire pas au sort, il s'ajoute. Le service les livre déjà ainsi.
@@ -567,6 +613,10 @@ export function buildForecastV2(monthOffset: number, objective?: number | null):
     ),
     expectedRemaining,
     signedGmvActual,
+    declaredOpenGmv,
+    declaredOpenCount,
+    commercialLanding: signedGmvActual + declaredOpenGmv,
+    adjustedPerspective: null,
     expectedFinish,
     p10,
     p50,

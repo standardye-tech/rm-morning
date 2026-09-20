@@ -47,6 +47,8 @@ export type SheetRow = ForecastV2Row & {
 export type SheetGroup = {
   salesperson: string;
   signedGmv: number;
+  /** Reste annoncé : GMV brut ouvert de la Perspective M, signé exclu. */
+  declaredOpenGmv: number;
   kanbanGmv: number;
   /** Part de la Perspective encore ouverte : c'est ce que la colonne totalise. */
   perspectiveGmv: number;
@@ -112,7 +114,11 @@ function Row({
 }) {
   const s = situation(row, viewMonth);
   return (
-    <tr className={`border-b border-line/70 last:border-0 ${row.challenge ? "bg-warning-soft/40" : ""}`}>
+    <tr
+      className={`border-b border-line/70 last:border-0 ${
+        row.isSignedRow ? "bg-positive-soft/50" : row.challenge ? "bg-warning-soft/40" : ""
+      }`}
+    >
       <td className="py-[3px] pl-6 pr-3">
         <span className="font-medium">{row.client}</span>
         {row.nextExpectedLabel || row.isStandby ? (
@@ -191,8 +197,10 @@ function Group({
             </span>
             <span className="text-sm font-semibold">{group.salesperson}</span>
             <span className="tabular text-xs text-ink-soft">
-              Prévu {kEur(group.kanbanGmv)} · Perspective {kEur(group.perspectiveSnapshotGmv)}
-              {group.signedGmv > 0 ? ` · Signé ${kEur(group.signedGmv)}` : ""}
+              Reste annoncé {kEur(group.declaredOpenGmv)}
+              {group.signedGmv > 0
+                ? ` · Signé ${kEur(group.signedGmv)} · Atterrissage ${kEur(group.declaredOpenGmv + group.signedGmv)}`
+                : ""}
               {showExpected ? ` · GMV probable ${kEur(group.expectedGmv)}` : ""}
               {` · ${rows.length} affaire${rows.length > 1 ? "s" : ""}`}
             </span>
@@ -263,8 +271,13 @@ export function ForecastSheet({
             <tr className="sticky top-0 z-10 border-b border-line bg-surface text-left text-[11px] uppercase tracking-wide text-ink-faint">
               <th className="py-1.5 pl-6 pr-3 font-medium">Client</th>
               <th className="px-3 py-1.5 text-right font-medium">GMV</th>
-              <th className="px-3 py-1.5 text-center font-medium">Prévu</th>
-              <th className="px-3 py-1.5 text-center font-medium">Perspective</th>
+              <th className="px-3 py-1.5 text-center font-medium">Kanban</th>
+              <th
+                className="px-3 py-1.5 text-center font-medium"
+                title="Perspective M : GMV × confiance, signé exclu du pipe"
+              >
+                Persp. M pondérée
+              </th>
               {showExpected ? (
                 <th className="px-3 py-1.5 text-right font-medium">{probabilityLabel}</th>
               ) : null}
@@ -296,7 +309,7 @@ export function ForecastSheet({
               */}
               <td className="tabular px-3 py-2 text-center text-xs font-medium" title="Part de la Perspective encore présente dans le pipe">
                 {formatEurShort(totals.perspective)}
-                <span className="block text-xs font-normal text-ink-faint">encore au pipe</span>
+                <span className="block text-xs font-normal text-ink-faint">pondérée, encore ouverte</span>
               </td>
               {showExpected ? (
                 <td className="tabular px-3 py-2 text-right font-semibold">

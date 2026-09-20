@@ -54,21 +54,33 @@ const DIVERGENCE_TONE: Record<Divergence["level"], "neutral" | "positive" | "war
  */
 export function ForecastV2Totals({ board }: { board: ForecastV2Board }) {
   const r = board.region;
-  const commercial = r.signedGmvActual + r.kanbanGmv;
+  const commercial = r.commercialLanding;
   const m1 = board.expectedM1;
   return (
     <div className="flex flex-wrap items-baseline gap-x-8 gap-y-2 rounded-xl border border-line bg-surface px-4 md:px-6 py-3">
-      <Total label="Signé" value={kEur(r.signedGmvActual)} />
-      <Total label={LABEL.kanban} value={kEur(r.kanbanGmv)} hint={`${r.count} affaire(s)`} />
+      <Total label={LABEL.signedToDate} value={kEur(r.signedGmvActual)} hint="Travaux signés dans le mois" tone="positive" />
       {/*
-        La Perspective est LUE, jamais recalculée sur le Salesforce du jour : on affiche le total
-        du classeur tel quel — bloc « en cours » s'il existe, dernière photographie sinon. La part
-        encore ouverte est une autre lecture, et elle porte son propre nom.
+        Reste annoncé : GMV brut des lignes ouvertes de la Perspective M du mois,
+        signé exclu. L'atterrissage commercial (signé + reste) est une information
+        secondaire, jamais présentée comme le déclaratif lui-même.
       */}
       <Total
-        label={LABEL.perspective}
-        value={kEur(r.perspectiveSnapshotGmv)}
-        hint={`${r.perspectiveSnapshotLines} affaires · dont ${kEur(r.perspectiveGmv)} encore au pipe`}
+        label={LABEL.declaredOpen}
+        value={kEur(r.declaredOpenGmv)}
+        hint={`Perspective M · ${r.declaredOpenCount} affaire(s) · atterrissage ${kEur(r.commercialLanding)} = ${kEur(r.signedGmvActual)} signés + ${kEur(r.declaredOpenGmv)} à signer`}
+      />
+      <Total
+        label={LABEL.adjustedPerspective}
+        value={r.adjustedPerspective ? kEur(r.adjustedPerspective.gmv) : "—"}
+        hint={
+          r.adjustedPerspective
+            ? `Analyse régionale · snapshot du ${
+                r.adjustedPerspective.snapshotDate
+                  ? formatFrenchDate(r.adjustedPerspective.snapshotDate)
+                  : "—"
+              }`
+            : "Analyse régionale · fichier manuel non connecté"
+        }
       />
       {/*
         Sur M+1 la bande affiche la PROJECTION régionale, jamais la somme de la
@@ -86,8 +98,8 @@ export function ForecastV2Totals({ board }: { board: ForecastV2Board }) {
             hint={`${LABEL.confidence.toLowerCase()} ${m1.confidence}`}
           />
           <span className="text-xs text-ink-faint">
-            l&apos;équipe prévoit {kEur(r.kanbanGmv)} · écart{" "}
-            {kEur(r.kanbanGmv - m1.projection)}
+            les commerciaux annoncent {kEur(r.declaredOpenGmv)} · écart{" "}
+            {kEur(r.declaredOpenGmv - m1.projection)}
           </span>
         </>
       ) : board.horizon === 2 ? (
@@ -104,7 +116,7 @@ export function ForecastV2Totals({ board }: { board: ForecastV2Board }) {
             value={`${kEur(r.p10)} – ${kEur(r.p90)}`}
           />
           <span className="text-xs text-ink-faint">
-            l&apos;équipe annonce {kEur(commercial)} · écart {kEur(r.expectedFinish - commercial)}
+            atterrissage commercial {kEur(commercial)} · écart {kEur(r.expectedFinish - commercial)}
           </span>
         </>
       ) : (
@@ -119,16 +131,22 @@ function Total({
   value,
   hint,
   strong = false,
+  tone,
 }: {
   label: string;
   value: string;
   hint?: string;
   strong?: boolean;
+  tone?: "positive";
 }) {
   return (
     <span className="inline-flex flex-col">
       <span className="text-xs font-medium uppercase tracking-[0.06em] text-ink-faint md:text-[11px] md:tracking-[0.1em]">{label}</span>
-      <span className={`tabular tracking-tight ${strong ? "text-lg font-semibold" : "text-sm font-medium"}`}>
+      <span
+        className={`tabular tracking-tight ${strong ? "text-lg font-semibold" : "text-sm font-medium"} ${
+          tone === "positive" ? "text-positive" : ""
+        }`}
+      >
         {value}
       </span>
       {hint ? <span className="text-xs text-ink-faint">{hint}</span> : null}
@@ -162,27 +180,40 @@ export function ForecastV2Scopes({ board }: { board: ForecastV2Board }) {
       </summary>
       <dl className="space-y-3 border-t border-line px-4 md:px-6 py-4 text-sm">
         <div>
-          <dt className="font-medium">
-            {LABEL.kanban} — {r.count} affaire(s)
-          </dt>
+          <dt className="font-medium">{LABEL.signedToDate}</dt>
           <dd className="text-ink-soft">
-            Les affaires que le commercial a lui-même positionnées sur ce mois dans la Projection
-            Kanban de Salesforce. Sont exclues : les affaires terminées, celles en stand-by, et
-            toutes celles sans Projection Kanban — même très avancées.
+            Les lignes Travaux signées ou réalisées pendant le mois, avenants et annulations
+            compris : le réalisé, source officielle. Jamais recompté dans le reste à signer.
           </dd>
         </div>
         <div>
           <dt className="font-medium">
-            {LABEL.perspective} —{" "}
-            {board.perspectiveSource === "courant" ? "état courant du" : "photo du"}{" "}
-            {board.perspectiveDate ? formatFrenchDate(board.perspectiveDate) : "—"}
+            {LABEL.declaredOpen} — {r.declaredOpenCount} affaire(s)
           </dt>
           <dd className="text-ink-soft">
-            Le total du classeur Perspective tel qu&apos;il a été lu — son bloc « en cours »,
-            rafraîchi chaque jour, ou à défaut la dernière photographie hebdomadaire. Dans les deux
-            cas, il ne se réécrit jamais en fonction de l&apos;état actuel de Salesforce.
-            La mention « encore au pipe » indique la part de ces affaires toujours ouvertes
-            aujourd&apos;hui — une affaire depuis signée ou perdue en sort, sans que la photo change.
+            Le GMV brut des lignes encore ouvertes de la Perspective M du mois, lue dans le
+            classeur ({board.perspectiveSource === "courant" ? "état courant du" : "photo du"}{" "}
+            {board.perspectiveDate ? formatFrenchDate(board.perspectiveDate) : "—"}). Sont exclues :
+            les affaires gagnées, perdues ou repoussées, et celles déjà signées. L&apos;atterrissage
+            commercial ({kEur(r.commercialLanding)}) est ce reste ajouté au signé.
+          </dd>
+        </div>
+        <div>
+          <dt className="font-medium">{LABEL.adjustedPerspective}</dt>
+          <dd className="text-ink-soft">
+            L&apos;analyse manuelle de la Région (onglet du mois affiché). Elle retraite le
+            déclaratif ; elle n&apos;est pas encore branchée à RM Morning.
+          </dd>
+        </div>
+        <div>
+          <dt className="font-medium">
+            {LABEL.perspectiveWeighted} — {kEur(r.perspectiveSnapshotGmv)}
+          </dt>
+          <dd className="text-ink-soft">
+            Information technique : le total GMV × confiance de tout l&apos;onglet du classeur,
+            affaires gagnées comprises ({kEur(r.perspectiveGmv)} pour les seules affaires
+            encore ouvertes). Ce n&apos;est ni un reste à signer ni une analyse manuelle, et il
+            ne s&apos;additionne pas au signé.
           </dd>
         </div>
         <div>

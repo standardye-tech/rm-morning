@@ -25,6 +25,12 @@ export const LABEL = {
   // qui les sépare ; « fin de mois » passe en sous-titre commun.
   kanbanFinish: "Prévu par l'équipe",
   perspective: "Dernière Perspective",
+  // Forecast : trois lectures, jamais mélangées. Commerciaux → analyse de Sami →
+  // RM Morning → réalisé.
+  declaredOpen: "Reste annoncé par les commerciaux",
+  commercialLanding: "Atterrissage commercial",
+  adjustedPerspective: "Perspective ajustée",
+  perspectiveWeighted: "Perspective M pondérée",
 
   // --- Prévision statistique -------------------------------------------------
   expectedFinish: "Prévision RM Morning",

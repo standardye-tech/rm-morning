@@ -10,7 +10,7 @@ import {
 } from "@/components/forecast-v2";
 import { Card, EmptyState } from "@/components/ui";
 import { monthLabel, shiftMonth } from "@/lib/forecast-board";
-import { buildForecastV2, isVisibleInForecast } from "@/lib/forecast-v2";
+import { applyTableMode, buildForecastV2, isVisibleInForecast } from "@/lib/forecast-v2";
 import { FORECAST_VISIBILITY } from "@/lib/config";
 import { todayIso } from "@/lib/normalize";
 import { chanceInMonth, LABEL } from "@/lib/vocabulary";
@@ -46,6 +46,8 @@ export default async function ForecastPage({
   const ownerFilter = typeof query.commercial === "string" ? query.commercial : null;
   const stageFilter = typeof query.etape === "string" ? query.etape : null;
   const sort = typeof query.tri === "string" ? query.tri : "commercial";
+  // Deux lectures du TABLEAU seulement : le bandeau ne change jamais de définition.
+  const remainingOnly = query.affaires === "reste";
 
   const board = buildForecastV2(offset);
   // Libellés des trois onglets. Dérivés du mois de la vue courante par simple
@@ -97,19 +99,21 @@ export default async function ForecastPage({
   const groups: SheetGroup[] = board.salespeople
     .filter((sp) => !ownerFilter || sp.salesperson === ownerFilter)
     .map((sp) => {
-      const rows = sp.opportunities
-        .filter(
+      const rows = applyTableMode(
+        sp.opportunities.filter(
           (o) =>
             (!stageFilter || o.stage === stageFilter) &&
             isVisibleInForecast(o, board.month, today),
-        )
-        .map((o) => {
+        ),
+        remainingOnly ? "remaining" : "all",
+      ).map((o) => {
           const c = challengeById.get(o.opportunityId);
           return { ...o, challenge: c ? { kind: c.kind, reason: c.reason } : null };
         });
       return {
         salesperson: sp.salesperson,
         signedGmv: sp.signedGmvActual,
+        declaredOpenGmv: sp.declaredOpenGmv,
         kanbanGmv: rows.reduce((t, o) => t + (o.outsideKanban ? 0 : o.gmv ?? 0), 0),
         perspectiveGmv: rows.reduce((t, o) => t + (o.perspectiveGmv ?? 0), 0),
         perspectiveSnapshotGmv: sp.perspectiveSnapshotGmv,
@@ -117,7 +121,14 @@ export default async function ForecastPage({
         rows,
       };
     })
-    .filter((g) => g.rows.length > 0 || g.signedGmv > 0);
+    .filter((g) => g.rows.length > 0 || g.signedGmv > 0 || g.declaredOpenGmv > 0);
+
+  const hiddenSigned = remainingOnly
+    ? board.salespeople
+        .filter((sp) => !ownerFilter || sp.salesperson === ownerFilter)
+        .flatMap((sp) => sp.opportunities)
+        .filter((o) => o.isSignedRow && (!stageFilter || o.stage === stageFilter)).length
+    : 0;
 
   if (sort === "expected") groups.sort((a, b) => b.expectedGmv - a.expectedGmv);
   else if (sort === "gmv") groups.sort((a, b) => b.kanbanGmv - a.kanbanGmv);
@@ -128,6 +139,7 @@ export default async function ForecastPage({
   const filtered = ownerFilter !== null || stageFilter !== null;
   const sheetTotals = {
     signed: groups.reduce((t, g) => t + g.signedGmv, 0),
+    declaredOpen: groups.reduce((t, g) => t + g.declaredOpenGmv, 0),
     kanban: groups.reduce((t, g) => t + g.kanbanGmv, 0),
     perspective: groups.reduce((t, g) => t + g.perspectiveGmv, 0),
     perspectiveSnapshot: groups.reduce((t, g) => t + g.perspectiveSnapshotGmv, 0),
@@ -145,6 +157,11 @@ export default async function ForecastPage({
           perspectiveSnapshotGmv: sheetTotals.perspectiveSnapshot,
           expectedRemaining: sheetTotals.expected,
           signedGmvActual: sheetTotals.signed,
+          declaredOpenGmv: sheetTotals.declaredOpen,
+          declaredOpenCount: board.salespeople
+            .filter((sp) => !ownerFilter || sp.salesperson === ownerFilter)
+            .reduce((t, sp) => t + sp.declaredOpenCount, 0),
+          commercialLanding: sheetTotals.signed + sheetTotals.declaredOpen,
           expectedFinish: sheetTotals.signed + sheetTotals.expected,
         },
       }
@@ -157,6 +174,7 @@ export default async function ForecastPage({
     if (ownerFilter) sp.set("commercial", ownerFilter);
     if (stageFilter) sp.set("etape", stageFilter);
     if (sort !== "commercial") sp.set("tri", sort);
+    if (remainingOnly && !("affaires" in params)) sp.set("affaires", "reste");
     for (const [k, v] of Object.entries(params)) {
       if (v === null) sp.delete(k);
       else sp.set(k, v);
@@ -211,8 +229,8 @@ export default async function ForecastPage({
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Forecast</h1>
           <p className="mt-1 max-w-2xl text-sm text-ink-soft">
-            Votre Perspective, enrichie des affaires que RM Morning conseille de challenger.
-            Les lignes surlignées ne sont pas annoncées par le commercial.
+            Ce que les commerciaux annoncent, l&apos;analyse régionale, puis la lecture de RM Morning.
+            Vert : déjà signé. Jaune : affaire que RM Morning conseille de challenger.
           </p>
           {/*
             La règle de densité est dite à l'écran : un tableau qui cache des
@@ -245,6 +263,21 @@ export default async function ForecastPage({
             </Link>
           ))}
         </nav>
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="mr-1 text-xs text-ink-faint">Affaires</span>
+          <Link href={link({ affaires: null })} className={chip(!remainingOnly)}>
+            Toutes les affaires
+          </Link>
+          <Link href={link({ affaires: "reste" })} className={chip(remainingOnly)}>
+            Reste à signer
+          </Link>
+          {remainingOnly ? (
+            <span className="ml-1 text-xs text-ink-faint">
+              {hiddenSigned} affaire{hiddenSigned > 1 ? "s" : ""} signée{hiddenSigned > 1 ? "s" : ""} masquée
+              {hiddenSigned > 1 ? "s" : ""}
+            </span>
+          ) : null}
+        </div>
         <div className="flex flex-wrap items-center gap-1">
           <span className="mr-1 text-xs text-ink-faint">Tri</span>
           <Link href={link({ tri: "commercial" })} className={chip(sort === "commercial")}>

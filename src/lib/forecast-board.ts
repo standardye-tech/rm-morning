@@ -149,6 +149,13 @@ export type ForecastMonthBoard = {
   perspectiveUpdatedAt: string | null;
   region: ForecastRegionTotals;
   salespeople: ForecastSalespersonBlock[];
+  /**
+   * Lignes OUVERTES de la Perspective M du mois : celles dont la colonne « État »
+   * est vide (ni Gagnée, ni Perdue, ni Repoussée). `gmv` est le GMV brut annoncé,
+   * jamais pondéré par la confiance. Lu tel quel dans le classeur, membres de
+   * l'équipe seulement.
+   */
+  declaredOpen: { opportunityId: string | null; owner: string; gmv: number }[];
   /** Présentes dans la dernière Perspective du mois, plus projetées dessus. */
   exits: ForecastExit[];
   /** Affaires très avancées projetées sur le mois suivant. Règles existantes. */
@@ -452,6 +459,12 @@ export function buildForecastBoard(monthOffset = 0, objective: number | null = n
     perspectiveUpdatedAt,
     region,
     salespeople,
+    declaredOpen: perspectiveLines.flatMap((l) => {
+      const member = matchTeamMember(l.salesperson);
+      return l.state == null && l.gmv != null && member
+        ? [{ opportunityId: l.opportunityId, owner: member.name, gmv: l.gmv }]
+        : [];
+    }),
     exits,
     candidates,
     issues,
