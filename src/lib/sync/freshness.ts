@@ -9,6 +9,7 @@
  * Lecture seule.
  */
 
+import { businessMonth } from "../business-time";
 import { getDb } from "../db";
 import { buildExpectedGmvSnapshot } from "../expected-gmv-live";
 import { buildExpectedM1 } from "../expected-m1";
@@ -70,7 +71,7 @@ export function freshnessReport(): FreshnessReport {
   const snap = buildExpectedGmvSnapshot();
   const m1 = buildExpectedM1();
 
-  const month = new Date().toISOString().slice(0, 7);
+  const month = businessMonth();
   let signed: { gmv: number; lines: number } | null = null;
   try {
     const official = officialSignedGmv(month);

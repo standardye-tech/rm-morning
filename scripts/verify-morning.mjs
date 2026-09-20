@@ -239,7 +239,12 @@ for (const [k, v] of Object.entries(by)) console.log(`      ${REASON_LABEL[k].pa
 
 // 7. Une affaire à fort Expected sans signal client ne doit pas être en tête.
 const top = plan.actions.slice(0, 5);
-const topSilent = top.filter((a) => a.messageId == null && a.reason !== "affaire_decisive" && a.reason !== "proche_signature");
+// Plan V2 : sont « de fond » les situations qui ne dépendent d'aucun mail mais
+// portent un motif managérial — affaire décisive ou en signature, affaire à
+// challenger et figée, et les absences de signal par commercial (pipe
+// insuffisant, affaires figées) lues dans attention.ts.
+const BACKGROUND_REASONS = ["affaire_decisive", "proche_signature", "a_challenger_figee", "affaires_figees", "pipe_faible"];
+const topSilent = top.filter((a) => a.messageId == null && !BACKGROUND_REASONS.includes(a.reason));
 check(
   "7. aucune affaire silencieuse en tête du plan",
   topSilent.length === 0,
@@ -262,8 +267,7 @@ check(
 const monitoringOnly = plan.actions.filter(
   (a) =>
     a.messageId == null &&
-    a.reason !== "affaire_decisive" &&
-    a.reason !== "proche_signature",
+    !BACKGROUND_REASONS.includes(a.reason),
 );
 const exceptions = db
   .prepare(

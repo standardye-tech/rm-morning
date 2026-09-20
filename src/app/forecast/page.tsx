@@ -13,7 +13,7 @@ import { monthLabel, shiftMonth } from "@/lib/forecast-board";
 import { applyTableMode, buildForecastV2, isVisibleInForecast } from "@/lib/forecast-v2";
 import { loadAdjustedPerspective } from "@/lib/adjusted-perspective";
 import { FORECAST_VISIBILITY } from "@/lib/config";
-import { todayIso } from "@/lib/normalize";
+import { parisDate } from "@/lib/business-time";
 import { chanceInMonth, LABEL } from "@/lib/vocabulary";
 
 export const dynamic = "force-dynamic";
@@ -87,7 +87,7 @@ export default async function ForecastPage({
   // à challenger qui comptent — déclarées, ou réellement probables — passent la
   // règle d'elles-mêmes ; les autres restent visibles dans Expected GMV, qui est
   // l'écran d'exploration du pipe.
-  const today = todayIso();
+  const today = parisDate();
   const challengeById = new Map(board.examine.map((e) => [e.row.opportunityId, e]));
 
   // La même règle s'applique au bloc « Candidats à examiner », qui liste des

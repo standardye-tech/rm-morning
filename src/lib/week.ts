@@ -35,11 +35,13 @@ import {
 import { buildForecastV2 } from "./forecast-v2";
 import { computeMetrics, daysSinceActivity } from "./metrics";
 import { computeOpportunityMetrics, loadMilestoneOpportunities } from "./opportunity-metrics";
+import { parisDate, parisWeekday } from "./business-time";
 import { daysBetween, mondayOf, stageRank, todayIso } from "./normalize";
 import { buildPerformanceBoard } from "./performance";
 import { listRadarContacts, radarInterviews, radarToProcess, type RadarContact } from "./radar-store";
 import { latestImport, loadOpportunities } from "./repository";
 import { earliestSnapshotDate, loadStageStability } from "./stage-history";
+import { stagnantDeals } from "./stagnation";
 import { lastCompleteRun } from "./sync/store";
 import { loadTeam } from "./team-store";
 import type { Opportunity } from "./types";
@@ -127,8 +129,8 @@ function addDays(iso: string, days: number): string {
 
 /** Semaine affichée : la courante jusqu'au vendredi, la suivante dès le samedi. */
 export function weekBounds(now: Date): { weekStart: string; weekEnd: string; weekLabel: string } {
-  const today = todayIso(now);
-  const dow = now.getDay() === 0 ? 7 : now.getDay();
+  const today = parisDate(now);
+  const dow = parisWeekday(now);
   let weekStart = mondayOf(today);
   if (dow >= WEEK_VIEW.switchToNextFromDay) weekStart = addDays(weekStart, 7);
   const weekEnd = addDays(weekStart, 4);
@@ -146,7 +148,7 @@ const kanbanKey = (o: Opportunity) =>
   o.kanbanYear && o.kanbanMonth ? `${o.kanbanYear}-${String(o.kanbanMonth).padStart(2, "0")}` : null;
 
 export function buildWeek(now = new Date()): WeekView {
-  const today = todayIso(now);
+  const today = parisDate(now);
   const currentMonth = today.slice(0, 7);
   const { weekStart, weekEnd, weekLabel } = weekBounds(now);
   const notes: string[] = [];
@@ -197,12 +199,8 @@ export function buildWeek(now = new Date()): WeekView {
       const monitoring = monitoringByOwner.get(member.name);
       const fc = forecastByOwner.get(member.name);
 
-      const stagnantList = mine.filter((o) => {
-        const s = stability.get(o.opportunityId);
-        if (!s || s.provenDays < ATTENTION.stagnantDays) return false;
-        const activity = daysSinceActivity(o, today);
-        return activity == null || activity >= ATTENTION.stagnantDays;
-      });
+      // Règle « figée » partagée avec le Plan du jour (`stagnation.ts`).
+      const stagnantList = stagnantDeals(mine, stability, today);
       const nearList = mine.filter(
         (o) => (o.gmv ?? 0) >= BIG_DEALS.minGmv && stageRank(o.stage) >= ATTENTION.nearSignatureRank,
       );

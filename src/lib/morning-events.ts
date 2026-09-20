@@ -18,6 +18,7 @@
  * message du même client revient toujours.
  */
 
+import { parisDate } from "./business-time";
 import { getDb } from "./db";
 import { INTERNAL_DOMAIN } from "./mail-rules";
 import {
@@ -609,8 +610,36 @@ export function markActionDone(actionKey: string, now = new Date()): boolean {
       `INSERT INTO morning_action_done (action_key, done_on, done_at) VALUES (?, ?, ?)
        ON CONFLICT(action_key, done_on) DO NOTHING`,
     )
-    .run(actionKey, now.toISOString().slice(0, 10), now.toISOString());
+    .run(actionKey, parisDate(now), now.toISOString());
   return Number(r.changes) > 0;
+}
+
+/**
+ * « Tout traiter » du Plan : traite les situations que l'écran affiche, et
+ * uniquement elles.
+ *
+ * `planned` est le Plan recalculé côté serveur ; `shownKeys` les clés que le
+ * navigateur affichait au moment du geste. L'intersection garantit qu'aucune
+ * situation qu'aucun œil n'a vue n'est marquée traitée — ni une huitième qui
+ * aurait remplacé une situation entre-temps, ni une situation hors du Plan.
+ * Sans `shownKeys` (appel ancien), le Plan recalculé est traité tel quel : il
+ * est lui-même plafonné.
+ *
+ * Chaque situation suit le double effet de « action_faite » : traitée pour la
+ * journée, message acquitté quand il y en a un.
+ */
+export function completeShownActions(
+  planned: { key: string; messageId: string | null }[],
+  shownKeys: ReadonlySet<string> | null,
+  now = new Date(),
+): number {
+  let changed = 0;
+  for (const a of planned) {
+    if (shownKeys && !shownKeys.has(a.key)) continue;
+    if (markActionDone(a.key, now)) changed += 1;
+    if (a.messageId) acknowledgeEvent(a.messageId);
+  }
+  return changed;
 }
 
 /** Clés des actions déjà faites aujourd'hui. */
@@ -618,7 +647,7 @@ export function doneActionKeys(now = new Date()): Set<string> {
   const db = getDb();
   const rows = db
     .prepare("SELECT action_key FROM morning_action_done WHERE done_on = ?")
-    .all(now.toISOString().slice(0, 10)) as { action_key: string }[];
+    .all(parisDate(now)) as { action_key: string }[];
   return new Set(rows.map((r) => r.action_key));
 }
 

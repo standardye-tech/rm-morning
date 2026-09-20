@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import {
   acknowledgeAllEvents,
   acknowledgeEvent,
+  completeShownActions,
   markActionDone,
   syncMorningEvents,
 } from "@/lib/morning-events";
@@ -22,6 +23,8 @@ export async function POST(request: Request) {
     messageId?: string;
     actionKey?: string;
     category?: string;
+    /** Clés des situations que le navigateur affiche : « Tout traiter » ne va pas au-delà. */
+    keys?: string[];
   };
 
   switch (body.action) {
@@ -61,12 +64,16 @@ export async function POST(request: Request) {
       // Chaque action suit exactement le même double effet que
       // « action_faite » : faite pour aujourd'hui, message acquitté quand il
       // y en a un.
+      //
+      // Le plan recalculé est ensuite RESTREINT aux clés que l'écran affiche :
+      // « Tout traiter » ne marque jamais une situation que Sami n'a pas vue —
+      // ni une huitième qui aurait remplacé une acquittée entre-temps, ni une
+      // situation filtrée hors du Plan.
       const plan = buildMorningPlan();
-      let changed = 0;
-      for (const a of plan.actions) {
-        if (markActionDone(a.key)) changed += 1;
-        if (a.messageId) acknowledgeEvent(a.messageId);
-      }
+      const shown = Array.isArray(body.keys)
+        ? new Set(body.keys.filter((k): k is string => typeof k === "string"))
+        : null;
+      const changed = completeShownActions(plan.actions, shown);
       return NextResponse.json({ ok: true, changed });
     }
     case "trier": {

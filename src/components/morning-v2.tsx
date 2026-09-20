@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 
 import { Badge, Card, EmptyState, SectionTitle } from "@/components/ui";
 import {
-  REASON_LABEL,
+  ASK_LABEL,
   received,
   type MorningAction,
   type MorningEvent,
@@ -411,7 +411,10 @@ const REASON_TONE: Record<string, "neutral" | "positive" | "warning" | "danger">
   client_attend: "warning",
   affaire_decisive: "neutral",
   a_challenger_vivante: "warning",
+  a_challenger_figee: "warning",
   proche_signature: "positive",
+  pipe_faible: "danger",
+  affaires_figees: "warning",
 };
 
 /**
@@ -444,10 +447,10 @@ function DoneCheckbox({
         checked={done}
         disabled={done}
         onChange={() => onDone(actionKey, messageId)}
-        aria-label="Marquer cette action comme faite"
+        aria-label="Marquer cette situation comme traitée"
         className="h-4 w-4 cursor-pointer rounded border-line accent-[var(--color-positive)]"
       />
-      {done ? "✓ fait" : "Done"}
+      {done ? "✓ traité" : "Traité"}
     </label>
   );
 }
@@ -468,35 +471,36 @@ export function TodayPlan({
   board,
 }: {
   actions: MorningAction[];
-  /** Actions déjà cochées aujourd'hui. Comptées, jamais listées. */
+  /** Situations déjà traitées aujourd'hui. Comptées, jamais listées. */
   doneToday?: number;
   board: Board;
 }) {
-  const [expanded, setExpanded] = useState(false);
   const done = board.doneActions;
 
   // Ce qui a été traité dans les blocs du dessus sort du plan, tout de suite.
   // Ce qui a été coché ICI reste visible, estompé : c'est le geste habituel.
+  // Le Plan est court par construction (7 situations au plus, voir
+  // `MORNING_PLAN`) : il n'y a ni « voir tout » ni pagination.
   const visible = actions.filter(
     (a) => !(echoesMessage(a) && board.handledAbove.has(a.messageId!) && !done.has(a.key)),
   );
   const removed = actions.length - visible.length;
-  const shown = expanded ? visible : visible.slice(0, VISIBLE);
   const remainingActions = visible.filter((a) => !done.has(a.key));
   const remaining = remainingActions.length;
+  // GMV concernée : celle des situations affichées. Une affaire n'est jamais
+  // comptée deux fois (le Plan ne la propose qu'une fois).
+  const concerned = visible.reduce((t, a) => t + (a.gmv ?? 0), 0);
 
   return (
     <Card className="ring-1 ring-ink/5">
       <SectionTitle
         eyebrow="Plan du jour"
-        title="À faire aujourd'hui"
+        title={`${visible.length} situation${visible.length > 1 ? "s" : ""} · ${kEur(concerned)} de GMV concernés`}
         aside={
           <span className="flex items-center gap-3">
-            <span>
-              {doneToday > 0
-                ? `${visible.length} action(s) · ${doneToday} faite(s) aujourd'hui`
-                : `${visible.length} action(s)`}
-            </span>
+            {doneToday > 0 ? (
+              <span>{`${doneToday} traitée${doneToday > 1 ? "s" : ""} aujourd'hui`}</span>
+            ) : null}
             <MarkAllButton
               count={remaining}
               busy={board.busy}
@@ -508,24 +512,24 @@ export function TodayPlan({
       />
       {removed > 0 ? (
         <p className="border-b border-line px-4 py-2 text-xs text-ink-faint md:px-6">
-          {removed} action(s) retirée(s) : déjà traitée(s) dans les blocs ci-dessus.
+          {removed} situation(s) retirée(s) : déjà traitée(s) dans les blocs ci-dessus.
         </p>
       ) : null}
       {visible.length === 0 ? (
         <EmptyState>
           {doneToday > 0
-            ? `Plan du jour terminé — ${doneToday} action(s) traitée(s) aujourd'hui.`
-            : "Rien de prioritaire à lancer ce matin."}
+            ? `Plan du jour terminé — ${doneToday} situation(s) traitée(s) aujourd'hui.`
+            : "Aucune situation ne demande votre attention ce matin."}
         </EmptyState>
       ) : (
         <>
           {remaining === 0 ? (
             <p className="border-b border-line bg-positive-soft px-4 py-2.5 text-sm text-positive md:px-6">
-              Tout est traité. Les actions cochées disparaîtront au prochain affichage.
+              Tout est traité. Les situations traitées disparaîtront au prochain affichage.
             </p>
           ) : null}
           <ol className="divide-y divide-line">
-            {shown.map((a, i) => (
+            {visible.map((a, i) => (
               <li
                 key={a.key}
                 className={`flex gap-3 px-4 py-3.5 md:gap-4 md:px-6 ${
@@ -537,22 +541,19 @@ export function TodayPlan({
                 </span>
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                    <span className="font-medium">{a.client}</span>
-                    <span className="text-xs text-ink-soft">{a.salesperson ?? "commercial à identifier"}</span>
-                    <span className="tabular text-xs font-medium">{kEur(a.gmv)}</span>
-                    <Badge tone={REASON_TONE[a.reason] ?? "neutral"}>{REASON_LABEL[a.reason]}</Badge>
+                    <span className="font-medium">{a.title}</span>
+                    <Badge tone={REASON_TONE[a.reason] ?? "neutral"}>{ASK_LABEL[a.reason]}</Badge>
                   </div>
-                  <p className="mt-1 text-[15px] leading-snug">{a.todo}</p>
-                  <p className="mt-0.5 text-xs text-ink-soft">{a.why}</p>
-                  {a.facts.length > 0 ? (
-                    <p className="mt-1 text-xs text-ink-faint">{a.facts.join(" · ")}</p>
-                  ) : null}
+                  {/*
+                    La justification ne dit que ce qui a compté au score : GMV,
+                    étape, signal, mouvement. Aucune phrase générée.
+                  */}
+                  <p className="mt-1 text-xs text-ink-soft">{a.detail}</p>
                 </div>
                 {/*
-                  La case est portée par TOUTES les actions, y compris celles qui
-                  ne viennent d'aucun message : c'était précisément le manque —
-                  une affaire décisive ou proche de la signature n'avait aucun
-                  moyen d'être clôturée pour la journée.
+                  « Traité » veut dire : Sami a vu et arbitré cette situation
+                  aujourd'hui. Cela ne crée aucune relance : demain, le Plan repart
+                  de l'état courant et la situation revient si elle persiste.
                 */}
                 <div className="shrink-0 self-center">
                   <DoneCheckbox
@@ -565,20 +566,6 @@ export function TodayPlan({
               </li>
             ))}
           </ol>
-          {visible.length > VISIBLE ? (
-            <button
-              type="button"
-              onClick={() => setExpanded((v) => !v)}
-              className="w-full border-t border-line px-4 py-3 text-left text-sm text-ink-soft hover:text-ink md:px-6 md:py-2.5"
-            >
-              <span className="underline decoration-dotted">
-                {expanded ? "Replier" : `Voir toutes les actions (${visible.length})`}
-              </span>
-              <span className="ml-1" aria-hidden>
-                {expanded ? "▴" : "▾"}
-              </span>
-            </button>
-          ) : null}
         </>
       )}
     </Card>
@@ -648,10 +635,10 @@ export function MorningBoard({
     const messageIds = targets.filter((t) => t.messageId).map((t) => t.messageId!);
     if (messageIds.length > 0) setAcknowledged((s) => add(s, messageIds));
     start(async () => {
-      // La liste est RECALCULÉE côté serveur (voir la route) : ce qui est fait
-      // est ce que le Plan affiche à cet instant, pas ce qu'un onglet resté
-      // ouvert enverrait.
-      await post({ action: "tout_faire" });
+      // La liste est RECALCULÉE côté serveur (voir la route), puis restreinte
+      // aux clés ci-dessous : « Tout traiter » ne traite que ce qui est affiché
+      // à l'écran, jamais une situation qu'aucun œil n'a vue.
+      await post({ action: "tout_faire", keys: targets.map((t) => t.key) });
     });
   };
 

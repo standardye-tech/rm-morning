@@ -21,7 +21,8 @@
  */
 
 import { getDb } from "./db";
-import { matchTeamMember, todayIso } from "./normalize";
+import { parisDate } from "./business-time";
+import { matchTeamMember } from "./normalize";
 import { FORECAST_SHEET } from "./config";
 import {
   forecastMonthsAround,
@@ -74,7 +75,7 @@ export async function importForecastSnapshots(
   options: { referenceDate?: string; months?: string[] } = {},
 ): Promise<ForecastImportSummary> {
   const startedAt = Date.now();
-  const today = options.referenceDate ?? todayIso();
+  const today = options.referenceDate ?? parisDate();
   const months =
     options.months ??
     forecastMonthsAround(today, FORECAST_SHEET.monthsBack, FORECAST_SHEET.monthsForward);

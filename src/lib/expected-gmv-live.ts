@@ -73,6 +73,10 @@ export type ExpectedGmvSalesperson = {
   expected7d: number;
   expectedMonthEnd: number;
   signedGmv: number;
+  /** Affaires distinctes signées ce mois. */
+  signedCount: number;
+  /** Lignes Travaux correspondantes. */
+  signedLines: number;
   expectedFinish: number;
   opportunities: ExpectedGmvOpportunity[];
 };
@@ -144,7 +148,10 @@ export type ExpectedGmvSnapshot = {
     openGmv: number;
     expected7d: number;
     signedGmv: number;
+    /** Affaires distinctes signées ce mois. */
     signedCount: number;
+    /** Lignes Travaux correspondantes (avenants et annulations compris). */
+    signedLines: number;
     expectedRemaining: number;
     expectedFinish: number;
     /** Quantiles du finish : signé à date + simulation du restant. */
@@ -291,7 +298,19 @@ export function buildExpectedGmvSnapshot(): ExpectedGmvSnapshot | null {
   // du pipe les affaires déjà signées — c'est une question d'événement, pas de
   // montant — mais elle ne chiffre plus le réalisé.
   const official = officialSignedGmv(snap.month);
-  const signedRows = official.bySalesperson.map((s) => ({ owner: s.salesperson, gmv: s.gmv }));
+  const signedRows = official.bySalesperson.map((s) => ({
+    owner: s.salesperson,
+    gmv: s.gmv,
+    lines: s.lines,
+  }));
+  // Affaires distinctes par commercial (les lignes Travaux ne sont pas des affaires).
+  const signedDealsByOwner = new Map<string, Set<string>>();
+  for (const line of official.rows) {
+    if (!line.salesperson || !line.opportunityId) continue;
+    const set = signedDealsByOwner.get(line.salesperson) ?? new Set<string>();
+    set.add(line.opportunityId);
+    signedDealsByOwner.set(line.salesperson, set);
+  }
 
   const issues: string[] = [];
   const seen = new Set<string>();
@@ -393,7 +412,7 @@ export function buildExpectedGmvSnapshot(): ExpectedGmvSnapshot | null {
   for (const s of signedRows) {
     const owner = matchTeamMember(s.owner)?.name ?? s.owner;
     const cur = signedByOwner.get(owner) ?? { gmv: 0, count: 0 };
-    signedByOwner.set(owner, { gmv: cur.gmv + s.gmv, count: cur.count + 1 });
+    signedByOwner.set(owner, { gmv: cur.gmv + s.gmv, count: cur.count + s.lines });
   }
 
   const owners = new Set<string>([...opportunities.map((o) => o.owner), ...signedByOwner.keys()]);
@@ -409,6 +428,8 @@ export function buildExpectedGmvSnapshot(): ExpectedGmvSnapshot | null {
         expected7d: own.reduce((t, o) => t + o.expected7d, 0),
         expectedMonthEnd,
         signedGmv: signed,
+        signedCount: signedDealsByOwner.get(owner)?.size ?? 0,
+        signedLines: signedByOwner.get(owner)?.count ?? 0,
         expectedFinish: signed + expectedMonthEnd,
         opportunities: own,
       };
@@ -453,7 +474,10 @@ export function buildExpectedGmvSnapshot(): ExpectedGmvSnapshot | null {
       openGmv: salespeople.reduce((t, s) => t + s.openGmv, 0),
       expected7d: salespeople.reduce((t, s) => t + s.expected7d, 0),
       signedGmv,
-      signedCount: official.lines,
+      // Affaires DISTINCTES, pas lignes Travaux : une affaire porte l'originale,
+      // ses avenants et ses annulations.
+      signedCount: official.opportunities,
+      signedLines: official.lines,
       expectedRemaining,
       // EC3 — le finish est cette somme et rien d'autre.
       expectedFinish: signedGmv + expectedRemaining,

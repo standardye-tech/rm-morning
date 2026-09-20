@@ -19,13 +19,28 @@
  * lit une raison, pas une formule.
  */
 
-import { MORNING_PRIORITY } from "./config";
+import { ATTENTION, MORNING_PLAN, MORNING_PRIORITY } from "./config";
+import { parisDate } from "./business-time";
 import { buildExpectedGmvSnapshot, type ExpectedGmvOpportunity } from "./expected-gmv-live";
 import { buildForecastV2, type ForecastV2Row } from "./forecast-v2";
+import { computeMetrics } from "./metrics";
 import { doneActionKeys, loadMorningEvents, type MorningEvent } from "./morning-events";
+import {
+  absenceSignals,
+  hasManagerialMotive,
+  joinDetail,
+  selectSituations,
+  type AbsenceSignals,
+} from "./morning-plan-select";
+import { loadOpportunities } from "./repository";
+import { loadStageStability } from "./stage-history";
+import { isStagnant, movementText, stagnantDeals } from "./stagnation";
+import { loadTeam } from "./team-store";
+import type { Opportunity } from "./types";
+import { clientLabel, kEur } from "./vocabulary";
 
 export type { MorningAction, MorningReason } from "./morning-types";
-export { REASON_LABEL, received } from "./morning-types";
+export { ASK_LABEL, REASON_LABEL, received } from "./morning-types";
 import type { MorningAction } from "./morning-types";
 import { received } from "./morning-types";
 
@@ -56,28 +71,69 @@ function weightGmv(gmv: number | null): number {
   return Math.min(1, Math.log10(1 + gmv / 1000) / Math.log10(1 + MORNING_PRIORITY.gmvReference / 1000));
 }
 
+/** Poids du GMV d'une situation par commercial : même courbe, saturation plus haute. */
+function weightOwnerGmv(gmv: number | null): number {
+  if (!gmv || gmv <= 0) return 0;
+  return Math.min(1, Math.log10(1 + gmv / 1000) / Math.log10(1 + MORNING_PLAN.ownerGmvReference / 1000));
+}
+
 export type MorningPlan = {
+  /**
+   * Les situations à traiter maintenant. Jamais plus de `MORNING_PLAN.maxSituations`
+   * PAR JOUR, traitées comprises : le budget du jour est `maxSituations` moins
+   * celles que Sami a déjà marquées « traitées » aujourd'hui. Traiter une
+   * situation ne fait donc jamais remonter la huitième — le Plan ne devient pas
+   * un tapis roulant.
+   */
   actions: MorningAction[];
-  /** Actions du jour déjà cochées. Comptées, jamais listées : le plan reste court. */
+  /** Situations marquées « traitées » aujourd'hui. Comptées, jamais listées. */
   doneToday: number;
+  /**
+   * Le vivier avant sélection : combien de situations candidates, par famille, et
+   * leurs clés. Observation (journal, contrôles), jamais affiché.
+   */
+  pool: { total: number; byCategory: Record<string, number>; keys: string[] };
   hot: MorningEvent[];
   waiting: MorningEvent[];
   /** Affaires écartées du haut de Morning faute de signe de vie. */
   silentButStrong: { client: string; salesperson: string; gmv: number | null; expected: number }[];
 };
 
+type OwnerAbsence = AbsenceSignals & {
+  stagnant: Opportunity[];
+  activeGmv: number;
+  activeCount: number;
+};
+
 /**
  * Construit le plan du matin.
  *
+ * Le Plan est une liste COURTE de situations managériales, recalculée en entier
+ * depuis l'état courant : aucune tâche persistante, aucun report. Cinq familles
+ * portent sur une affaire (client qui parle, client qui attend, affaire
+ * décisive, affaire à challenger, proche de la signature) et deux sur un
+ * commercial (pipe insuffisant, affaires figées), reprises d'`attention.ts`.
+ *
  * Aucune anomalie de suivi n'entre ici du seul fait qu'elle existe : les
  * relances manquées, First Calls et dossiers dormants restent dans Monitoring.
- * Une affaire n'apparaît que si elle porte une valeur immédiate — un client qui
- * parle, ou un poids décisif sur le mois.
+ *
+ * Une affaire lourde n'est pas une situation parce qu'elle est lourde : il faut
+ * qu'elle appelle le manager (à challenger, figée, ou le client parle). Une
+ * grosse affaire qui avance normalement chez un commercial autonome n'occupe
+ * pas le Plan.
  */
 export function buildMorningPlan(now = new Date()): MorningPlan {
+  const today = parisDate(now);
   const { events } = loadMorningEvents();
   const snapshot = buildExpectedGmvSnapshot();
-  const board = buildForecastV2(0);
+  const board = buildForecastV2(0, null, now);
+
+  const team = loadTeam();
+  const firstNameOf = new Map<string, string>(team.map((m) => [m.name, m.firstName]));
+  const excludedOwners = new Set<string>(ATTENTION.excluded);
+  const opportunities = loadOpportunities();
+  const oppById = new Map(opportunities.map((o) => [o.opportunityId, o]));
+  const stability = loadStageStability(today);
 
   const expectedById = new Map<string, ExpectedGmvOpportunity>(
     (snapshot?.opportunities ?? []).map((o) => [o.opportunityId, o]),
@@ -112,8 +168,58 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
   // découle) en tient compte.
   const waiting = pending.filter((e) => e.category === "attente" && e.awaitingReply);
 
-  const actions: MorningAction[] = [];
+  const spoke = new Map<string, MorningEvent>();
+  for (const e of pending) if (e.opportunityId) spoke.set(e.opportunityId, e);
+
+  // --- Absences de signal par commercial. Calculées d'abord : « N affaires
+  //     figées » remplace les situations individuelles « figée » de ces affaires.
+  const absence = new Map<string, OwnerAbsence>();
+  const pipeByOwner = new Map(computeMetrics(opportunities, today).owners.map((o) => [o.owner, o]));
+  for (const member of team) {
+    if (excludedOwners.has(member.name)) continue;
+    const mine = opportunities.filter((o) => o.isActive && o.owner === member.name);
+    const stagnant = stagnantDeals(mine, stability, today);
+    const pipeRow = pipeByOwner.get(member.name);
+    const activeGmv = pipeRow?.activeGmv ?? 0;
+    const signals = absenceSignals({
+      salesperson: member.name,
+      firstName: member.firstName,
+      activeCount: mine.length,
+      activeGmv,
+      staleCount: pipeRow?.staleCount ?? 0,
+      stagnant: {
+        count: stagnant.length,
+        minProvenDays: stagnant.length
+          ? Math.min(...stagnant.map((o) => stability.get(o.opportunityId)!.provenDays))
+          : 0,
+        examples: stagnant.slice(0, 3).map((o) => clientLabel(o.clientContact, o.name)),
+      },
+    });
+    absence.set(member.name, { ...signals, stagnant, activeGmv, activeCount: mine.length });
+  }
+  /** Affaires déjà couvertes par une situation « N affaires figées » : pas de doublon individuel. */
+  const coveredByFrozen = new Set<string>();
+  for (const a of absence.values()) {
+    if (a.frozen) for (const o of a.stagnant) coveredByFrozen.add(o.opportunityId);
+  }
+
+  const candidates: MorningAction[] = [];
   const seen = new Set<string>();
+
+  const who = (owner: string | null) => ({
+    owner,
+    ownerFirstName: owner ? (firstNameOf.get(owner) ?? owner.split(" ")[0]) : null,
+    salesperson: owner,
+  });
+  const nameOf = (first: string | null) => first ?? "Commercial à identifier";
+  const expectedText = (id: string | null): string | null => {
+    const e = id ? expectedById.get(id) : undefined;
+    return e ? `${(e.pMonthEnd * 100).toFixed(0)} % de chance de signer ce mois` : null;
+  };
+  const moveText = (id: string | null): string | null => {
+    const o = id ? oppById.get(id) : undefined;
+    return o ? movementText(o, stability, today) : null;
+  };
 
   /** Indicateurs affichables d'une affaire, en langage métier. */
   const factsOf = (id: string | null): string[] => {
@@ -136,7 +242,7 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
   const push = (a: MorningAction) => {
     if (seen.has(a.key)) return;
     seen.add(a.key);
-    actions.push(a);
+    candidates.push(a);
   };
 
   // 1. Client explicitement motivé. La priorité la plus haute du Morning :
@@ -144,21 +250,34 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
   for (const e of hot) {
     const id = e.opportunityId;
     const exp = id ? expectedById.get(id) : undefined;
+    const o = who(e.salesperson);
+    const client = e.client ?? "Client non identifié";
     push({
       key: `chaud:${e.messageId}`,
       reason: "client_motive",
+      category: "chaud",
+      source: "gmail",
       why: e.reason,
       todo: e.salesperson
         ? `Appeler ${e.salesperson} pour qu'il traite ce client aujourd'hui`
         : "Identifier le commercial et faire traiter la demande aujourd'hui",
-      client: e.client ?? "Client non identifié",
-      salesperson: e.salesperson,
+      title: `${nameOf(o.ownerFirstName)} — ${client} veut avancer`,
+      detail: joinDetail([
+        e.gmv != null && kEur(e.gmv),
+        e.stage,
+        `message reçu ${received(e.sentAt, now)}`,
+        moveText(id),
+        expectedText(id),
+      ]),
+      client,
+      ...o,
       gmv: e.gmv,
       stage: e.stage,
       facts: [received(e.sentAt, now), ...factsOf(id)],
       messageId: e.messageId,
       receivedAt: e.sentAt,
       opportunityId: id,
+      opportunityIds: id ? [id] : [],
       score:
         MORNING_PRIORITY.weightMotivated +
         MORNING_PRIORITY.weightFreshness * freshness(e.sentAt, now) +
@@ -174,21 +293,34 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
   for (const e of waiting) {
     const id = e.opportunityId;
     const exp = id ? expectedById.get(id) : undefined;
+    const o = who(e.salesperson);
+    const client = e.client ?? "Client non identifié";
     push({
       key: `attente:${e.messageId}`,
       reason: "client_attend",
+      category: "attente",
+      source: "gmail",
       why: e.reason,
       todo: e.salesperson
         ? `Faire répondre ${e.salesperson} aujourd'hui`
         : "Identifier le commercial et faire répondre aujourd'hui",
-      client: e.client ?? "Client non identifié",
-      salesperson: e.salesperson,
+      title: `${nameOf(o.ownerFirstName)} — ${client} attend une réponse`,
+      detail: joinDetail([
+        e.gmv != null && kEur(e.gmv),
+        e.stage,
+        `message reçu ${received(e.sentAt, now)}`,
+        moveText(id),
+        expectedText(id),
+      ]),
+      client,
+      ...o,
       gmv: e.gmv,
       stage: e.stage,
       facts: [received(e.sentAt, now), ...factsOf(id)],
       messageId: e.messageId,
       receivedAt: e.sentAt,
       opportunityId: id,
+      opportunityIds: id ? [id] : [],
       score:
         MORNING_PRIORITY.weightWaiting +
         MORNING_PRIORITY.weightFreshness * freshness(e.sentAt, now) +
@@ -198,14 +330,14 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
     });
   }
 
-  const spoke = new Map<string, MorningEvent>();
-  for (const e of pending) if (e.opportunityId) spoke.set(e.opportunityId, e);
-
   // 3. Affaires décisives pour le mois : présentes dans Perspective ou prévues
-  //    par le commercial, et suffisamment lourdes. Elles entrent même sans mail,
-  //    parce que le mois se joue dessus — mais après les clients qui parlent.
+  //    par le commercial, et suffisamment lourdes. Elles n'entrent QUE si un
+  //    motif managérial les appelle — à challenger, figée, ou client qui écrit.
+  //    Le poids seul ne suffit plus : une grosse affaire qui avance normalement
+  //    chez un commercial autonome n'a pas besoin du manager aujourd'hui.
   for (const row of board.salespeople.flatMap((s) => s.opportunities)) {
     const id = row.opportunityId;
+    if (excludedOwners.has(row.owner)) continue;
     const exp = expectedById.get(id);
     const decisive =
       (kanbanIds.has(id) || perspectiveIds.has(id)) &&
@@ -213,55 +345,95 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
       !row.frozenMonthEnd;
     if (!decisive) continue;
     const e = spoke.get(id);
+    const opp = oppById.get(id);
+    const stalled = opp ? isStagnant(opp, stability, today) : false;
+    if (!hasManagerialMotive({ inChallenge: challengeIds.has(id), stalled, clientSpoke: !!e })) continue;
+    // Le pipe figé du commercial est déjà porté, en une ligne, par « N affaires figées ».
+    if (stalled && !e && !challengeIds.has(id) && coveredByFrozen.has(id)) continue;
+    const o = who(row.owner);
     push({
       key: `decisive:${id}`,
       reason: "affaire_decisive",
+      category: "decisive",
+      source: "forecast",
       why: e
         ? `Pèse lourd sur le mois, et le client vient d'écrire`
         : "Pèse lourd sur le mois et engage la prévision de l'équipe",
       todo: `Obtenir de ${row.owner} un point précis sur cette affaire`,
+      title: `${nameOf(o.ownerFirstName)} — ${row.client} pèse sur le mois`,
+      detail: joinDetail([
+        row.gmv != null && kEur(row.gmv),
+        row.stage,
+        e && `client a écrit ${received(e.sentAt, now)}`,
+        moveText(id),
+        challengeIds.has(id) && "à challenger",
+        expectedText(id),
+      ]),
       client: row.client,
-      salesperson: row.owner,
+      ...o,
       gmv: row.gmv,
       stage: row.stage,
       facts: [...(e ? [received(e.sentAt, now)] : []), ...factsOf(id)],
       messageId: e?.messageId ?? null,
       receivedAt: e?.sentAt ?? null,
       opportunityId: id,
+      opportunityIds: [id],
       score:
         MORNING_PRIORITY.weightDecisive +
         MORNING_PRIORITY.weightGmv * weightGmv(row.gmv) +
         MORNING_PRIORITY.weightExpected * (exp?.pMonthEnd ?? 0) +
-        (e ? MORNING_PRIORITY.weightFreshness * freshness(e.sentAt, now) : 0),
+        (e ? MORNING_PRIORITY.weightFreshness * freshness(e.sentAt, now) : 0) +
+        (stalled ? MORNING_PLAN.bonusStalled : 0) +
+        (challengeIds.has(id) ? MORNING_PRIORITY.bonusChallenge : 0),
     });
   }
 
-  // 4. Affaire à challenger DONT le client donne signe de vie. Une affaire
-  //    jaune silencieuse reste dans Forecast : elle n'est pas actionnable ce
-  //    matin. La liste « À challenger » n'est pas recalculée ici, elle est lue.
+  // 4. Affaire à challenger. Vivante (le client écrit) ou figée (aucun mouvement
+  //    depuis au moins 14 jours). Une affaire jaune silencieuse ET qui avance
+  //    reste dans Forecast : elle n'est pas actionnable ce matin. La liste
+  //    « À challenger » n'est pas recalculée ici, elle est lue.
   for (const item of board.examine) {
     const id = item.row.opportunityId;
+    if (excludedOwners.has(item.row.owner)) continue;
     const e = spoke.get(id);
-    if (!e) continue;
+    const opp = oppById.get(id);
+    const stalled = opp ? isStagnant(opp, stability, today) : false;
+    if (!e && !stalled) continue;
+    if (!e && coveredByFrozen.has(id)) continue;
     const exp = expectedById.get(id);
+    const o = who(item.row.owner);
     push({
       key: `challenge:${id}`,
-      reason: "a_challenger_vivante",
-      why: `${item.reason}, et le client vient d'écrire`,
+      reason: e ? "a_challenger_vivante" : "a_challenger_figee",
+      category: "challenge",
+      source: "forecast",
+      why: e ? `${item.reason}, et le client vient d'écrire` : `${item.reason}, et l'affaire ne bouge plus`,
       todo: `Décider avec ${item.row.owner} si l'affaire rentre sur le mois`,
+      title: e
+        ? `${nameOf(o.ownerFirstName)} — ${item.row.client} à challenger, le client a écrit`
+        : `${nameOf(o.ownerFirstName)} — ${item.row.client} à challenger, sans mouvement`,
+      detail: joinDetail([
+        item.row.gmv != null && kEur(item.row.gmv),
+        item.row.stage,
+        e && `client a écrit ${received(e.sentAt, now)}`,
+        moveText(id),
+        item.reason,
+      ]),
       client: item.row.client,
-      salesperson: item.row.owner,
+      ...o,
       gmv: item.row.gmv,
       stage: item.row.stage,
-      facts: [received(e.sentAt, now), ...factsOf(id)],
-      messageId: e.messageId,
-      receivedAt: e.sentAt,
+      facts: [...(e ? [received(e.sentAt, now)] : []), ...factsOf(id)],
+      messageId: e?.messageId ?? null,
+      receivedAt: e?.sentAt ?? null,
       opportunityId: id,
+      opportunityIds: [id],
       score:
         MORNING_PRIORITY.weightChallenge +
-        MORNING_PRIORITY.weightFreshness * freshness(e.sentAt, now) +
+        (e ? MORNING_PRIORITY.weightFreshness * freshness(e.sentAt, now) : 0) +
         MORNING_PRIORITY.weightGmv * weightGmv(item.row.gmv) +
-        MORNING_PRIORITY.weightExpected * (exp?.pMonthEnd ?? 0),
+        MORNING_PRIORITY.weightExpected * (exp?.pMonthEnd ?? 0) +
+        (stalled ? MORNING_PLAN.bonusStalled : 0),
     });
   }
 
@@ -269,20 +441,34 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
   //    cas où l'absence de mail ne disqualifie pas : le dossier est au bout.
   for (const o of snapshot?.opportunities ?? []) {
     if (o.stage !== "Signature" || o.frozenMonthEnd) continue;
+    if (excludedOwners.has(o.owner)) continue;
     const e = spoke.get(o.opportunityId);
+    const w = who(o.owner);
+    const client = o.client ?? o.opportunityId;
     push({
       key: `signature:${o.opportunityId}`,
       reason: "proche_signature",
+      category: "signature",
+      source: "salesforce",
       why: e ? "En signature, et le client vient d'écrire" : "En étape Signature",
       todo: `Vérifier avec ${o.owner} ce qui manque pour signer`,
-      client: o.client ?? o.opportunityId,
-      salesperson: o.owner,
+      title: `${nameOf(w.ownerFirstName)} — ${client} en signature, à sécuriser`,
+      detail: joinDetail([
+        kEur(o.gmv),
+        o.stage,
+        e && `client a écrit ${received(e.sentAt, now)}`,
+        moveText(o.opportunityId),
+        expectedText(o.opportunityId),
+      ]),
+      client,
+      ...w,
       gmv: o.gmv,
       stage: o.stage,
       facts: [...(e ? [received(e.sentAt, now)] : []), ...factsOf(o.opportunityId)],
       messageId: e?.messageId ?? null,
       receivedAt: e?.sentAt ?? null,
       opportunityId: o.opportunityId,
+      opportunityIds: [o.opportunityId],
       score:
         MORNING_PRIORITY.weightSignature +
         MORNING_PRIORITY.weightGmv * weightGmv(o.gmv) +
@@ -291,14 +477,97 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
     });
   }
 
-  actions.sort((a, b) => b.score - a.score);
+  // 6. Absences de signal, par commercial. Un commercial au pipe faible ne
+  //    produit aucun mail, aucune affaire décisive : sans cette famille il
+  //    resterait invisible, alors que son silence est justement le sujet.
+  //    Les règles et les seuils sont ceux d'`attention.ts`, pas une copie.
+  for (const [name, a] of absence) {
+    const first = firstNameOf.get(name) ?? name.split(" ")[0];
+    if (a.frozen && a.stagnant.length > 0) {
+      const gmv = a.stagnant.reduce((t, o) => t + (o.gmv ?? 0), 0);
+      const share = a.activeCount > 0 ? Math.round((a.stagnant.length / a.activeCount) * 100) : 0;
+      push({
+        key: `figees:${name}`,
+        reason: "affaires_figees",
+        category: "figees",
+        source: "salesforce",
+        why: a.frozen.detail,
+        todo: `Challenger ${name} sur les prochaines étapes de ses affaires figées`,
+        title: `${first} — ${a.stagnant.length} affaires figées · ${kEur(gmv)} concernés`,
+        detail: joinDetail([
+          a.frozen.detail,
+          `${share} % du pipe actif`,
+          a.stagnant
+            .slice(0, 3)
+            .map((o) => clientLabel(o.clientContact, o.name))
+            .join(", "),
+        ]),
+        client: "",
+        ...who(name),
+        gmv,
+        stage: null,
+        facts: [a.frozen.detail],
+        messageId: null,
+        receivedAt: null,
+        opportunityId: null,
+        opportunityIds: a.stagnant.map((o) => o.opportunityId),
+        score:
+          MORNING_PLAN.weightFrozen +
+          MORNING_PRIORITY.weightGmv * weightOwnerGmv(gmv) +
+          MORNING_PLAN.weightFrozenShare * (a.activeCount > 0 ? a.stagnant.length / a.activeCount : 0),
+      });
+    }
+    if (a.pipe) {
+      const shortfall = Math.max(0, Math.min(1, (ATTENTION.lowPipeGmv - a.activeGmv) / ATTENTION.lowPipeGmv));
+      push({
+        key: `pipe_faible:${name}`,
+        reason: "pipe_faible",
+        category: "pipe_faible",
+        source: "salesforce",
+        why: a.pipe.detail,
+        todo: `Faire reconstituer le pipe de ${name}`,
+        title: `${first} — pipe insuffisant : ${kEur(a.activeGmv)}`,
+        detail: joinDetail([
+          `${a.activeCount} affaire(s) active(s)`,
+          `${kEur(a.activeGmv)} de pipe actif`,
+          `sous le seuil de ${kEur(ATTENTION.lowPipeGmv)}`,
+        ]),
+        client: "",
+        ...who(name),
+        gmv: a.activeGmv,
+        stage: null,
+        facts: [a.pipe.detail],
+        messageId: null,
+        receivedAt: null,
+        opportunityId: null,
+        opportunityIds: [],
+        score: MORNING_PLAN.weightLowPipe + MORNING_PRIORITY.weightGmv * shortfall,
+      });
+    }
+  }
 
-  // Ce qui a été coché aujourd'hui sort du plan. Le filtre est appliqué APRÈS le
-  // tri et après le calcul des « affaires prometteuses mais silencieuses » : une
-  // action faite reste une action que Morning a bien retenue, elle ne doit pas
-  // réapparaître ailleurs sous prétexte qu'elle a quitté cette liste.
+  // Sélection : au plus N par commercial, jamais la même affaire deux fois,
+  // plafond global absolu.
+  //
+  // Le plafond est un BUDGET JOURNALIER : `maxSituations` moins ce qui a déjà
+  // été traité aujourd'hui. Sans cela, traiter les sept situations et recharger
+  // la page ferait remonter les sept suivantes — un backlog déguisé, alors que
+  // « traité » veut seulement dire « vu et arbitré aujourd'hui ». Les familles
+  // nées d'un mail comptent aussi contre leur propre plafond, traitées comprises.
+  // Demain, `doneActionKeys` est vide : le Plan repart de l'état courant.
   const done = doneActionKeys(now);
-  const remaining = actions.filter((a) => !done.has(a.key));
+  const doneIn = (prefix: string) => [...done].filter((k) => k.startsWith(prefix)).length;
+  const proposed = selectSituations(
+    candidates.filter((a) => !done.has(a.key)),
+    {
+      max: Math.max(0, MORNING_PLAN.maxSituations - done.size),
+      perOwner: MORNING_PLAN.maxPerOwner,
+      perMailFamily: {
+        chaud: Math.max(0, MORNING_PLAN.maxPerMailFamily - doneIn("chaud:")),
+        attente: Math.max(0, MORNING_PLAN.maxPerMailFamily - doneIn("attente:")),
+      },
+    },
+  );
 
   // Ce que Morning a délibérément laissé de côté : fort Expected, aucun signe
   // de vie. Affiché pour que l'arbitrage soit visible et discutable.
@@ -307,7 +576,10 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
       (o) =>
         o.expectedMonthEnd >= MORNING_PRIORITY.strongExpected &&
         !spoke.has(o.opportunityId) &&
-        !actions.some((a) => a.opportunityId === o.opportunityId),
+        // Toute affaire déjà candidate au Plan reste hors de cette liste : une
+        // situation traitée ne doit pas réapparaître ici sous prétexte qu'elle a
+        // quitté le Plan.
+        !candidates.some((a) => a.opportunityIds.includes(o.opportunityId)),
     )
     .sort((a, b) => b.expectedMonthEnd - a.expectedMonthEnd)
     .slice(0, 5)
@@ -318,9 +590,13 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
       expected: o.expectedMonthEnd,
     }));
 
+  const byCategory: Record<string, number> = {};
+  for (const c of candidates) byCategory[c.category] = (byCategory[c.category] ?? 0) + 1;
+
   return {
-    actions: remaining,
-    doneToday: actions.length - remaining.length,
+    actions: proposed,
+    doneToday: done.size,
+    pool: { total: candidates.length, byCategory, keys: candidates.map((c) => c.key) },
     hot,
     waiting,
     silentButStrong,

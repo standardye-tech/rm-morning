@@ -11,8 +11,8 @@ import {
   parseFrenchDate,
   parseFrenchNumber,
   parseKanban,
-  todayIso,
 } from "./normalize";
+import { parisDate } from "./business-time";
 import type { SalesforceSource } from "./sources/salesforce";
 import { loadTeam, recordTeamCandidates } from "./team-store";
 import { isInTerritoryScope } from "./territory";
@@ -62,7 +62,7 @@ export async function importFromSource(
   options: { referenceDate?: string } = {},
 ): Promise<ImportSummary> {
   const result = await source.fetch();
-  const today = options.referenceDate ?? todayIso();
+  const today = options.referenceDate ?? parisDate();
   const db = getDb();
 
   // Le périmètre est relu à chaque import : un ajout ou un retrait fait dans

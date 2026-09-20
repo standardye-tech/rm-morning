@@ -19,6 +19,7 @@
  * Écrit uniquement dans `expected_m1_suggestion`.
  */
 
+import { businessMonth } from "./business-time";
 import { EXPECTED_M1 } from "./config";
 import { getDb } from "./db";
 import { buildForecastV2 } from "./forecast-v2";
@@ -102,7 +103,7 @@ export function recordM1Suggestions(now = new Date()): M1RecordSummary | null {
   // Une suggestion est réussie si l'affaire porte un devis Travaux ORIGINAL signé
   // dans le mois cible — exactement la cible sur laquelle le modèle a appris. Le
   // GMV relevé est le GMV OFFICIEL de l'affaire sur ce mois, avenants compris.
-  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const currentMonth = businessMonth(now);
   const pending = db
     .prepare(
       `SELECT DISTINCT target_month m FROM expected_m1_suggestion

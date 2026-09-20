@@ -59,7 +59,8 @@ import { PERFORMANCE, PERFORMANCE_MODEL_VERSION } from "./config";
 import { loadTeam } from "./team-store";
 import { buildExpectedGmvSnapshot } from "./expected-gmv-live";
 import { buildExpectedM1 } from "./expected-m1";
-import { monthKey, shiftMonth, monthLabel } from "./forecast-board";
+import { businessMonth, businessYearToDateMonths, shiftBusinessMonth } from "./business-time";
+import { monthLabel, shiftMonth } from "./forecast-board";
 import { loadLeads } from "./lead-store";
 import { officialSignedGmv } from "./official-signed";
 import { loadMilestoneOpportunities } from "./opportunity-metrics";
@@ -459,9 +460,7 @@ for (const [pillar, weight] of Object.entries(PERFORMANCE.weights)) {
 
 /** Les mois de l'année civile en cours, de janvier au mois courant inclus. */
 export function yearToDateMonths(now: Date): string[] {
-  const year = now.getFullYear();
-  const last = now.getMonth() + 1;
-  return Array.from({ length: last }, (_, i) => `${year}-${String(i + 1).padStart(2, "0")}`);
+  return businessYearToDateMonths(now);
 }
 
 /**
@@ -475,7 +474,7 @@ export function yearToDateMonths(now: Date): string[] {
  */
 export function dynamicWindows(now: Date): { recent: string[]; previous: string[] } {
   const n = PERFORMANCE.dynamicWindowMonths;
-  const lastClosed = shiftMonth(monthKey(now), -1);
+  const lastClosed = shiftBusinessMonth(businessMonth(now), -1);
   const recent = Array.from({ length: n }, (_, i) => shiftMonth(lastClosed, -i)).reverse();
   const previous = Array.from({ length: n }, (_, i) => shiftMonth(recent[0], -(i + 1))).reverse();
   return { recent, previous };
@@ -503,7 +502,7 @@ function collectRawMetrics(now: Date): {
   notes: string[];
 } {
   const notes: string[] = [];
-  const currentMonth = monthKey(now);
+  const currentMonth = businessMonth(now);
   const months = yearToDateMonths(now);
 
   // --- Signé officiel, mois par mois.
@@ -564,7 +563,7 @@ function collectRawMetrics(now: Date): {
   // d'affichage, qui n'entre dans aucun score.
   const openByOwner = new Map<string, number>();
   const firstSeen = new Map<string, string>();
-  const year = `${now.getFullYear()}-`;
+  const year = `${businessMonth(now).slice(0, 4)}-`;
   const noteFirst = (owner: string, month: string | null | undefined) => {
     if (!month || !month.startsWith(year)) return;
     const known = firstSeen.get(owner);

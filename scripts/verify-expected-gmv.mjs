@@ -242,8 +242,8 @@ const official = officialSignedGmv(snap.month);
 const driftSigned = Math.abs(snap.region.signedGmv - official.gmv);
 check(
   "EC14. Signé affiché = GMV officiel des lignes Travaux",
-  driftSigned < 0.005 && snap.region.signedCount === official.lines,
-  `${eur(snap.region.signedGmv)} vs ${eur(official.gmv)} · ${snap.region.signedCount}/${official.lines} lignes`,
+  driftSigned < 0.005 && snap.region.signedCount === official.opportunities && snap.region.signedLines === official.lines,
+  `${eur(snap.region.signedGmv)} vs ${eur(official.gmv)} · ${snap.region.signedCount}/${official.opportunities} affaires · ${snap.region.signedLines}/${official.lines} lignes`,
 );
 
 // EC9 — version et date de scoring toujours disponibles.

@@ -114,6 +114,8 @@ export type ForecastV2Salesperson = Omit<ForecastSalespersonBlock, "opportunitie
 export type ForecastV2Region = ForecastMonthBoard["region"] & {
   /** Affaires portant un Expected. Distinct de `count`, qui compte le Kanban. */
   scoredCount: number;
+  /** Lignes Travaux du signé officiel (originales, avenants, annulations). `signedCount` compte des affaires. */
+  signedLines: number;
   expectedRemaining: number;
   signedGmvActual: number;
   /** Σ reste annoncé des commerciaux (Perspective M, brut, hors signé). */
@@ -290,9 +292,13 @@ function qualify(expected: number, kanban: number, reference: number | null): Di
  * service a effectivement scoré ; pour tout autre mois il reste absent, et
  * l'interface l'annonce au lieu de l'inventer.
  */
-export function buildForecastV2(monthOffset: number, objective?: number | null): ForecastV2Board {
+export function buildForecastV2(
+  monthOffset: number,
+  objective?: number | null,
+  now: Date = new Date(),
+): ForecastV2Board {
   const horizon = (monthOffset <= 0 ? 0 : monthOffset >= 2 ? 2 : 1) as 0 | 1 | 2;
-  const board = buildForecastBoard(monthOffset, objective);
+  const board = buildForecastBoard(monthOffset, objective ?? null, now);
   const issues: string[] = [...board.issues];
 
   // L'Expected du mois ne vaut QUE pour le mois qu'il a scoré. Le lire sur un
@@ -336,6 +342,16 @@ export function buildForecastV2(monthOffset: number, objective?: number | null):
   const signedByOwner = new Map<string, number>(
     official.bySalesperson.map((s) => [s.salesperson, s.gmv]),
   );
+  // Affaires DISTINCTES signées par commercial. Une affaire porte plusieurs
+  // lignes Travaux (l'originale, ses avenants, ses annulations) : compter les
+  // lignes ferait dire « 33 affaires » pour 28.
+  const signedOppsByOwner = new Map<string, Set<string>>();
+  for (const line of official.rows) {
+    if (!line.salesperson || !line.opportunityId) continue;
+    const set = signedOppsByOwner.get(line.salesperson) ?? new Set<string>();
+    set.add(line.opportunityId);
+    signedOppsByOwner.set(line.salesperson, set);
+  }
 
   // Index du scoring M+1, même rôle que `byId` pour le mois : une seule lecture,
   // aucune reprise de calcul.
@@ -568,8 +584,12 @@ export function buildForecastV2(monthOffset: number, objective?: number | null):
         kanbanGmv,
         perspectiveGmv: block?.perspectiveGmv ?? 0,
         perspectiveSnapshotGmv: block?.perspectiveSnapshotGmv ?? 0,
-        signedCount: block?.signedCount ?? 0,
-        signedGmv: block?.signedGmv ?? 0,
+        // Le « signé » présenté est UNIQUEMENT le signé officiel (Travaux). Les
+        // valeurs par étape Salesforce du tableau de bord interne
+        // (`block.signedGmv`, `block.signedCount`) ne sortent plus d'ici : deux
+        // chiffres différents ne doivent jamais porter le même nom.
+        signedCount: signedOppsByOwner.get(owner)?.size ?? 0,
+        signedGmv: signedGmvActual,
         signedGmvActual,
         declaredOpenGmv: declaredByOwner.get(owner)?.gmv ?? 0,
         declaredOpenCount: declaredByOwner.get(owner)?.count ?? 0,
@@ -610,6 +630,16 @@ export function buildForecastV2(monthOffset: number, objective?: number | null):
     // projetées ferait dire « Projection Kanban sur N affaires » avec un N qui
     // n'a rien de déclaratif.
     ...board.region,
+    // Signé officiel, seule définition présentée : somme des lignes Travaux
+    // signées ou réalisées (`officialSignedGmv`). Le nombre d'affaires compte
+    // des affaires distinctes, pas des lignes. Les mêmes clés du tableau interne
+    // (par étape Salesforce) sont ÉCRASÉES ici.
+    signedGmv: signedGmvActual,
+    signedCount: official.opportunities,
+    signedLines: official.lines,
+    signedPlusKanban: signedGmvActual + board.region.kanbanGmv,
+    gapToObjective:
+      board.region.objective == null ? null : signedGmvActual + board.region.kanbanGmv - board.region.objective,
     scoredCount: salespeople.reduce(
       (t, s) => t + s.opportunities.filter((o) => o.expectedGmv != null).length,
       0,

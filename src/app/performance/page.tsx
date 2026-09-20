@@ -5,6 +5,7 @@ import {
   PerformanceNotes,
   PerformanceTableCard,
 } from "@/components/performance";
+import { parisDate } from "@/lib/business-time";
 import { PERFORMANCE } from "@/lib/config";
 import { buildPerformanceBoard } from "@/lib/performance";
 import {
@@ -50,7 +51,7 @@ export default async function PerformancePage({
   const selected = typeof query.commercial === "string" ? query.commercial : null;
 
   const now = new Date();
-  const previousDate = previousSnapshotDate(now.toISOString().slice(0, 10));
+  const previousDate = previousSnapshotDate(parisDate(now));
   const previous = previousDate ? ranksAt(previousDate) : new Map<string, number>();
 
   const board = buildPerformanceBoard(now, previous, previousDate);

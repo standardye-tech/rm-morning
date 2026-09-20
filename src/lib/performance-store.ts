@@ -16,6 +16,7 @@
  * rang serait constatable mais inexplicable trois semaines plus tard.
  */
 
+import { parisDate } from "./business-time";
 import { PERFORMANCE_MODEL_VERSION } from "./config";
 import { getDb } from "./db";
 import type { PerformanceRow } from "./performance";
@@ -91,7 +92,7 @@ export function recordPerformanceSnapshot(
   now = new Date(),
 ): { snapshotDate: string; written: number } {
   const db = getDb();
-  const snapshotDate = now.toISOString().slice(0, 10);
+  const snapshotDate = parisDate(now);
   const upsert = db.prepare(
     `INSERT INTO performance_snapshot
        (snapshot_date, salesperson, computed_at, rank, score,

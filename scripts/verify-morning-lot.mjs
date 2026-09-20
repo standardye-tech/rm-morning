@@ -173,15 +173,24 @@ check("plus aucune action « Le client veut avancer » dans le plan", !planAfter
 // doivent rester. « À challenger, et le client donne signe de vie » dépend par
 // définition d'un message ouvert : une fois celui-ci traité, le signe de vie
 // est traité aussi — comportement existant de buildMorningPlan, inchangé ici.
-const keptKinds = ["affaire_decisive", "proche_signature", "a_challenger_vivante"];
+// Plan V2 : les situations de fond comptent aussi les affaires à challenger
+// figées et les absences de signal par commercial — aucune ne recopie un mail.
+const keptKinds = ["affaire_decisive", "proche_signature", "a_challenger_vivante", "a_challenger_figee", "affaires_figees", "pipe_faible"];
 const strongKinds = ["affaire_decisive", "proche_signature"];
 const before = planBefore.actions.filter((a) => strongKinds.includes(a.reason)).map((a) => a.key).sort();
 const after = planAfter.actions.filter((a) => strongKinds.includes(a.reason)).map((a) => a.key).sort();
-check("les affaires décisives et en signature sont préservées", JSON.stringify(before) === JSON.stringify(after), `${after.length} action(s) de fond`);
+// Traiter les « chauds » libère des places : d'autres situations de fond peuvent
+// entrer, mais aucune de celles qui y étaient ne doit disparaître.
+check("les affaires décisives et en signature sont préservées", before.every((k) => after.includes(k)), `${before.length} avant · ${after.length} après`);
 const challengeBefore = planBefore.actions.filter((a) => a.reason === "a_challenger_vivante").length;
 const challengeAfter = planAfter.actions.filter((a) => a.reason === "a_challenger_vivante").length;
 check("« à challenger, client vivant » ne survit pas au message qui le portait (règle existante)", challengeAfter <= challengeBefore, `${challengeBefore} avant · ${challengeAfter} après`);
-check("les actions « client attend » restent tant que le bloc 2 n'est pas traité", planAfter.actions.filter((a) => a.reason === "client_attend").length === planBefore.actions.filter((a) => a.reason === "client_attend").length);
+// Plan V2 : les familles nées d'un mail sont plafonnées ; traiter les « chauds »
+// ne retire jamais un « client attend » (des places libérées peuvent en faire entrer d'autres).
+const waitingKeys = (p) => p.actions.filter((a) => a.reason === "client_attend").map((a) => a.key);
+// Le SET peut changer (un « client attend » que le plafond par commercial retenait peut
+// entrer une fois un « chaud » du même commercial traité) ; il ne doit jamais se vider.
+check("les actions « client attend » restent tant que le bloc 2 n'est pas traité", waitingKeys(planAfter).length >= waitingKeys(planBefore).length, `${waitingKeys(planBefore).length} avant · ${waitingKeys(planAfter).length} après`);
 
 const r2 = acknowledgeAllEvents(null);
 const planAll = buildMorningPlan();

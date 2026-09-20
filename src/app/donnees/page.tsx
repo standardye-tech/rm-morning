@@ -656,7 +656,7 @@ export default async function DonneesPage({
                 <th className="px-3 py-2.5 text-right font-medium">Sans proj.</th>
                 <th className="px-3 py-2.5 text-right font-medium">Sans mouvement</th>
                 <th className="px-3 py-2.5 text-right font-medium">Stand-by</th>
-                <th className="px-4 md:px-6 py-2.5 text-right font-medium">Signées</th>
+                <th className="px-4 md:px-6 py-2.5 text-right font-medium" title="Affaires à l'étape Signé dans Salesforce (état du portefeuille), pas le signé du mois">Signées (étape)</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-line">

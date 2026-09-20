@@ -40,6 +40,8 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
 
+import { businessMonth, parisDate } from "../business-time";
+
 import { importForecastSnapshots } from "../forecast-import";
 import { addressesToResolve, refreshDirectory } from "../mail-directory";
 import { rematchSignals } from "../mail-rematch";
@@ -253,7 +255,7 @@ export function buildSteps(): SyncStep[] {
         // Contrôle léger, exigé après l'import : la table est-elle lisible et le
         // montant officiel calculable ? La réconciliation SOQL complète reste une
         // opération de maintenance, trop coûteuse pour chaque actualisation.
-        const month = new Date().toISOString().slice(0, 7);
+        const month = businessMonth();
         const official = officialSignedGmv(month);
         return {
           detail:
@@ -478,7 +480,7 @@ export function buildSteps(): SyncStep[] {
         const now = new Date();
         // Les rangs de la photo précédente sont lus AVANT d'écrire celle du jour,
         // et seulement parmi les photos du même modèle de calcul.
-        const previousDate = previousSnapshotDate(now.toISOString().slice(0, 10));
+        const previousDate = previousSnapshotDate(parisDate(now));
         const board = buildPerformanceBoard(
           now,
           previousDate ? ranksAt(previousDate) : new Map<string, number>(),

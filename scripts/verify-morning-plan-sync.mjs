@@ -26,7 +26,7 @@ process.env.RM_DB_PATH = path.relative(process.cwd(), WORK).replace(/\\/g, "/");
 
 const lib = (n) => pathToFileURL(path.resolve(process.cwd(), `src/lib/${n}.ts`)).href;
 const { getDb } = await import(lib("db"));
-const { triage, acknowledgeEvent, acknowledgeAllEvents, markActionDone } = await import(lib("morning-events"));
+const { triage, acknowledgeEvent, acknowledgeAllEvents, completeShownActions } = await import(lib("morning-events"));
 const { buildMorningPlan } = await import(lib("morning-priority"));
 
 let failures = 0;
@@ -173,18 +173,19 @@ const planBeforeAll = buildMorningPlan();
 check("au moins une action visible avant « Tout traiter »", planBeforeAll.actions.length > 0, `${planBeforeAll.actions.length} action(s)`);
 const keysBefore = planBeforeAll.actions.map((a) => a.key);
 
-// Simule exactement la route « tout_faire » : recalcul serveur, puis même
-// double effet que « action_faite » pour chaque action affichée.
-let changed = 0;
-for (const a of planBeforeAll.actions) {
-  if (markActionDone(a.key)) changed += 1;
-  if (a.messageId) acknowledgeEvent(a.messageId);
-}
+// Exactement la route « tout_faire » : recalcul serveur, restreint aux clés que
+// l'écran affiche, puis double effet de « action_faite » pour chacune.
+const changed = completeShownActions(planBeforeAll.actions, new Set(keysBefore));
 check("toutes les actions affichées ont été marquées faites", changed === keysBefore.length, `${changed}/${keysBefore.length}`);
 
 const planAfterAll = buildMorningPlan();
 check("le Plan du jour est vide juste après « Tout traiter »", planAfterAll.actions.length === 0, `${planAfterAll.actions.length} restante(s)`);
-check("les messages associés sont bien acquittés (Bloc 1/2 aussi vidés)", planAfterAll.hot.length === 0 && planAfterAll.waiting.length === 0);
+// Plan V2 : « Tout traiter » ne touche QUE les situations affichées. Les mails
+// des situations traitées sont acquittés (Blocs 1 et 2 vidés de ceux-là) ; les
+// autres messages ouverts, qui n'étaient pas dans le Plan, restent.
+const treatedMessages = new Set(planBeforeAll.actions.map((a) => a.messageId).filter(Boolean));
+const stillOpen = [...planAfterAll.hot, ...planAfterAll.waiting].filter((e) => treatedMessages.has(e.messageId));
+check("les messages des situations traitées sont acquittés (Blocs 1/2 vidés de ceux-là)", stillOpen.length === 0, `${treatedMessages.size} message(s) traité(s)`);
 
 const planReloadAll = buildMorningPlan();
 check("reload : toujours vide, état persistant", planReloadAll.actions.length === 0);

@@ -640,6 +640,57 @@ export const MORNING_PRIORITY = {
 } as const;
 
 /**
+ * Plan du jour V2 — « quelles situations managériales méritent mon attention
+ * aujourd'hui ? ».
+ *
+ * Le score reste additif et hérite de `MORNING_PRIORITY`. Ce bloc ne porte que
+ * ce que la V2 ajoute : les plafonds, et les deux situations d'absence de
+ * signal (pipe insuffisant, affaires figées), dont les règles de déclenchement
+ * restent dans `ATTENTION` (`attention.ts`) et ne sont pas dupliquées ici.
+ *
+ * Plafonds ABSOLUS : le Plan ne déborde jamais. Une situation en trop n'est pas
+ * reportée à demain, elle est simplement absente ; demain le Plan repart de
+ * l'état courant.
+ */
+export const MORNING_PLAN = {
+  /** Nombre maximal de situations affichées. */
+  maxSituations: 7,
+  /** Nombre maximal de situations par commercial, avant le plafond global. */
+  maxPerOwner: 2,
+  /**
+   * Nombre maximal de situations NÉES D'UN MAIL, PAR FAMILLE (client motivé,
+   * client qui attend). Les Blocs 1 et 2 listent déjà tous les mails ; le Plan
+   * est l'endroit des situations managériales. Sans ce plafond, les messages —
+   * dont le poids de base est le plus haut — occupent les sept places et rien
+   * d'autre ne peut apparaître : ni affaire à challenger, ni pipe insuffisant,
+   * ni affaires figées. Par famille, et non au total : un client qui attend une
+   * réponse est un levier managérial aussi net qu'un client motivé, mais son
+   * poids de base est plus bas et il ne passerait jamais. Ce n'est pas un
+   * rempli-force : s'il y a moins de situations, le Plan est plus court.
+   */
+  maxPerMailFamily: 2,
+
+  /**
+   * Base des absences de signal. Volontairement SOUS une affaire précise à
+   * challenger (400 + modulations) : « Challenger Daravith sur Dupont, sans
+   * mouvement depuis 9 jours » est plus actionnable que « 12 affaires figées ».
+   */
+  weightFrozen: 380,
+  /** Bonus de « N affaires figées » proportionnel à la part du pipe actif qui est figée (0 à 100 %). */
+  weightFrozenShare: 100,
+  weightLowPipe: 330,
+  /**
+   * GMV à partir duquel le poids d'une situation PAR COMMERCIAL est saturé. Plus
+   * haut que `MORNING_PRIORITY.gmvReference` : un pipe figé pèse des centaines de
+   * milliers d'euros, et à 250 k€ trois commerciaux très différents auraient le
+   * même score.
+   */
+  ownerGmvReference: 1_000_000,
+  /** Bonus d'une affaire individuelle sans mouvement depuis `ATTENTION.stagnantDays` jours. */
+  bonusStalled: 40,
+} as const;
+
+/**
  * Projection M+1 — paramètres issus de l'audit C8.1.
  *
  * Rien ici n'est un choix esthétique : chaque valeur a été retenue par le

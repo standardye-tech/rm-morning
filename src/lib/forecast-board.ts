@@ -18,6 +18,7 @@
  * Aucun total n'est calculé par un autre chemin.
  */
 
+import { businessMonth, parisDate, shiftBusinessMonth } from "./business-time";
 import { matchTeamMember } from "./normalize";
 import { loadTeam } from "./team-store";
 import { clientLabel } from "./vocabulary";
@@ -166,8 +167,9 @@ export type ForecastMonthBoard = {
 
 const MONTH_FR = new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric" });
 
+/** Clé « AAAA-MM » d'un instant, à l'heure de Paris (voir `business-time.ts`). */
 export function monthKey(date: Date): MonthKey {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+  return businessMonth(date);
 }
 
 export function monthLabel(key: MonthKey): string {
@@ -176,8 +178,7 @@ export function monthLabel(key: MonthKey): string {
 }
 
 export function shiftMonth(key: MonthKey, offset: number): MonthKey {
-  const [y, m] = key.split("-").map(Number);
-  return monthKey(new Date(y, m - 1 + offset, 1));
+  return shiftBusinessMonth(key, offset);
 }
 
 /** Mois projeté par la Projection Kanban, en clé « AAAA-MM ». */
@@ -196,10 +197,17 @@ const clientOf = (o: Opportunity) => clientLabel(o.clientContact, o.name);
  * `monthOffset` : 0 pour M, 1 pour M+1. Le même moteur sert aux deux vues —
  * il n'existe volontairement aucune seconde logique parallèle.
  */
-export function buildForecastBoard(monthOffset = 0, objective: number | null = null): ForecastMonthBoard {
+export function buildForecastBoard(
+  monthOffset = 0,
+  objective: number | null = null,
+  now: Date = new Date(),
+): ForecastMonthBoard {
   const lastImport = latestImport();
-  const reference = lastImport?.snapshotDate ?? new Date().toISOString().slice(0, 10);
-  const currentMonth = reference.slice(0, 7);
+  // Le mois de référence est le MOIS MÉTIER (Paris), jamais la date du dernier
+  // import : un import de la veille, un 1er du mois, ne doit pas laisser ce
+  // tableau un mois en arrière des autres écrans.
+  const reference = parisDate(now);
+  const currentMonth = businessMonth(now);
   const month = shiftMonth(currentMonth, monthOffset);
   const nextMonth = shiftMonth(month, 1);
 

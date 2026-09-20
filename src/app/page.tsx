@@ -1,15 +1,16 @@
 import { AlertsBlock, TopDeals, WeekForecastBlock } from "@/components/morning";
 import { MorningBoard, SilentButStrong } from "@/components/morning-v2";
 import { Card, Stat } from "@/components/ui";
+import { parisDate } from "@/lib/business-time";
 import { THRESHOLDS } from "@/lib/config";
 import { computeWeekForecast } from "@/lib/forecast";
 import { computeMetrics } from "@/lib/metrics";
-import { todayIso } from "@/lib/normalize";
 import { latestImport, loadOpportunities } from "@/lib/repository";
 import { latestSignalByOpportunity } from "@/lib/mail-store";
 import { buildAlerts, scoreDeals } from "@/lib/scoring";
 import { syncMorningEvents } from "@/lib/morning-events";
 import { buildMorningPlan } from "@/lib/morning-priority";
+import { recordPlanLog } from "@/lib/morning-plan-log";
 import { buildForecastV2 } from "@/lib/forecast-v2";
 import { LABEL, kEur } from "@/lib/vocabulary";
 
@@ -47,9 +48,10 @@ export default function MorningPage() {
     );
   }
 
-  // La date de référence est celle du snapshot importé : tous les calculs
-  // d'ancienneté et de projection restent cohérents avec la donnée affichée.
-  const referenceDate = lastImport.snapshotDate;
+  // La date de référence est le JOUR MÉTIER (Paris), pas la date du snapshot
+  // importé : c'est ce qui garantit que le mois de ces blocs est celui de tous
+  // les autres écrans. Une donnée plus ancienne est signalée, pas suivie.
+  const referenceDate = parisDate();
   const opportunities = loadOpportunities();
   const metrics = computeMetrics(opportunities, referenceDate);
   const forecast = computeWeekForecast(
@@ -84,16 +86,25 @@ export default function MorningPage() {
   // que si un client parle ou si l'affaire pèse sur le mois.
   syncMorningEvents();
   const plan = buildMorningPlan();
+  // Carnet d'observation : ce que le Plan recommande aujourd'hui. Jamais relu pour
+  // le construire, et jamais bloquant pour l'affichage.
+  try {
+    recordPlanLog(plan.actions, new Date(), plan.doneToday);
+  } catch {
+    /* le journal est un plus : sa panne ne doit pas casser le Morning */
+  }
 
   const lowStock = metrics.owners.filter(
     (o) => o.activeCount > 0 && o.activeGmv < THRESHOLDS.activeGmvLow,
   ).length;
-  const isToday = referenceDate === todayIso();
+  const isToday = lastImport.snapshotDate === referenceDate;
 
   // Chiffres de fin de mois, lus de Forecast V2 : aucune duplication de calcul.
   const board = buildForecastV2(0);
   const kanbanFinish = board.region.signedGmvActual + board.region.kanbanGmv;
-  const signedCount = board.expected?.region.signedCount ?? 0;
+  // Affaires DISTINCTES signées (pas les lignes Travaux : avenants et annulations
+  // compris, elles gonfleraient le nombre).
+  const signedCount = board.region.signedCount;
   const sevenDays = board.expected?.region.expected7d ?? null;
 
   return (

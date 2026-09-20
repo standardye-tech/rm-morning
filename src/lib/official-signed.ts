@@ -17,6 +17,7 @@
  * de 61 615 € sur août 2026.
  */
 
+import { businessMonth } from "./business-time";
 import { TRAVAUX } from "./config";
 import { getDb } from "./db";
 import { matchTeamMember } from "./normalize";
@@ -152,7 +153,7 @@ export function officialMonthlyReference(
   const db = getDb();
   const statuses = TRAVAUX.signedStatuses;
   const placeholders = statuses.map(() => "?").join(", ");
-  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const currentMonth = businessMonth(now);
 
   // Le filtre d'équipe se fait en mémoire, comme ci-dessus : la table d'alias
   // n'est pas exprimable en SQL sans la dupliquer.

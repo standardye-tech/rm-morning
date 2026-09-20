@@ -694,6 +694,26 @@ CREATE TABLE IF NOT EXISTS morning_action_done (
   PRIMARY KEY (action_key, done_on)
 );
 
+-- Journal du Plan du jour : ce que RM Morning a RECOMMANDÉ, à quel rang, pour
+-- quel montant. Un carnet d'observation, PAS un gestionnaire de tâches : aucune
+-- colonne de statut, d'échéance, de report ni de rappel, et rien ne le relit
+-- pour construire le Plan, qui repart chaque jour de l'état courant.
+-- Une ligne par (jour métier, situation) : la première recommandation du jour
+-- est conservée telle quelle, un rechargement ne la réécrit pas.
+CREATE TABLE IF NOT EXISTS morning_plan_log (
+  plan_date      TEXT NOT NULL,
+  action_key     TEXT NOT NULL,
+  owner          TEXT,
+  opportunity_id TEXT,
+  category       TEXT NOT NULL,
+  score          REAL NOT NULL,
+  rank           INTEGER NOT NULL,
+  gmv            REAL,
+  reason_code    TEXT NOT NULL,
+  created_at     TEXT NOT NULL,
+  PRIMARY KEY (plan_date, action_key)
+);
+
 -- Monitoring — état de lecture d'un élément de liste, et photo des champs vus
 -- au moment de la lecture.
 --

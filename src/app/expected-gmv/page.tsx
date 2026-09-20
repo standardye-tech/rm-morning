@@ -141,6 +141,10 @@ export default async function ExpectedGmvPage({
         openGmv: salespeople.reduce((t, s) => t + s.openGmv, 0),
         expected7d: salespeople.reduce((t, s) => t + s.expected7d, 0),
         signedGmv,
+        // Le nombre d'affaires suit le filtre, comme le montant : garder celui de
+        // toute la Région à côté du signé d'un seul commercial serait faux.
+        signedCount: salespeople.reduce((t, s) => t + s.signedCount, 0),
+        signedLines: salespeople.reduce((t, s) => t + s.signedLines, 0),
         expectedRemaining,
         expectedFinish: signedGmv + expectedRemaining,
       }

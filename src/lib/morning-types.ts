@@ -91,24 +91,71 @@ export type MorningReason =
   | "client_attend"
   | "affaire_decisive"
   | "a_challenger_vivante"
-  | "proche_signature";
+  | "a_challenger_figee"
+  | "proche_signature"
+  | "pipe_faible"
+  | "affaires_figees";
 
 export const REASON_LABEL: Record<MorningReason, string> = {
   client_motive: "Le client veut avancer",
   client_attend: "Le client attend une réponse",
   affaire_decisive: "Affaire décisive pour le mois",
   a_challenger_vivante: "Affaire à challenger, et le client donne signe de vie",
+  a_challenger_figee: "Affaire à challenger, sans mouvement",
   proche_signature: "Proche de la signature",
+  pipe_faible: "Pipe insuffisant",
+  affaires_figees: "Affaires figées",
 };
+
+/**
+ * Ce que le manager demande, en un mot : c'est l'étiquette affichée sur la
+ * ligne. Sami ne relance pas les clients, il fait relancer.
+ */
+export const ASK_LABEL: Record<MorningReason, string> = {
+  client_motive: "Faire traiter",
+  client_attend: "Faire répondre",
+  affaire_decisive: "Challenger",
+  a_challenger_vivante: "Challenger",
+  a_challenger_figee: "Challenger",
+  proche_signature: "Sécuriser",
+  pipe_faible: "Reconstituer le pipe",
+  affaires_figees: "Débloquer",
+};
+
+/** Famille de la situation. C'est aussi le préfixe de `key`. */
+export type PlanFamily =
+  | "chaud"
+  | "attente"
+  | "decisive"
+  | "challenge"
+  | "signature"
+  | "pipe_faible"
+  | "figees";
+
+/** D'où vient le signal principal. */
+export type MorningSource = "gmail" | "forecast" | "salesforce";
 
 export type MorningAction = {
   key: string;
   reason: MorningReason;
+  /** Famille de la situation (chaud, attente, decisive, …). */
+  category: PlanFamily;
+  /** Signal principal : un mail, le forecast déclaré, ou l'état Salesforce. */
+  source: MorningSource;
   /** Pourquoi maintenant, en une phrase. */
   why: string;
   /** Ce qu'il faut faire, à l'impératif. */
   todo: string;
+  /** « Commercial — situation » : ce que le manager lit d'abord. */
+  title: string;
+  /** Justification courte, tirée uniquement des données qui ont compté au score. */
+  detail: string;
+  /** Vide pour une situation qui ne porte sur aucune affaire précise. */
   client: string;
+  /** Commercial concerné. Null seulement si le message n'a pu être rattaché. */
+  owner: string | null;
+  ownerFirstName: string | null;
+  /** Identique à `owner` : conservé pour les lecteurs existants. */
   salesperson: string | null;
   gmv: number | null;
   stage: string | null;
@@ -118,6 +165,12 @@ export type MorningAction = {
   messageId: string | null;
   receivedAt: string | null;
   opportunityId: string | null;
+  /**
+   * Toutes les affaires que cette situation couvre : une seule pour une affaire,
+   * plusieurs pour « 3 affaires figées ». Sert à ne jamais compter deux fois la
+   * même affaire dans le Plan.
+   */
+  opportunityIds: string[];
   /** Interne, jamais affiché. */
   score: number;
 };
