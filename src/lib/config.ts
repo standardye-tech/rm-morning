@@ -597,13 +597,30 @@ export const FORECAST_THRESHOLDS = {
 /**
  * Bloc « Depuis [la dernière photo] » de Morning — audit V3.1.
  *
- * Seuils de SUSPICION, pas de signification : une variation de GMV franchit
- * déjà `FORECAST_THRESHOLDS.significantGmvDelta/Ratio` pour être retenue ;
- * au-delà de CES seuils-ci, elle est en plus étiquetée « à vérifier » au lieu
- * d'être lue comme un vrai mouvement commercial. Ne sert qu'au label
- * d'anomalie, jamais au calcul du Forecast.
+ * `significantRatioFloor` est le seuil de SIGNIFICATION propre à ce bloc
+ * (décision du 22/09/2026, cas de production verrouillés dans
+ * `since-last-snapshot.ts` / `scripts/verify-since-last-snapshot.mjs`) : un
+ * ≥15 % ne suffit plus seul à retenir une variation de GMV, il faut en plus
+ * que l'affaire pèse au moins ce plancher (avant OU après) — sinon une petite
+ * affaire qui double (+6 942 % sur 353 €) remonte comme un mouvement
+ * significatif alors que ce n'en est pas un. Le seuil ≥20 k€ en valeur
+ * absolue, lui, reste celui du Forecast (`FORECAST_THRESHOLDS`), réutilisé
+ * tel quel — voir `isSignificantGmvChangeForDailyDelta` dans
+ * `since-last-snapshot.ts`. `isSignificantGmvChange` (forecast.ts) N'EST PAS
+ * concernée par ce plancher et reste sur sa règle historique ≥20 k€ OU ≥15 %.
+ *
+ * `suspiciousGmvDelta/suspiciousMinGmv/suspiciousGmvRatio` sont des seuils de
+ * SUSPICION, pas de signification : une fois une variation déjà retenue, elle
+ * est en plus étiquetée « à vérifier » au-delà de CES seuils-ci. Ne sert
+ * qu'au label d'anomalie, jamais au calcul du Forecast.
  */
 export const SINCE_LAST_SNAPSHOT = {
+  /**
+   * GMV plancher (avant OU après) en-dessous duquel une variation en
+   * pourcentage seule ne qualifie plus — le seuil absolu de 20 k€ s'applique
+   * toujours, quel que soit le montant de l'affaire.
+   */
+  significantRatioFloor: 50_000,
   /** Écart absolu au-delà duquel une variation de GMV est jugée suspecte. */
   suspiciousGmvDelta: 100_000,
   /** GMV plancher en-dessous duquel le ratio suspect ne s'applique pas. */

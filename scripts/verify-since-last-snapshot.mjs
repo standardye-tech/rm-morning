@@ -3,12 +3,16 @@
  *
  *   npm run since-last-snapshot:verify
  *
- * Trois parties :
+ * Quatre parties :
  *
  *   — les 20 cas obligatoires de la mission, joués sur des fixtures fabriquées
  *     (aucun accès base pour ceux-là : le moteur est pur aux étages 1 et 3,
  *     et l'étage 2 est testé via ses briques extraites — `resolveSignedCoverage`,
  *     `mergeSignedLines` — plutôt que via une vraie table Travaux) ;
+ *   — la règle GMV du delta manager (`isSignificantGmvChangeForDailyDelta`,
+ *     décision du 22/09/2026), verrouillée sur 7 cas RÉELS du delta production
+ *     21->22/09, avec un contrôle croisé que `isSignificantGmvChange`
+ *     (forecast.ts) n'a PAS bougé sur ces mêmes cas ;
  *   — le contrôle « current non rafraîchi » (§3 du contrôle final V3.1) :
  *     `isRefreshedSinceBaseline` doit distinguer « pas de nouvelle photo » de
  *     « comparé, rien n'a changé » — jamais confondus ;
@@ -25,8 +29,10 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const lib = (n) => pathToFileURL(path.resolve(process.cwd(), `src/lib/${n}.ts`)).href;
+const { isSignificantGmvChange } = await import(lib("forecast"));
 const {
   computeOpportunityDelta,
+  isSignificantGmvChangeForDailyDelta,
   resolveSignedCoverage,
   mergeSignedLines,
   isRefreshedSinceBaseline,
@@ -208,6 +214,66 @@ section("VARIATION DE GMV — cas 6, 7, 8");
   check(
     "8ter. +25k€/+25% sur 100k€ -> significatif mais PAS suspect (sous 100k€ et sous 50%)",
     notSuspicious?.gmvChange != null && notSuspicious.gmvChange.suspicious === false,
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+section("RÈGLE C VERROUILLÉE — cas réels de production, 21->22/09/2026");
+
+{
+  // Décision du 22/09/2026 : un ≥15 % ne suffit plus seul, il faut en plus que
+  // l'affaire pèse ≥50 k€ (avant ou après) — SINCE_LAST_SNAPSHOT.significantRatioFloor.
+  // Ces 7 cas sont les montants RÉELS relevés sur le delta production 21->22/09,
+  // verrouillés pour ne plus jamais régresser silencieusement.
+
+  check(
+    "Carine de Montgolfier : +5 129€/+35,2%, max 19 694€ -> EXCLUE",
+    isSignificantGmvChangeForDailyDelta(14_565, 19_694.2) === false,
+  );
+  check(
+    "Géraldine Raoul : -7 879€/-68%, max 11 593€ -> EXCLUE",
+    isSignificantGmvChangeForDailyDelta(11_593, 3_714) === false,
+  );
+  check(
+    "Diana Pasea : +10 822€/+16,3%, max 77 097€ -> CONSERVÉE",
+    isSignificantGmvChangeForDailyDelta(66_275, 77_096.79) === true,
+  );
+  check(
+    "Laurence Nédélec : +24 507€ (seuil absolu, peu importe le %) -> CONSERVÉE",
+    isSignificantGmvChangeForDailyDelta(353, 24_859.75) === true,
+  );
+  check(
+    "Rameshkumar Balachandran : +55 955€ -> CONSERVÉE",
+    isSignificantGmvChangeForDailyDelta(36_100.2, 92_055.2) === true,
+  );
+  check(
+    "Thierry Godard : -165 625€ -> CONSERVÉE",
+    isSignificantGmvChangeForDailyDelta(223_154.95, 57_530.08) === true,
+  );
+  check(
+    "Nina Takesh : -29 110€ -> CONSERVÉE",
+    isSignificantGmvChangeForDailyDelta(79_765.28, 50_655.28) === true,
+  );
+
+  // Même vérité via le pipeline complet (computeOpportunityDelta), pas
+  // seulement la fonction de seuil isolée.
+  const carine = computeOpportunityDelta(state({ gmv: 14_565 }), state({ gmv: 19_694.2 }), M);
+  check("Carine, via computeOpportunityDelta -> aucun gmvChange retenu", carine === null || carine.gmvChange === null);
+  const diana = computeOpportunityDelta(state({ gmv: 66_275 }), state({ gmv: 77_096.79 }), M);
+  check("Diana, via computeOpportunityDelta -> gmvChange retenu", diana?.gmvChange != null);
+
+  // isSignificantGmvChange (forecast.ts) ne doit PAS avoir bougé : sur ces
+  // mêmes cas, elle reste sur sa règle historique ≥20k€ OU ≥15% — donc
+  // Carine (+35,2%) et Géraldine (-68%) y restent significatives, alors
+  // qu'elles sont exclues du delta manager. Preuve que les deux règles ont
+  // bien divergé sans que le Forecast n'ait été touché.
+  check(
+    "Forecast (isSignificantGmvChange) INCHANGÉ : Carine y reste significative (règle historique)",
+    isSignificantGmvChange(14_565, 19_694.2) === true,
+  );
+  check(
+    "Forecast (isSignificantGmvChange) INCHANGÉ : Géraldine y reste significative (règle historique)",
+    isSignificantGmvChange(11_593, 3_714) === true,
   );
 }
 

@@ -5,7 +5,7 @@
  * fiable du pipe, et qui modifie la lecture commerciale du mois ? Ce n'est ni
  * un flux d'activité Salesforce ni un nouveau moteur de Forecast : tout ce
  * fichier compose des primitives qui existent déjà ailleurs et tournent en
- * production (`previousSnapshotDate`, `loadSnapshot`, `isSignificantGmvChange`,
+ * production (`previousSnapshotDate`, `loadSnapshot`, `FORECAST_THRESHOLDS`,
  * `officialSignedBetween`, l'horloge métier Europe/Paris).
  *
  * Trois étages, volontairement séparés :
@@ -21,8 +21,12 @@
  * DOCTRINE, non négociable (audit V3.1, §3-6) :
  *   — jamais de jugement positif/négatif sur un changement de stade : aucun
  *     ordre de stade n'est validé pour ce moteur ;
- *   — une variation de GMV n'entre que si elle franchit le même seuil que le
- *     Forecast (`isSignificantGmvChange`), sans nouveau seuil concurrent ;
+ *   — une variation de GMV n'entre que via `isSignificantGmvChangeForDailyDelta`
+ *     (décision du 22/09/2026) : ≥20 k€ en valeur absolue comme le Forecast,
+ *     OU ≥15 % mais SEULEMENT si l'affaire pèse ≥50 k€ (avant ou après) —
+ *     sinon un ≥15 % sur une toute petite affaire (ex. +6 942 % sur 353 €)
+ *     remontait comme un mouvement significatif. Seuil propre à CE bloc ;
+ *     `isSignificantGmvChange` (forecast.ts) reste inchangée pour le Forecast ;
  *   — un déplacement Kanban n'entre que si l'ancien ET le nouveau mois sont
  *     connus, et seulement s'il touche le mois métier courant (M) ;
  *   — apparition/disparition d'opportunité entre deux photos : PAS un
@@ -32,8 +36,7 @@
  */
 
 import { businessMonth } from "./business-time";
-import { SINCE_LAST_SNAPSHOT } from "./config";
-import { isSignificantGmvChange } from "./forecast";
+import { FORECAST_THRESHOLDS, SINCE_LAST_SNAPSHOT } from "./config";
 import { daysBetween, kanbanPeriodLabel } from "./normalize";
 import {
   officialSignedBetween,
@@ -74,9 +77,30 @@ export type RawOpportunityChange = {
   standbyChange: StandbyChange | null;
 };
 
+/**
+ * Variation de GMV significative pour LE DELTA QUOTIDIEN MANAGER (ce bloc)
+ * — distincte de `isSignificantGmvChange` (forecast.ts), qu'elle ne touche
+ * pas. Réutilise les mêmes constantes `FORECAST_THRESHOLDS` : ≥20 k€ en
+ * valeur absolue suffit toujours, comme au Forecast. Mais un ≥15 % seul ne
+ * suffit plus : il faut en plus que l'affaire pèse au moins
+ * `SINCE_LAST_SNAPSHOT.significantRatioFloor` (avant OU après) — décision du
+ * 22/09/2026, verrouillée sur des cas réels de production : Carine de
+ * Montgolfier (+5 129 €/+35,2 %, max 19 694 €) et Géraldine Raoul
+ * (−7 879 €/−68 %, max 11 593 €) doivent être EXCLUES ; Diana Pasea
+ * (+10 822 €/+16,3 %, max 77 097 €) doit rester CONSERVÉE ; Laurence Nédélec
+ * (+24 507 €) reste conservée par le seul seuil absolu, quel que soit son
+ * pourcentage.
+ */
+export function isSignificantGmvChangeForDailyDelta(before: number, after: number): boolean {
+  const delta = Math.abs(after - before);
+  if (delta >= FORECAST_THRESHOLDS.significantGmvDelta) return true;
+  if (before <= 0 || delta / before < FORECAST_THRESHOLDS.significantGmvRatio) return false;
+  return Math.max(before, after) >= SINCE_LAST_SNAPSHOT.significantRatioFloor;
+}
+
 function classifyGmvChange(before: number | null, after: number | null): GmvChange | null {
   if (before == null || after == null) return null;
-  if (!isSignificantGmvChange(before, after)) return null;
+  if (!isSignificantGmvChangeForDailyDelta(before, after)) return null;
   const delta = after - before;
   const absDelta = Math.abs(delta);
   const suspicious =
