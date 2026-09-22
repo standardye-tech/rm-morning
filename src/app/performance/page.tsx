@@ -1,3 +1,4 @@
+import { MomentumBlock } from "@/components/momentum";
 import {
   Movers,
   PerformanceDetail,
@@ -13,7 +14,8 @@ import {
   ranksAt,
   recordPerformanceSnapshot,
 } from "@/lib/performance-store";
-import { latestImport } from "@/lib/repository";
+import { latestImport, loadOpportunities } from "@/lib/repository";
+import { buildMomentum } from "@/lib/since-last-snapshot";
 import { lastCompleteRun } from "@/lib/sync/store";
 
 export const dynamic = "force-dynamic";
@@ -70,6 +72,10 @@ export default async function PerformancePage({
     ? (board.salespeople.find((s) => s.salesperson === selected) ?? null)
     : null;
 
+  // Momentum 7 jours — audit V3.2. Réutilise le moteur du bloc « Depuis
+  // hier » de Morning (since-last-snapshot.ts), fenêtre élargie à ~7 jours.
+  const momentum = buildMomentum(parisDate(now), loadOpportunities());
+
   if (board.salespeople.length === 0) {
     return (
       <div className="py-8">
@@ -116,6 +122,7 @@ export default async function PerformancePage({
         seuil={PERFORMANCE.dynamicSignificantDelta}
       />
       {detail ? <PerformanceDetail row={detail} /> : null}
+      <MomentumBlock momentum={momentum} />
       <PerformanceNotes notes={board.notes} />
     </div>
   );

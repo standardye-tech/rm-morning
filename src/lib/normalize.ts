@@ -99,6 +99,13 @@ export function daysBetween(from: string, to: string): number {
   return Math.round((b - a) / 86_400_000);
 }
 
+/** Date ISO décalée de `days` jours (négatif accepté). Calcul UTC, insensible au fuseau. */
+export function addDays(iso: string, days: number): string {
+  const d = new Date(`${iso}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
 /** Lundi de la semaine d'une date ISO donnée. */
 export function mondayOf(iso: string): string {
   const date = new Date(`${iso}T00:00:00`);

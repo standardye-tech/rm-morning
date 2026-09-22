@@ -26,6 +26,7 @@
     "forecast:reconcile": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs scripts/reconcile-forecast.mjs",
     "morning:verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs scripts/verify-morning.mjs",
     "since-last-snapshot:verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs scripts/verify-since-last-snapshot.mjs",
+    "momentum:verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs scripts/verify-momentum.mjs",
     "expected:horizons": "python scripts/expected_gmv_horizons.py",
     "signatures:record": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs scripts/record-signatures.mjs",
     "travaux:import": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs scripts/import-travaux.mjs",

@@ -71,6 +71,16 @@ export const LABEL = {
   sinceEnteredM: "Entré dans le mois",
   sinceExitedM: "Sorti du mois",
   sinceStagesChanged: "Stades modifiés",
+
+  // --- Momentum 7 jours (audit V3.2, Performance) -----------------------------
+  momentumTitle: "Momentum 7 jours",
+  momentumSigned: "Signé",
+  momentumEnteredM: "Entré M",
+  momentumExitedM: "Sorti M",
+  momentumGmvUp: "GMV +",
+  momentumGmvDown: "GMV −",
+  momentumStages: "Stades modifiés",
+  momentumStandby: "Stand-by / retour",
 } as const;
 
 /**

@@ -1,24 +1,29 @@
 /**
- * Bloc « Depuis [la dernière photo] » — audit V3.1.
+ * Bloc « Depuis [la dernière photo] » (V3.1) et Momentum 7 jours de
+ * Performance (V3.2) — UN SEUL moteur.
  *
- * Répond à UNE question : qu'est-ce qui a changé depuis la dernière photo
- * fiable du pipe, et qui modifie la lecture commerciale du mois ? Ce n'est ni
- * un flux d'activité Salesforce ni un nouveau moteur de Forecast : tout ce
- * fichier compose des primitives qui existent déjà ailleurs et tournent en
- * production (`previousSnapshotDate`, `loadSnapshot`, `FORECAST_THRESHOLDS`,
- * `officialSignedBetween`, l'horloge métier Europe/Paris).
+ * Répond à deux questions avec le MÊME calcul, juste une fenêtre différente :
+ * qu'est-ce qui a changé depuis la dernière photo fiable du pipe (Morning,
+ * V3.1), et qu'est-ce que chaque commercial a réellement fait avancer ou
+ * perdre sur ~7 jours (Performance, V3.2) ? Ni flux d'activité Salesforce ni
+ * nouveau moteur de Forecast : tout ce fichier compose des primitives qui
+ * existent déjà ailleurs et tournent en production (`previousSnapshotDate`,
+ * `loadSnapshot`, `FORECAST_THRESHOLDS`, `officialSignedBetween`, l'horloge
+ * métier Europe/Paris).
  *
- * Trois étages, volontairement séparés :
- *   1. `computeOpportunityDelta`  — le calcul BRUT des différences d'UNE
+ * Quatre étages, volontairement séparés :
+ *   1. `computeOpportunityDelta` — le calcul BRUT des différences d'UNE
  *      opportunité entre deux photos. Pur, sans base de données.
- *   2. `buildBusinessDelta`       — l'agrégation quotidienne : parcourt tout
- *      le pipe, fusionne les signatures officielles, calcule les KPI.
- *   3. `selectSignificantChanges` — la sélection/priorisation pour l'affichage.
- * Cette séparation n'est pas gratuite : la V2 (Performance → Momentum 7 jours)
- * doit pouvoir réutiliser les étages 1 et 3 avec une fenêtre de 7 jours sans
- * toucher à l'étage 2.
+ *   2. `computeRawChanges`       — l'agrégation : parcourt tout le pipe,
+ *      fusionne les signatures officielles, calcule les KPI. Partagée telle
+ *      quelle par `buildBusinessDelta` (V3.1) ET `buildMomentum` (V3.2) —
+ *      seuls `today`/`baselineDate` changent d'un appelant à l'autre.
+ *   3. `selectSignificantChanges` — la sélection/priorisation pour l'affichage,
+ *      réutilisée par les deux blocs.
+ *   4. `buildMomentum`           — groupe le résultat de l'étage 2 par
+ *      commercial (V3.2 uniquement ; V3.1 reste une liste plate).
  *
- * DOCTRINE, non négociable (audit V3.1, §3-6) :
+ * DOCTRINE, non négociable (audit V3.1, §3-6 ; étendue V3.2 §1, §5) :
  *   — jamais de jugement positif/négatif sur un changement de stade : aucun
  *     ordre de stade n'est validé pour ce moteur ;
  *   — une variation de GMV n'entre que via `isSignificantGmvChangeForDailyDelta`
@@ -32,18 +37,31 @@
  *   — apparition/disparition d'opportunité entre deux photos : PAS un
  *     événement commercial en V3.1 (signal non fiable, cf. audit §4) ;
  *   — changement de commercial : hors-scope V3.1 (signal jamais observé) ;
- *   — une affaire = une ligne, même si plusieurs dimensions ont bougé.
+ *   — une affaire = une ligne, même si plusieurs dimensions ont bougé ;
+ *   — Momentum (V3.2) : aucun score, aucun classement, aucune métrique
+ *     d'activité (mails, tâches, déclaratif) — uniquement des artefacts
+ *     business observables, agrégés depuis les mêmes dimensions que V3.1 ;
+ *   — pas de double comptage DANS une dimension (une affaire ne compte
+ *     jamais deux fois dans `signed`, `gmvUp`, etc. — garanti par la même
+ *     Map par `opportunityId` qu'en V3.1) ; une affaire PEUT légitimement
+ *     alimenter plusieurs dimensions différentes (signée ET changement de
+ *     stade ET hausse de GMV), ce n'est pas un doublon ;
+ *   — aucune métrique « nette » (GMV entrée M + signée − sortie M) : `signed`
+ *     vient de Travaux (GMV RÉALISÉE) et `enteredM`/`exitedM` du champ Kanban
+ *     de l'Opportunity (GMV DÉCLARÉE) — deux sources que C10 interdit déjà de
+ *     sommer comme un même argent. Voir `buildMomentum`.
  */
 
 import { businessMonth } from "./business-time";
 import { FORECAST_THRESHOLDS, SINCE_LAST_SNAPSHOT } from "./config";
-import { daysBetween, kanbanPeriodLabel } from "./normalize";
+import { addDays, daysBetween, kanbanPeriodLabel } from "./normalize";
 import {
   officialSignedBetween,
   travauxFreshnessDate,
   type OfficialSignedLine,
 } from "./official-signed";
 import { latestImport, loadSnapshot, previousSnapshotDate, type SnapshotLine } from "./repository";
+import { loadTeam } from "./team-store";
 import type { Opportunity } from "./types";
 
 // --- Étage 1 : calcul brut ---------------------------------------------------
@@ -305,37 +323,31 @@ const noDataDelta = (
   changes: [],
 });
 
+type RawChanges = {
+  changes: Map<string, OpportunityDelta>;
+  signed: BusinessDelta["signed"];
+  enteredM: KpiValue;
+  exitedM: KpiValue;
+  stageChanged: KpiValue;
+};
+
 /**
- * Construit le delta métier entre `baselineDate` (la dernière photo
- * antérieure à `today`, ou `null` si aucune n'existe) et l'état courant.
+ * Calcul BRUT partagé entre `buildBusinessDelta` (Morning, baseline = « la
+ * dernière photo ») et `buildMomentum` (Performance, baseline = « il y a
+ * ~7 jours ») : parcourt tout le pipe, fusionne les signatures officielles,
+ * accumule les KPI. Ni titre ni fenêtre — ces deux notions sont propres à
+ * chaque appelant, PAS à ce calcul.
  *
- * `current` est l'état COURANT (table `opportunity`, écrasée à chaque
- * import) — pas une seconde photo datée : c'est la meilleure information
- * disponible à l'instant où Morning s'affiche, exactement comme le fait déjà
- * `salesforceStandbyTransitions` dans `forecast.ts`. `dataAsOf` est la date
- * (AAAA-MM-JJ) de l'import qui a produit `current` — voir `latestImport()`
- * dans `repository.ts` — et sert UNIQUEMENT à vérifier qu'une comparaison
- * réelle a lieu : si `current` ne date pas d'après `baselineDate`, il n'y a
- * pas de seconde photo à comparer, seulement l'absence de nouvelle donnée
- * (voir `isRefreshedSinceBaseline`).
+ * Suppose déjà vérifié : `baselineDate` non nul et `current` réellement plus
+ * frais qu'elle (voir `isRefreshedSinceBaseline`) — les deux appelants le
+ * garantissent avant d'appeler cette fonction.
  */
-export function buildBusinessDelta(
+function computeRawChanges(
   today: string,
-  baselineDate: string | null,
+  baselineDate: string,
   current: Opportunity[],
   baseline: Map<string, SnapshotLine>,
-  dataAsOf: string | null,
-): BusinessDelta {
-  if (!baselineDate) return noDataDelta(today, baselineDate, { kind: "unavailable" });
-
-  if (!isRefreshedSinceBaseline(baselineDate, dataAsOf)) {
-    return noDataDelta(today, baselineDate, { kind: "not-refreshed", date: baselineDate });
-  }
-
-  const days = daysBetween(baselineDate, today);
-  const title: SinceTitle =
-    days === 1 ? { kind: "yesterday" } : { kind: "days", date: baselineDate, days };
-
+): RawChanges {
   const businessMonthKey = businessMonth(new Date(`${today}T12:00:00`));
   const changes = new Map<string, OpportunityDelta>();
 
@@ -377,15 +389,57 @@ export function buildBusinessDelta(
   }
 
   return {
-    today,
-    baselineDate,
-    title,
-    available: true,
+    changes,
     signed: { ...coverage, count: signedCount, gmv: signedGmv },
     enteredM: { available: true, count: enteredMCount, gmv: enteredMGmv },
     exitedM: { available: true, count: exitedMCount, gmv: exitedMGmv },
     stageChanged: { available: true, count: stageChangedCount, gmv: stageChangedGmv },
-    changes: [...changes.values()],
+  };
+}
+
+/**
+ * Construit le delta métier entre `baselineDate` (la dernière photo
+ * antérieure à `today`, ou `null` si aucune n'existe) et l'état courant.
+ *
+ * `current` est l'état COURANT (table `opportunity`, écrasée à chaque
+ * import) — pas une seconde photo datée : c'est la meilleure information
+ * disponible à l'instant où Morning s'affiche, exactement comme le fait déjà
+ * `salesforceStandbyTransitions` dans `forecast.ts`. `dataAsOf` est la date
+ * (AAAA-MM-JJ) de l'import qui a produit `current` — voir `latestImport()`
+ * dans `repository.ts` — et sert UNIQUEMENT à vérifier qu'une comparaison
+ * réelle a lieu : si `current` ne date pas d'après `baselineDate`, il n'y a
+ * pas de seconde photo à comparer, seulement l'absence de nouvelle donnée
+ * (voir `isRefreshedSinceBaseline`).
+ */
+export function buildBusinessDelta(
+  today: string,
+  baselineDate: string | null,
+  current: Opportunity[],
+  baseline: Map<string, SnapshotLine>,
+  dataAsOf: string | null,
+): BusinessDelta {
+  if (!baselineDate) return noDataDelta(today, baselineDate, { kind: "unavailable" });
+
+  if (!isRefreshedSinceBaseline(baselineDate, dataAsOf)) {
+    return noDataDelta(today, baselineDate, { kind: "not-refreshed", date: baselineDate });
+  }
+
+  const days = daysBetween(baselineDate, today);
+  const title: SinceTitle =
+    days === 1 ? { kind: "yesterday" } : { kind: "days", date: baselineDate, days };
+
+  const raw = computeRawChanges(today, baselineDate, current, baseline);
+
+  return {
+    today,
+    baselineDate,
+    title,
+    available: true,
+    signed: raw.signed,
+    enteredM: raw.enteredM,
+    exitedM: raw.exitedM,
+    stageChanged: raw.stageChanged,
+    changes: [...raw.changes.values()],
   };
 }
 
@@ -444,6 +498,194 @@ export function selectSignificantChanges(changes: OpportunityDelta[]): SelectedC
     return sortGmvOf(b.delta, b.primaryCategory) - sortGmvOf(a.delta, a.primaryCategory);
   });
   return out;
+}
+
+// --- Étage 4 : Momentum 7 jours (Performance, audit V3.2) -------------------
+
+/**
+ * Impact GMV d'un changement, pour classer les mouvements par AMPLEUR plutôt
+ * que par catégorie — contrairement à `selectSignificantChanges`, qui trie
+ * par priorité déterministe puis GMV. Le Momentum veut « les plus gros
+ * mouvements », peu importe leur nature.
+ */
+function impactOf(d: OpportunityDelta): number {
+  if (d.signed) return d.signed.gmv;
+  if (d.gmvChange) return Math.abs(d.gmvChange.delta);
+  if (d.kanbanChange) return d.gmv ?? 0;
+  if (d.standbyChange) return d.gmv ?? 0;
+  return 0;
+}
+
+/** Nombre maximal d'affaires citées par commercial (§8 de l'audit V3.2). */
+const MOMENTUM_TOP_MOVES = 3;
+
+export type OwnerMomentum = {
+  owner: string;
+  signed: KpiValue;
+  enteredM: KpiValue;
+  exitedM: KpiValue;
+  /** Hausses de GMV qualifiées (règle du delta manager) — jamais mêlées aux baisses. */
+  gmvUp: KpiValue;
+  /** Baisses de GMV qualifiées ; `gmv` est la somme des deltas négatifs (donc ≤ 0). */
+  gmvDown: KpiValue;
+  /** Pas de tendance positive/négative : aucun ordre de stade n'est validé (doctrine V3.1 §3). */
+  stageChangedCount: number;
+  standbyEntered: number;
+  standbyReturned: number;
+  /** Au plus 3, triées par ampleur de mouvement — jamais un classement de commercial. */
+  topMoves: SelectedChange[];
+};
+
+/**
+ * Une affaire = une ligne, ici aussi : chaque opportunité de `changes`
+ * n'alimente qu'UNE seule fois chacune de ses dimensions retenues (signée,
+ * GMV, Kanban, stade, stand-by), par construction du Map amont — jamais deux
+ * fois la même affaire dans un même compteur (audit V3.2 §5). Elle peut en
+ * revanche contribuer à PLUSIEURS métriques différentes : une affaire signée
+ * qui a aussi changé de stade compte dans `signed` ET dans
+ * `stageChangedCount`, ce qui est voulu, pas un doublon.
+ */
+export function aggregateOwnerMomentum(owner: string, changes: OpportunityDelta[]): OwnerMomentum {
+  let signedCount = 0, signedGmv = 0;
+  let enteredCount = 0, enteredGmv = 0;
+  let exitedCount = 0, exitedGmv = 0;
+  let upCount = 0, upSum = 0;
+  let downCount = 0, downSum = 0;
+  let stageChangedCount = 0;
+  let standbyEntered = 0, standbyReturned = 0;
+
+  for (const c of changes) {
+    if (c.signed) { signedCount += 1; signedGmv += c.signed.gmv; }
+    if (c.kanbanChange?.enteredM) { enteredCount += 1; enteredGmv += c.gmv ?? 0; }
+    if (c.kanbanChange?.exitedM) { exitedCount += 1; exitedGmv += c.gmv ?? 0; }
+    if (c.gmvChange) {
+      if (c.gmvChange.delta > 0) { upCount += 1; upSum += c.gmvChange.delta; }
+      else if (c.gmvChange.delta < 0) { downCount += 1; downSum += c.gmvChange.delta; }
+    }
+    if (c.stageChange) stageChangedCount += 1;
+    if (c.standbyChange) {
+      if (c.standbyChange.enteredStandby) standbyEntered += 1;
+      else standbyReturned += 1;
+    }
+  }
+
+  const topMoves = selectSignificantChanges(changes)
+    .sort((a, b) => impactOf(b.delta) - impactOf(a.delta))
+    .slice(0, MOMENTUM_TOP_MOVES);
+
+  return {
+    owner,
+    signed: { available: true, count: signedCount, gmv: signedGmv },
+    enteredM: { available: true, count: enteredCount, gmv: enteredGmv },
+    exitedM: { available: true, count: exitedCount, gmv: exitedGmv },
+    gmvUp: { available: true, count: upCount, gmv: upSum },
+    gmvDown: { available: true, count: downCount, gmv: downSum },
+    stageChangedCount,
+    standbyEntered,
+    standbyReturned,
+    topMoves,
+  };
+}
+
+export type MomentumWindow =
+  | { available: false }
+  | { available: true; baselineDate: string; today: string; days: number };
+
+export type MomentumReport = {
+  window: MomentumWindow;
+  /** Un commercial par ligne, y compris ceux sans aucun mouvement (liste vide) — jamais omis en silence. */
+  owners: OwnerMomentum[];
+  /** Affaires distinctes touchées, tous commerciaux confondus. */
+  totalOpportunitiesTouched: number;
+};
+
+/** Cible de fenêtre, en jours — voir `buildMomentum` pour la méthode exacte. */
+const MOMENTUM_TARGET_DAYS = 7;
+/** Écart toléré autour de la cible avant de devoir afficher les dates exactes (§3 de l'audit V3.2). */
+const MOMENTUM_TOLERANCE_DAYS = 1;
+
+/**
+ * MÉTHODE (audit V3.2 §3) : la baseline n'est jamais exigée à J-7 pile. On
+ * vise J-7, puis on prend le snapshot RÉELLEMENT disponible le plus proche
+ * AVANT OU ÉGAL à cette cible — jamais après, pour ne jamais raccourcir la
+ * fenêtre sans le dire. `previousSnapshotDate` ne teste que « strictement
+ * avant » : décaler la cible d'un jour la transforme en « avant ou égal ».
+ *
+ * Exemple réel (22/09/2026) : cible J-7 = 15/09, aucun snapshot ce jour-là →
+ * retenu le 14/09 (J-8). C'est le fonctionnement voulu, pas un trou à corriger.
+ */
+function nearestSnapshotOnOrBefore(targetDate: string): string | null {
+  return previousSnapshotDate(addDays(targetDate, 1));
+}
+
+/**
+ * Momentum 7 jours par commercial (Performance, audit V3.2) — réutilise
+ * EXACTEMENT le moteur du bloc « Depuis [la dernière photo] » :
+ * `computeRawChanges` (donc `computeOpportunityDelta`, `officialSignedBetween`,
+ * la règle GMV du delta manager, Kanban connu→connu) et
+ * `selectSignificantChanges`. Seule la fenêtre change — une semaine au lieu
+ * d'une photo — et le résultat est groupé par `owner` au lieu de rester une
+ * liste plate.
+ *
+ * PAS de métrique nette (GMV entrée M + signée − sortie M) : volontairement
+ * absente. `signed` vient de Travaux (`officialSignedBetween`, GMV RÉALISÉE,
+ * avenants compris) tandis que `enteredM`/`exitedM` viennent du champ Kanban
+ * de l'Opportunity (GMV DÉCLARÉE, ~25 % de couverture seulement) — deux
+ * sources différentes que l'audit C10 interdit déjà de sommer comme si
+ * c'était un même argent (voir l'en-tête de `official-signed.ts`). Les
+ * additionner produirait un total qui a l'air d'un fait alors que c'est un
+ * mélange de deux natures de données.
+ */
+export function buildMomentum(today: string, current: Opportunity[]): MomentumReport {
+  const targetDate = addDays(today, -MOMENTUM_TARGET_DAYS);
+  const baselineDate = nearestSnapshotOnOrBefore(targetDate);
+  const dataAsOf = latestImport()?.snapshotDate ?? null;
+
+  if (!baselineDate || !isRefreshedSinceBaseline(baselineDate, dataAsOf)) {
+    return { window: { available: false }, owners: [], totalOpportunitiesTouched: 0 };
+  }
+
+  const baseline = loadSnapshot(baselineDate);
+  const raw = computeRawChanges(today, baselineDate, current, baseline);
+  const changes = [...raw.changes.values()];
+
+  // Chaque commercial ACTIF de l'équipe apparaît, même sans le moindre
+  // mouvement sur la période — silence informatif, jamais une absence muette
+  // de la liste (audit V3.2 §4 : « au minimum » ces métriques par commercial).
+  const byOwner = new Map<string, OpportunityDelta[]>();
+  for (const member of loadTeam()) byOwner.set(member.name, []);
+  for (const c of changes) {
+    const key = c.owner ?? "(commercial inconnu)";
+    const list = byOwner.get(key);
+    if (list) list.push(c);
+    else byOwner.set(key, [c]);
+  }
+
+  const owners = [...byOwner.entries()]
+    .map(([owner, list]) => aggregateOwnerMomentum(owner, list))
+    .sort((a, b) => a.owner.localeCompare(b.owner, "fr"));
+
+  return {
+    window: { available: true, baselineDate, today, days: daysBetween(baselineDate, today) },
+    owners,
+    totalOpportunitiesTouched: changes.length,
+  };
+}
+
+/**
+ * « Momentum sur 7 jours » si la fenêtre réelle est à ±1 jour de la cible,
+ * sinon les dates exactes — jamais « 7 jours » quand ce n'en est pas
+ * (audit V3.2 §3). Contrairement au titre du bloc « Depuis hier » (V3.1), qui
+ * tolère zéro écart, cette tolérance est volontaire et demandée telle quelle.
+ */
+export function formatMomentumWindow(window: MomentumWindow): string {
+  if (!window.available) return "Momentum — pas assez de recul";
+  if (Math.abs(window.days - MOMENTUM_TARGET_DAYS) <= MOMENTUM_TOLERANCE_DAYS) {
+    return "Momentum sur 7 jours";
+  }
+  const from = LONG_DATE.format(new Date(`${window.baselineDate}T12:00:00`));
+  const to = LONG_DATE.format(new Date(`${window.today}T12:00:00`));
+  return `Momentum du ${from} au ${to}`;
 }
 
 // --- Présentation du titre ----------------------------------------------------
