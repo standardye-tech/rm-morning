@@ -595,6 +595,26 @@ export const FORECAST_THRESHOLDS = {
 } as const;
 
 /**
+ * Bloc « Depuis [la dernière photo] » de Morning — audit V3.1.
+ *
+ * Seuils de SUSPICION, pas de signification : une variation de GMV franchit
+ * déjà `FORECAST_THRESHOLDS.significantGmvDelta/Ratio` pour être retenue ;
+ * au-delà de CES seuils-ci, elle est en plus étiquetée « à vérifier » au lieu
+ * d'être lue comme un vrai mouvement commercial. Ne sert qu'au label
+ * d'anomalie, jamais au calcul du Forecast.
+ */
+export const SINCE_LAST_SNAPSHOT = {
+  /** Écart absolu au-delà duquel une variation de GMV est jugée suspecte. */
+  suspiciousGmvDelta: 100_000,
+  /** GMV plancher en-dessous duquel le ratio suspect ne s'applique pas. */
+  suspiciousMinGmv: 50_000,
+  /** Ratio de variation jugé suspect, sur une affaire ≥ suspiciousMinGmv. */
+  suspiciousGmvRatio: 0.5,
+  /** Affaires visibles avant le repli « Voir les N autres ». */
+  maxVisibleChanges: 5,
+} as const;
+
+/**
  * Qualification de l'écart entre Projection Kanban et Expected (Forecast V2).
  *
  * L'Expected est structurellement bien inférieur au déclaratif : au 17/08/2026

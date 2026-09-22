@@ -87,8 +87,14 @@ export type WeekForecast = {
 
 const clientOf = (o: Opportunity) => o.clientContact ?? o.name ?? o.opportunityId;
 
-/** Écart de GMV jugé significatif : en valeur absolue ou en proportion. */
-function isSignificantGmvChange(before: number, after: number): boolean {
+/**
+ * Écart de GMV jugé significatif : en valeur absolue ou en proportion.
+ *
+ * Exportée pour rester l'UNIQUE seuil de significativité GMV de l'application —
+ * réutilisée telle quelle par le bloc « Depuis [la dernière photo] » de Morning
+ * (audit V3.1), qui ne définit aucun seuil concurrent.
+ */
+export function isSignificantGmvChange(before: number, after: number): boolean {
   const delta = Math.abs(after - before);
   if (delta >= FORECAST_THRESHOLDS.significantGmvDelta) return true;
   return before > 0 && delta / before >= FORECAST_THRESHOLDS.significantGmvRatio;

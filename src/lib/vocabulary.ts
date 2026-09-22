@@ -65,6 +65,12 @@ export const LABEL = {
   // --- Objectif --------------------------------------------------------------
   objective: "Objectif du mois",
   gapToObjective: "Écart avec l'objectif",
+
+  // --- Depuis la dernière photo (audit V3.1) ----------------------------------
+  sinceSigned: "Signé",
+  sinceEnteredM: "Entré dans le mois",
+  sinceExitedM: "Sorti du mois",
+  sinceStagesChanged: "Stades modifiés",
 } as const;
 
 /**

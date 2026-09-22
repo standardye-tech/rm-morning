@@ -1,5 +1,6 @@
 import { AlertsBlock, TopDeals, WeekForecastBlock } from "@/components/morning";
 import { MorningBoard, SilentButStrong } from "@/components/morning-v2";
+import { SinceLastSnapshotBlock } from "@/components/since-last-snapshot";
 import { Card, Stat } from "@/components/ui";
 import { parisDate } from "@/lib/business-time";
 import { THRESHOLDS } from "@/lib/config";
@@ -12,6 +13,7 @@ import { syncMorningEvents } from "@/lib/morning-events";
 import { buildMorningPlan } from "@/lib/morning-priority";
 import { recordPlanLog } from "@/lib/morning-plan-log";
 import { buildForecastV2 } from "@/lib/forecast-v2";
+import { buildSinceLastSnapshot } from "@/lib/since-last-snapshot";
 import { LABEL, kEur } from "@/lib/vocabulary";
 
 export const dynamic = "force-dynamic";
@@ -86,6 +88,10 @@ export default function MorningPage() {
   // que si un client parle ou si l'affaire pèse sur le mois.
   syncMorningEvents();
   const plan = buildMorningPlan();
+  // Bloc « Depuis [la dernière photo] » — audit V3.1. Composé, pas recalculé :
+  // la baseline vient de `previousSnapshotDate`, déjà réutilisée par le
+  // Forecast hebdo pour le même besoin (tolérer les trous de synchronisation).
+  const sinceLastSnapshot = buildSinceLastSnapshot(referenceDate, opportunities);
   // Carnet d'observation : ce que le Plan recommande aujourd'hui. Jamais relu pour
   // le construire, et jamais bloquant pour l'affichage.
   try {
@@ -172,6 +178,7 @@ export default function MorningPage() {
         valeur immédiate.
       */}
       <div className="mt-6 space-y-6">
+        <SinceLastSnapshotBlock delta={sinceLastSnapshot} />
         <MorningBoard
           hot={plan.hot}
           waiting={plan.waiting}

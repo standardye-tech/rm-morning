@@ -56,14 +56,23 @@ type Row = {
   works_status: string | null;
 };
 
+type SignedSummary = {
+  gmv: number;
+  lines: number;
+  byType: { worksType: string; lines: number; gmv: number }[];
+  bySalesperson: { salesperson: string; lines: number; gmv: number }[];
+  opportunities: number;
+  rows: OfficialSignedLine[];
+};
+
 /**
- * GMV signé officiel d'un mois « AAAA-MM ».
- *
- * Le filtre d'équipe passe par `matchTeamMember`, seule table d'alias de
- * l'application : le propriétaire est porté par la ligne Travaux sous forme de
- * texte, avec les mêmes variantes de casse que partout ailleurs.
+ * Lignes Travaux officielles filtrées par équipe, pour une clause WHERE
+ * donnée sur `signature_date`. Le filtre d'équipe passe par `matchTeamMember`,
+ * seule table d'alias de l'application : le propriétaire est porté par la
+ * ligne Travaux sous forme de texte, avec les mêmes variantes de casse que
+ * partout ailleurs.
  */
-export function officialSignedGmv(month: string): OfficialSigned {
+function signedLines(dateWhere: string, dateParams: string[]): OfficialSignedLine[] {
   const db = getDb();
   const statuses = TRAVAUX.signedStatuses;
   const placeholders = statuses.map(() => "?").join(", ");
@@ -72,11 +81,11 @@ export function officialSignedGmv(month: string): OfficialSigned {
       `SELECT travaux_id, opportunity_id, opportunity_name, owner_raw, signature_date,
               gmv, works_type, works_status
          FROM travaux
-        WHERE substr(signature_date, 1, 7) = ?
+        WHERE ${dateWhere}
           AND works_status IN (${placeholders})
         ORDER BY signature_date, opportunity_name`,
     )
-    .all(month, ...statuses) as Row[];
+    .all(...dateParams, ...statuses) as Row[];
 
   const kept: OfficialSignedLine[] = [];
   for (const r of rows) {
@@ -93,7 +102,11 @@ export function officialSignedGmv(month: string): OfficialSigned {
       worksStatus: r.works_status,
     });
   }
+  return kept;
+}
 
+/** Somme, regroupements et comptage d'affaires distinctes — commun aux deux vues. */
+function summarize(kept: OfficialSignedLine[]): SignedSummary {
   const group = <K extends string>(key: (l: OfficialSignedLine) => K) => {
     const m = new Map<K, { lines: number; gmv: number }>();
     for (const l of kept) {
@@ -105,7 +118,6 @@ export function officialSignedGmv(month: string): OfficialSigned {
   };
 
   return {
-    month,
     gmv: kept.reduce((t, l) => t + l.gmv, 0),
     lines: kept.length,
     byType: [...group((l) => l.worksType ?? "(sans type)")]
@@ -117,6 +129,41 @@ export function officialSignedGmv(month: string): OfficialSigned {
     opportunities: new Set(kept.map((l) => l.opportunityId).filter(Boolean)).size,
     rows: kept,
   };
+}
+
+/**
+ * GMV signé officiel d'un mois « AAAA-MM ».
+ */
+export function officialSignedGmv(month: string): OfficialSigned {
+  const kept = signedLines("substr(signature_date, 1, 7) = ?", [month]);
+  return { month, ...summarize(kept) };
+}
+
+export type OfficialSignedRange = SignedSummary & { from: string; to: string };
+
+/**
+ * GMV signé officiel entre deux dates, `from` EXCLU et `to` INCLUS — même
+ * définition que `officialSignedGmv`, paramétrée par une plage plutôt qu'un
+ * mois. Sert le bloc « Depuis [la dernière photo] » de Morning (audit V3.1) :
+ * mêmes statuts, même filtre d'équipe, mêmes affaires distinctes comptées.
+ */
+export function officialSignedBetween(from: string, to: string): OfficialSignedRange {
+  const kept = signedLines("signature_date > ? AND signature_date <= ?", [from, to]);
+  return { from, to, ...summarize(kept) };
+}
+
+/**
+ * Jour (AAAA-MM-JJ) du dernier import Travaux connu, ou `null` si la table est
+ * vide. Sert à dater la fraîcheur du GMV signé officiel : `travaux` n'est pas
+ * réimportée à chaque cadence d'`opportunity_snapshot`, donc « aucune
+ * signature depuis la baseline » et « Travaux pas encore réimportée » ne sont
+ * PAS le même fait, et ne doivent jamais s'afficher pareil.
+ */
+export function travauxFreshnessDate(): string | null {
+  const row = getDb().prepare("SELECT MAX(last_import_at) AS at FROM travaux").get() as
+    | { at: string | null }
+    | undefined;
+  return row?.at ? String(row.at).slice(0, 10) : null;
 }
 
 /**
