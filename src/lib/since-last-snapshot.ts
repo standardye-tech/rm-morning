@@ -49,11 +49,16 @@
  *   — aucune métrique « nette » (GMV entrée M + signée − sortie M) : `signed`
  *     vient de Travaux (GMV RÉALISÉE) et `enteredM`/`exitedM` du champ Kanban
  *     de l'Opportunity (GMV DÉCLARÉE) — deux sources que C10 interdit déjà de
- *     sommer comme un même argent. Voir `buildMomentum`.
+ *     sommer comme un même argent. Voir `buildMomentum` ;
+ *   — Momentum (V3.2) ne porte que sur les commerciaux/ET PILOTÉS :
+ *     `ATTENTION.excluded` (config.ts), la même liste que `morning-priority.ts`,
+ *     `week.ts` et `owner-signals.ts` — jamais un second nom en dur. Le
+ *     directeur régional peut porter quelques affaires lui-même sans
+ *     apparaître comme une ligne de performance personnelle.
  */
 
 import { businessMonth } from "./business-time";
-import { FORECAST_THRESHOLDS, SINCE_LAST_SNAPSHOT } from "./config";
+import { ATTENTION, FORECAST_THRESHOLDS, SINCE_LAST_SNAPSHOT } from "./config";
 import { addDays, daysBetween, kanbanPeriodLabel } from "./normalize";
 import {
   officialSignedBetween,
@@ -649,13 +654,26 @@ export function buildMomentum(today: string, current: Opportunity[]): MomentumRe
   const raw = computeRawChanges(today, baselineDate, current, baseline);
   const changes = [...raw.changes.values()];
 
-  // Chaque commercial ACTIF de l'équipe apparaît, même sans le moindre
-  // mouvement sur la période — silence informatif, jamais une absence muette
-  // de la liste (audit V3.2 §4 : « au minimum » ces métriques par commercial).
+  // Population des commerciaux/ET PILOTÉS — même liste canonique que le Plan
+  // du jour (`morning-priority.ts`), « Ma semaine » (`week.ts`) et
+  // `owner-signals.ts` : le directeur régional porte parfois quelques
+  // affaires lui-même, mais ne s'évalue pas sa propre performance. Jamais de
+  // second nom en dur ici : `ATTENTION.excluded` reste la seule liste.
+  const excludedOwners = new Set<string>(ATTENTION.excluded);
+
+  // Chaque commercial PILOTÉ apparaît, même sans le moindre mouvement sur la
+  // période — silence informatif, jamais une absence muette de la liste
+  // (audit V3.2 §4 : « au minimum » ces métriques par commercial).
   const byOwner = new Map<string, OpportunityDelta[]>();
-  for (const member of loadTeam()) byOwner.set(member.name, []);
+  for (const member of loadTeam()) {
+    if (excludedOwners.has(member.name)) continue;
+    byOwner.set(member.name, []);
+  }
+  let touched = 0;
   for (const c of changes) {
     const key = c.owner ?? "(commercial inconnu)";
+    if (excludedOwners.has(key)) continue;
+    touched += 1;
     const list = byOwner.get(key);
     if (list) list.push(c);
     else byOwner.set(key, [c]);
@@ -668,7 +686,7 @@ export function buildMomentum(today: string, current: Opportunity[]): MomentumRe
   return {
     window: { available: true, baselineDate, today, days: daysBetween(baselineDate, today) },
     owners,
-    totalOpportunitiesTouched: changes.length,
+    totalOpportunitiesTouched: touched,
   };
 }
 

@@ -29,6 +29,8 @@ const {
 } = await import(lib("since-last-snapshot"));
 const { loadOpportunities } = await import(lib("repository"));
 const { parisDate } = await import(lib("business-time"));
+const { ATTENTION } = await import(lib("config"));
+const { loadTeam } = await import(lib("team-store"));
 
 let failures = 0;
 const check = (label, ok, detail = "") => {
@@ -169,6 +171,19 @@ section("AUCUNE NOTE NI CLASSEMENT IMPLICITE");
   check("aucun champ 'score'/'rank'/'note' dans OwnerMomentum", !("score" in o) && !("rank" in o) && !("note" in o) && !("ranking" in o));
 }
 
+// ────────────────────────────────────────────────────────────────────────
+section("POPULATION PILOTÉE — pas de second nom en dur");
+
+{
+  // Le correctif visé : Sami Lazari (directeur régional) ne doit jamais
+  // apparaître comme ligne Momentum. La règle vient de ATTENTION.excluded,
+  // pas d'un nom recopié dans since-last-snapshot.ts.
+  check(
+    "ATTENTION.excluded contient Sami Lazari (config canonique, inchangée par ce correctif)",
+    ATTENTION.excluded.includes("Sami Lazari"),
+  );
+}
+
 // ════════════════════════════════════════════════════════════════════════
 section("INTÉGRATION — replay en lecture seule sur la vraie base");
 
@@ -217,6 +232,28 @@ section("INTÉGRATION — replay en lecture seule sur la vraie base");
       "aucun champ score/rank/note sur les commerciaux réels",
       momentum.owners.every((o) => !("score" in o) && !("rank" in o)),
     );
+
+    // Population des commerciaux/ET PILOTÉS uniquement — ATTENTION.excluded
+    // (config.ts), la même liste que morning-priority.ts/week.ts/owner-signals.ts.
+    const excludedSet = new Set(ATTENTION.excluded);
+    check(
+      "aucun commercial de ATTENTION.excluded n'apparaît comme ligne Momentum",
+      momentum.owners.every((o) => !excludedSet.has(o.owner)),
+      `exclus configurés : ${[...excludedSet].join(", ")}`,
+    );
+    if (momentum.window.available) {
+      const expectedCount = loadTeam().filter((m) => !excludedSet.has(m.name)).length;
+      check(
+        `fenêtre disponible -> commerciaux pilotés attendus (${expectedCount}) = commerciaux affichés`,
+        momentum.owners.length === expectedCount,
+        `affichés : ${momentum.owners.length}`,
+      );
+    } else {
+      check(
+        "fenêtre indisponible sur cette base -> liste vide, cohérent (pas une exclusion cassée)",
+        momentum.owners.length === 0,
+      );
+    }
   }
 }
 
