@@ -31,7 +31,7 @@ process.env.RM_DB_PATH = path.relative(process.cwd(), WORK).replace(/\\/g, "/");
 const lib = (n) => pathToFileURL(path.resolve(process.cwd(), `src/lib/${n}.ts`)).href;
 const { getDb } = await import(lib("db"));
 const { businessMonth } = await import(lib("business-time"));
-const { officialSignedGmv } = await import(lib("official-signed"));
+const { officialSignedGmv, officialSignedBetween } = await import(lib("official-signed"));
 const { buildForecastV2 } = await import(lib("forecast-v2"));
 const { buildExpectedGmvSnapshot } = await import(lib("expected-gmv-live"));
 const { buildPerformanceBoard } = await import(lib("performance"));
@@ -152,6 +152,58 @@ if (perfDealsBefore != null && perfDealsAfter != null) {
 } else {
   check("Performance : mesure « signé » lisible", false, "signed_deals introuvable");
 }
+
+// ============================================================================
+// Non-régression demandée après l'écart « 4 affaires / 86 414 € » constaté
+// entre un audit manuel (filtré par présence dans le roster opportunity_snapshot
+// — un proxy d'équipe erroné) et officialSignedBetween (filtré par
+// matchTeamMember(owner_raw), la VRAIE doctrine C10). officialSignedBetween
+// doit rester à toute date une simple reparamétrisation par plage de
+// officialSignedGmv — jamais une seconde définition.
+section("3 — officialSignedBetween partage EXACTEMENT la doctrine de officialSignedGmv");
+
+const monthStart = (m) => `${m}-01`;
+const dayBefore = (iso) => {
+  const d = new Date(`${iso}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+};
+const lastDayOf = (m) => {
+  const [y, mo] = m.split("-").map(Number);
+  return new Date(Date.UTC(y, mo, 0)).toISOString().slice(0, 10);
+};
+
+// Même mois que la section 1/2 (les 3 lignes TESTSIGN_* y sont toujours actives) :
+// officialSignedBetween sur l'équivalent EXACT du mois doit reproduire à l'euro
+// et à l'affaire près ce que rend officialSignedGmv, avenants compris.
+const range = officialSignedBetween(dayBefore(monthStart(month)), lastDayOf(month));
+const official2 = officialSignedGmv(month);
+check(
+  "même GMV, mêmes lignes, mêmes affaires distinctes sur une plage équivalente au mois",
+  near(range.gmv, official2.gmv) && range.lines === official2.lines && range.opportunities === official2.opportunities,
+  `officialSignedGmv=${official2.gmv}/${official2.lines}l/${official2.opportunities}o ` +
+    `vs officialSignedBetween=${range.gmv}/${range.lines}l/${range.opportunities}o`,
+);
+check(
+  "les 3 lignes de test (2 affaires, avenant compris) s'y retrouvent identiquement",
+  range.opportunities - official0.opportunities === official2.opportunities - official0.opportunities &&
+    range.lines - official0.lines === official2.lines - official0.lines,
+);
+
+// Fenêtre plus étroite que le mois (le cas réel du bloc « Depuis ») : les 3
+// lignes de test datées du 5 du mois doivent apparaître, sommées par affaire.
+const narrowRange = officialSignedBetween(`${month}-01`, `${month}-10`);
+const testRows = narrowRange.rows.filter((r) => r.travauxId?.startsWith("TESTSIGN_"));
+const oppA = testRows.filter((r) => r.opportunityId === "TESTSIGN_OPP_A");
+check(
+  "affaire A (2 lignes Travaux, avenant) : une entrée par ligne dans le détail, mais 1 seule affaire distincte",
+  oppA.length === 2,
+  `${oppA.length} ligne(s) pour l'affaire A`,
+);
+check(
+  "somme de l'affaire A = 12 000 € (10 000 original + 2 000 avenant)",
+  near(oppA.reduce((t, r) => t + r.gmv, 0), 12_000),
+);
 
 // --- Nettoyage ---------------------------------------------------------------
 db.prepare("DELETE FROM travaux WHERE travaux_id LIKE 'TESTSIGN_%'").run();

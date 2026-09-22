@@ -3,16 +3,19 @@
  *
  *   npm run since-last-snapshot:verify
  *
- * Deux parties :
+ * Trois parties :
  *
  *   — les 20 cas obligatoires de la mission, joués sur des fixtures fabriquées
  *     (aucun accès base pour ceux-là : le moteur est pur aux étages 1 et 3,
  *     et l'étage 2 est testé via ses briques extraites — `resolveSignedCoverage`,
  *     `mergeSignedLines` — plutôt que via une vraie table Travaux) ;
+ *   — le contrôle « current non rafraîchi » (§3 du contrôle final V3.1) :
+ *     `isRefreshedSinceBaseline` doit distinguer « pas de nouvelle photo » de
+ *     « comparé, rien n'a changé » — jamais confondus ;
  *   — un contrôle d'intégration en LECTURE SEULE sur la vraie base, qui rejoue
  *     `buildSinceLastSnapshot` sur l'état réel et vérifie juste que rien ne
  *     casse et que les invariants de forme tiennent (une ligne par affaire,
- *     KPI jamais à 0 fabriqué).
+ *     KPI jamais à 0 fabriqué, non-rafraîchi jamais confondu avec stable).
  *
  * LECTURE SEULE de bout en bout : aucune écriture, aucune donnée fabriquée
  * n'est jamais insérée en base.
@@ -26,12 +29,13 @@ const {
   computeOpportunityDelta,
   resolveSignedCoverage,
   mergeSignedLines,
+  isRefreshedSinceBaseline,
   buildBusinessDelta,
   buildSinceLastSnapshot,
   selectSignificantChanges,
   formatSinceTitle,
 } = await import(lib("since-last-snapshot"));
-const { loadOpportunities } = await import(lib("repository"));
+const { loadOpportunities, latestImport } = await import(lib("repository"));
 const { parisDate } = await import(lib("business-time"));
 
 let failures = 0;
@@ -55,20 +59,20 @@ const state = (over) => ({
 section("TITRE — cas 1 et 2");
 
 {
-  // 1. baseline J-1 → titre "Depuis hier"
-  const delta = buildBusinessDelta("2026-09-22", "2026-09-21", [], new Map());
+  // 1. baseline J-1 → titre "Depuis hier" (current réellement plus frais que la baseline)
+  const delta = buildBusinessDelta("2026-09-22", "2026-09-21", [], new Map(), "2026-09-22");
   check("1. baseline J-1 -> titre 'Depuis hier'", formatSinceTitle(delta.title) === "Depuis hier");
 }
 {
   // 2. trou de 2+ jours -> vraie date + nombre de jours, jamais "hier"
-  const delta = buildBusinessDelta("2026-09-22", "2026-09-20", [], new Map());
+  const delta = buildBusinessDelta("2026-09-22", "2026-09-20", [], new Map(), "2026-09-22");
   const label = formatSinceTitle(delta.title);
   check(
     "2. trou de 2 jours -> date réelle + compteur, jamais 'Depuis hier'",
     delta.title.kind === "days" && delta.title.days === 2 && !label.includes("hier"),
     label,
   );
-  const gap = buildBusinessDelta("2026-09-22", "2026-09-14", [], new Map());
+  const gap = buildBusinessDelta("2026-09-22", "2026-09-14", [], new Map(), "2026-09-22");
   check(
     "2bis. trou de 8 jours -> jamais 'Depuis hier'",
     gap.title.kind === "days" && gap.title.days === 8 && !formatSinceTitle(gap.title).includes("hier"),
@@ -81,12 +85,44 @@ section("BASELINE — cas 3");
 
 {
   // 3. aucune baseline disponible -> dégradation propre, aucun 0 fabriqué
-  const delta = buildBusinessDelta("2026-09-22", null, [], new Map());
+  const delta = buildBusinessDelta("2026-09-22", null, [], new Map(), null);
   check("3. pas de baseline -> available=false", delta.available === false);
   check("3. pas de baseline -> titre 'unavailable'", delta.title.kind === "unavailable");
   check("3. pas de baseline -> KPI signé indisponible", delta.signed.available === false);
   check("3. pas de baseline -> KPI entré-M indisponible", delta.enteredM.available === false);
   check("3. pas de baseline -> aucun changement", delta.changes.length === 0);
+}
+
+// ────────────────────────────────────────────────────────────────────────
+section("CURRENT NON RAFRAÎCHI — pas de nouvelle photo != rien n'a changé (contrôle final)");
+
+{
+  // Baseline existante, mais `current` provient du MÊME import que la baseline
+  // elle-même (aucune resynchronisation depuis) : comparer current à baseline
+  // serait comparer une photo à elle-même. Le bloc doit le dire explicitement,
+  // jamais se déguiser en "rien de significatif" (qui affirme une comparaison
+  // qui n'a pas eu lieu).
+  check("isRefreshedSinceBaseline : dataAsOf == baseline -> non rafraîchi", isRefreshedSinceBaseline("2026-09-10", "2026-09-10") === false);
+  check("isRefreshedSinceBaseline : dataAsOf antérieur à la baseline -> non rafraîchi", isRefreshedSinceBaseline("2026-09-10", "2026-09-02") === false);
+  check("isRefreshedSinceBaseline : dataAsOf null -> non rafraîchi", isRefreshedSinceBaseline("2026-09-10", null) === false);
+  check("isRefreshedSinceBaseline : dataAsOf postérieur à la baseline -> rafraîchi", isRefreshedSinceBaseline("2026-09-10", "2026-09-12") === true);
+
+  const stale = buildBusinessDelta("2026-09-22", "2026-09-10", [], new Map(), "2026-09-10");
+  check("current == baseline -> available=false (rien n'est fabriqué)", stale.available === false);
+  check("current == baseline -> titre 'not-refreshed'", stale.title.kind === "not-refreshed" && stale.title.date === "2026-09-10");
+  check(
+    "current == baseline -> le titre affiché dit 'non rafraîchi', jamais 'rien de significatif'",
+    formatSinceTitle(stale.title).toLowerCase().includes("non rafraîchi"),
+    formatSinceTitle(stale.title),
+  );
+  check("current == baseline -> KPI signé indisponible (pas de 0 € fabriqué)", stale.signed.available === false);
+  check("current == baseline -> aucun changement fabriqué", stale.changes.length === 0);
+
+  const refreshed = buildBusinessDelta("2026-09-22", "2026-09-10", [], new Map(), "2026-09-12");
+  check(
+    "current POSTÉRIEUR à la baseline -> comparaison réelle, titre 'days'",
+    refreshed.available === true && refreshed.title.kind === "days",
+  );
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -348,7 +384,7 @@ section("BRUIT — cas 20");
   const d = computeOpportunityDelta(before, after, M);
   check("20. aucun changement -> null, pas de ligne fabriquée", d === null);
 
-  const delta = buildBusinessDelta("2026-09-22", "2026-09-21", [], new Map([]));
+  const delta = buildBusinessDelta("2026-09-22", "2026-09-21", [], new Map([]), "2026-09-22");
   check("20bis. pipe vide -> 0 changement, pas d'erreur", delta.changes.length === 0 && delta.available === true);
 }
 
@@ -390,6 +426,20 @@ section("INTÉGRATION — replay en lecture seule sur la vraie base");
       "réel. entreeM/sortieM ne comptent que des transitions connu->connu",
       delta.changes.every((c) => !c.kanbanChange || (c.kanbanChange.fromLabel !== "—" && c.kanbanChange.toLabel !== "—")),
     );
+
+    const dataAsOf = latestImport()?.snapshotDate ?? null;
+    const reallyRefreshed = delta.baselineDate ? isRefreshedSinceBaseline(delta.baselineDate, dataAsOf) : false;
+    console.log(`  info  dataAsOf(latestImport)=${dataAsOf ?? "—"} refreshed=${reallyRefreshed}`);
+    check(
+      "réel. 'not-refreshed' si et seulement si current ne date pas d'après la baseline",
+      reallyRefreshed ? delta.title.kind !== "not-refreshed" : (delta.title.kind === "not-refreshed" || delta.title.kind === "unavailable"),
+    );
+    if (delta.title.kind === "not-refreshed") {
+      check(
+        "réel. non rafraîchi -> jamais 'rien de significatif' fabriqué (available=false)",
+        delta.available === false && delta.changes.length === 0,
+      );
+    }
   }
 }
 

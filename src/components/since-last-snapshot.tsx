@@ -25,10 +25,18 @@ export function SinceLastSnapshotBlock({ delta }: { delta: BusinessDelta }) {
   const title = formatSinceTitle(delta.title);
 
   if (!delta.available) {
+    // Deux causes distinctes, jamais confondues : pas de baseline du tout
+    // (rien à comparer), ou une baseline existe mais `current` n'a rien de
+    // plus récent (rien n'a été comparé — pas la même chose que « comparé,
+    // stable »). Voir `isRefreshedSinceBaseline` dans since-last-snapshot.ts.
+    const message =
+      delta.title.kind === "not-refreshed"
+        ? "Le pipe n'a pas été réactualisé depuis cette photo : aucune nouvelle donnée à comparer."
+        : "Pas de photo antérieure disponible pour calculer un delta.";
     return (
       <Card>
         <SectionTitle eyebrow="Depuis" title={title} />
-        <EmptyState>Pas de photo antérieure disponible pour calculer un delta.</EmptyState>
+        <EmptyState>{message}</EmptyState>
       </Card>
     );
   }

@@ -40,7 +40,7 @@ import {
   travauxFreshnessDate,
   type OfficialSignedLine,
 } from "./official-signed";
-import { loadSnapshot, previousSnapshotDate, type SnapshotLine } from "./repository";
+import { latestImport, loadSnapshot, previousSnapshotDate, type SnapshotLine } from "./repository";
 import type { Opportunity } from "./types";
 
 // --- Étage 1 : calcul brut ---------------------------------------------------
@@ -151,6 +151,8 @@ export type OpportunityDelta = RawOpportunityChange & {
 
 export type SinceTitle =
   | { kind: "unavailable" }
+  /** Une baseline existe, mais rien de plus récent n'a jamais été importé depuis : PAS « rien n'a changé ». */
+  | { kind: "not-refreshed"; date: string }
   | { kind: "yesterday" }
   | { kind: "days"; date: string; days: number };
 
@@ -180,6 +182,24 @@ export type BusinessDelta = {
 
 const clientLabelOf = (o: { name: string | null; clientContact: string | null }, fallbackId: string) =>
   o.clientContact ?? o.name ?? fallbackId;
+
+/**
+ * `current` (la table `opportunity`) n'est PAS une photo datée : elle est
+ * écrasée à chaque import, sans porter elle-même sa date. Sa fraîcheur réelle
+ * vient de `import_run` (voir `repository.latestImport`), pas d'une colonne
+ * de `Opportunity`. Cette fonction dit si cette fraîcheur dépasse réellement
+ * la baseline — le seul cas où comparer `current` à `baseline` constitue une
+ * VRAIE comparaison entre deux états distincts.
+ *
+ * Si `current` provient du même import que la baseline (ou d'un import plus
+ * ancien, ce qui ne devrait pas arriver mais reste gardé), il n'y a RIEN à
+ * comparer : `current` et `baseline` sont la même photographie. Afficher
+ * « rien de significatif » dans ce cas dirait un fait qu'on n'a pas observé —
+ * la bonne phrase est « non rafraîchi depuis [baseline] » (audit V3.1, §3).
+ */
+export function isRefreshedSinceBaseline(baselineDate: string, dataAsOf: string | null): boolean {
+  return dataAsOf != null && dataAsOf > baselineDate;
+}
 
 export type SignedCoverage = { available: boolean; coveredThrough: string | null; stale: boolean };
 
@@ -245,6 +265,22 @@ export function mergeSignedLines(
   }
 }
 
+const noDataDelta = (
+  today: string,
+  baselineDate: string | null,
+  title: SinceTitle,
+): BusinessDelta => ({
+  today,
+  baselineDate,
+  title,
+  available: false,
+  signed: { available: false, count: 0, gmv: 0, coveredThrough: null, stale: false },
+  enteredM: { available: false, count: 0, gmv: 0 },
+  exitedM: { available: false, count: 0, gmv: 0 },
+  stageChanged: { available: false, count: 0, gmv: 0 },
+  changes: [],
+});
+
 /**
  * Construit le delta métier entre `baselineDate` (la dernière photo
  * antérieure à `today`, ou `null` si aucune n'existe) et l'état courant.
@@ -252,33 +288,29 @@ export function mergeSignedLines(
  * `current` est l'état COURANT (table `opportunity`, écrasée à chaque
  * import) — pas une seconde photo datée : c'est la meilleure information
  * disponible à l'instant où Morning s'affiche, exactement comme le fait déjà
- * `salesforceStandbyTransitions` dans `forecast.ts`.
+ * `salesforceStandbyTransitions` dans `forecast.ts`. `dataAsOf` est la date
+ * (AAAA-MM-JJ) de l'import qui a produit `current` — voir `latestImport()`
+ * dans `repository.ts` — et sert UNIQUEMENT à vérifier qu'une comparaison
+ * réelle a lieu : si `current` ne date pas d'après `baselineDate`, il n'y a
+ * pas de seconde photo à comparer, seulement l'absence de nouvelle donnée
+ * (voir `isRefreshedSinceBaseline`).
  */
 export function buildBusinessDelta(
   today: string,
   baselineDate: string | null,
   current: Opportunity[],
   baseline: Map<string, SnapshotLine>,
+  dataAsOf: string | null,
 ): BusinessDelta {
-  const title: SinceTitle = !baselineDate
-    ? { kind: "unavailable" }
-    : (() => {
-        const days = daysBetween(baselineDate, today);
-        return days === 1 ? { kind: "yesterday" as const } : { kind: "days" as const, date: baselineDate, days };
-      })();
+  if (!baselineDate) return noDataDelta(today, baselineDate, { kind: "unavailable" });
 
-  const empty: BusinessDelta = {
-    today,
-    baselineDate,
-    title,
-    available: false,
-    signed: { available: false, count: 0, gmv: 0, coveredThrough: null, stale: false },
-    enteredM: { available: false, count: 0, gmv: 0 },
-    exitedM: { available: false, count: 0, gmv: 0 },
-    stageChanged: { available: false, count: 0, gmv: 0 },
-    changes: [],
-  };
-  if (!baselineDate) return empty;
+  if (!isRefreshedSinceBaseline(baselineDate, dataAsOf)) {
+    return noDataDelta(today, baselineDate, { kind: "not-refreshed", date: baselineDate });
+  }
+
+  const days = daysBetween(baselineDate, today);
+  const title: SinceTitle =
+    days === 1 ? { kind: "yesterday" } : { kind: "days", date: baselineDate, days };
 
   const businessMonthKey = businessMonth(new Date(`${today}T12:00:00`));
   const changes = new Map<string, OpportunityDelta>();
@@ -333,14 +365,18 @@ export function buildBusinessDelta(
   };
 }
 
-/** Point d'entrée pratique pour une page : calcule la baseline puis délègue. */
+/**
+ * Point d'entrée pratique pour une page : calcule la baseline, lit la
+ * fraîcheur réelle de `current` (`latestImport`), puis délègue.
+ */
 export function buildSinceLastSnapshot(
   today: string,
   current: Opportunity[],
 ): BusinessDelta {
   const baselineDate = previousSnapshotDate(today);
   const baseline = baselineDate ? loadSnapshot(baselineDate) : new Map<string, SnapshotLine>();
-  return buildBusinessDelta(today, baselineDate, current, baseline);
+  const dataAsOf = latestImport()?.snapshotDate ?? null;
+  return buildBusinessDelta(today, baselineDate, current, baseline, dataAsOf);
 }
 
 // --- Étage 3 : sélection / présentation --------------------------------------
@@ -390,9 +426,17 @@ export function selectSignificantChanges(changes: OpportunityDelta[]): SelectedC
 
 const LONG_DATE = new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "long" });
 
-/** « Depuis hier » / « Depuis le 20 septembre · 2 jours » / titre neutre si indisponible. */
+/**
+ * « Depuis hier » / « Depuis le 20 septembre · 2 jours » / titre neutre si
+ * indisponible / « Non rafraîchi depuis le [date] » quand `current` ne date
+ * pas d'après la baseline — jamais confondu avec un vrai « rien n'a changé ».
+ */
 export function formatSinceTitle(title: SinceTitle): string {
   if (title.kind === "unavailable") return "Depuis la dernière photo";
+  if (title.kind === "not-refreshed") {
+    const label = LONG_DATE.format(new Date(`${title.date}T12:00:00`));
+    return `Non rafraîchi depuis le ${label}`;
+  }
   if (title.kind === "yesterday") return "Depuis hier";
   const label = LONG_DATE.format(new Date(`${title.date}T12:00:00`));
   return `Depuis le ${label} · ${title.days} jours`;
