@@ -49,70 +49,56 @@ function pct(value: number, digits = 1): string {
 
 
 /**
- * « À challenger » du mois en cours — lot de simplification (F9, F10).
+ * « À challenger » du mois en cours — verrous du 24/09/2026.
  *
- * Toutes les affaires à plus de 15 % de chance de signer d'ici la fin du mois,
- * hors de la prévision commerciale, et qui pèsent sur l'écart (voir
- * `expectedChallengers`). Aucune limite de nombre. Celles au-delà de 25 % sont
- * déjà proposées dans Forecast : elles restent listées, en discret, avec la
- * mention « Déjà proposé dans Forecast » — l'alerte n'est pas répétée.
+ * Les affaires non déclarées sur le mois avec 15 % < pMonthEnd ≤ 25 %
+ * (`expectedChallengers`). Au-delà de 25 %, l'affaire est proposée dans Forecast
+ * et n'est pas répétée ici. Aucun nombre maximum, aucun seuil de montant.
  */
-export function ExpectedGmvChallenge({
-  items,
-}: {
-  items: (ForecastV2Examine & { inForecast: boolean })[];
-}) {
-  if (items.length === 0) return null;
-  const fresh = items.filter((e) => !e.inForecast).length;
+export function ExpectedGmvChallenge({ items }: { items: ForecastV2Examine[] }) {
   return (
     <Card>
       <SectionTitle
         eyebrow="Upside du mois"
         title={LABEL.challenge}
-        aside={`${items.length} affaire(s) à plus de 15 % · ${fresh} absente(s) de Forecast`}
+        aside={`${items.length} affaire(s) entre 15 % et 25 % · au-delà : Forecast`}
       />
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[46rem] text-sm md:min-w-0">
-          <thead>
-            <tr className="border-b border-line text-left text-[11px] uppercase tracking-wide text-ink-faint">
-              <th className="px-4 md:px-6 py-2 font-medium">Client</th>
-              <th className="px-3 py-2 font-medium">Commercial</th>
-              <th className="px-3 py-2 text-right font-medium">GMV</th>
-              <th className="px-3 py-2 text-right font-medium">{LABEL.chanceThisMonth}</th>
-              <th className="px-3 py-2 text-right font-medium">GMV probable</th>
-              <th className="px-4 md:px-6 py-2 font-medium">Pourquoi cette affaire ressort</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((e) => (
-              <tr
-                key={e.row.opportunityId}
-                className={`border-b border-line last:border-0 ${e.inForecast ? "text-ink-soft" : "bg-warning-soft/60"}`}
-              >
-                <td className="px-4 md:px-6 py-2 font-medium">
-                  <SalesforceOpportunityLink opportunityId={e.row.opportunityId}>{e.row.client}</SalesforceOpportunityLink>
-                </td>
-                <td className="px-3 py-2 text-xs text-ink-soft">{e.row.owner}</td>
-                <td className="tabular px-3 py-2 text-right font-medium">{kEur(e.row.gmv)}</td>
-                <td className="tabular px-3 py-2 text-right">
-                  {e.row.expectedProbability == null ? "—" : pct(e.row.expectedProbability)}
-                </td>
-                <td className="tabular px-3 py-2 text-right">{kEur(e.row.expectedGmv)}</td>
-                <td className="px-4 md:px-6 py-2 text-xs text-ink-soft">
-                  {e.inForecast ? (
-                    <span className="text-ink-faint">Déjà proposé dans Forecast</span>
-                  ) : (
-                    <>
-                      <Badge tone="warning">{CHALLENGE_LABEL[e.kind]}</Badge>{" "}
-                      <span className="text-ink-faint">{e.reason}</span>
-                    </>
-                  )}
-                </td>
+      {items.length === 0 ? (
+        <p className="px-4 pb-4 text-sm text-ink-soft md:px-6">Aucune affaire supplémentaire entre 15 % et 25 % aujourd&apos;hui.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[46rem] text-sm md:min-w-0">
+            <thead>
+              <tr className="border-b border-line text-left text-[11px] uppercase tracking-wide text-ink-faint">
+                <th className="px-4 md:px-6 py-2 font-medium">Client</th>
+                <th className="px-3 py-2 font-medium">Commercial</th>
+                <th className="px-3 py-2 text-right font-medium">GMV</th>
+                <th className="px-3 py-2 text-right font-medium">{LABEL.chanceThisMonth}</th>
+                <th className="px-3 py-2 text-right font-medium">GMV probable</th>
+                <th className="px-4 md:px-6 py-2 font-medium">Pourquoi cette affaire ressort</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {items.map((e) => (
+                <tr key={e.row.opportunityId} className="border-b border-line bg-warning-soft/60 last:border-0">
+                  <td className="px-4 md:px-6 py-2 font-medium">
+                    <SalesforceOpportunityLink opportunityId={e.row.opportunityId}>{e.row.client}</SalesforceOpportunityLink>
+                  </td>
+                  <td className="px-3 py-2 text-xs text-ink-soft">{e.row.owner}</td>
+                  <td className="tabular px-3 py-2 text-right font-medium">{kEur(e.row.gmv)}</td>
+                  <td className="tabular px-3 py-2 text-right">
+                    {e.row.expectedProbability == null ? "—" : pct(e.row.expectedProbability)}
+                  </td>
+                  <td className="tabular px-3 py-2 text-right">{kEur(e.row.expectedGmv)}</td>
+                  <td className="px-4 md:px-6 py-2 text-xs text-ink-soft">
+                    <Badge tone="warning">{CHALLENGE_LABEL[e.kind]}</Badge> <span className="text-ink-faint">{e.reason}</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </Card>
   );
 }

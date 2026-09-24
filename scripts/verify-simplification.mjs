@@ -31,33 +31,45 @@ section("D — Monitoring : tri des colonnes");
   check("textes : ordre alphabétique français (accents, casse)", txt.join() === "anthony,David,Émile,Valentin", txt.join());
 }
 
-section("E1 — Forecast : « À challenger » strictement au-delà de 25 %");
-{
-  const row = (p, kind = "absente_du_mois") => ({ row: { opportunityId: String(p), expectedProbability: p }, kind, reason: "" });
-  const out = forecastChallengers({ examine: [row(0.25), row(0.2501), row(0.8), row(0.1), row(0.9, "declaree_fragile"), row(0.3, "prevue_mois_suivant")] });
-  const ids = out.map((e) => e.row.opportunityId);
-  check("25 % pile : non proposé (strictement supérieur)", !ids.includes("0.25"));
-  check("25,01 % : proposé", ids.includes("0.2501"));
-  check("déclarée fragile : jamais un challenger Forecast", !out.some((e) => e.kind === "declaree_fragile"));
-  check("prévue le mois suivant, 30 % : proposée", ids.includes("0.3"));
-  const board = buildForecastV2(0);
-  const real = forecastChallengers(board);
-  check("état réel : chaque challenger dépasse le seuil", real.every((e) => (e.row.expectedProbability ?? 0) > FORECAST_CHALLENGE.minProbability), `${real.length} challenger(s)`);
-}
+// Planche minimale : affaires NON déclarées du mois en cours, sans montant imposé.
+const fakeBoard = (rows, horizon = 0) => ({
+  horizon,
+  month: "2026-09",
+  examine: [],
+  salespeople: [
+    {
+      opportunities: rows.map(([id, p, over = {}]) => ({
+        opportunityId: id, client: id, owner: "ET Test", gmv: 10_000, expectedProbability: p,
+        expectedGmv: 10_000 * p, isSignedRow: false, outsideKanban: true, frozenMonthEnd: false, kanbanMonth: null, ...over,
+      })),
+    },
+  ],
+});
 
-section("F9-F10 — Expected : challengers > 15 %, articulation avec Forecast");
+section("E1 / F9-F10 — frontière unique : > 25 % Forecast, 15 %–25 % Expected");
 {
   const { expectedChallengers } = await import(lib("lib/forecast-v2.ts"));
-  const row = (id, p, eg, kind = "absente_du_mois") => ({ row: { opportunityId: id, client: id, expectedProbability: p, expectedGmv: eg }, kind, reason: "" });
-  const out = expectedChallengers({ examine: [row("a15", 0.15, 50_000), row("b16", 0.16, 50_000), row("c30", 0.3, 20_000), row("d-petit", 0.5, 3_000), row("e-frag", 0.9, 90_000, "declaree_fragile")] });
-  const ids = out.map((e) => e.row.opportunityId);
-  check("15 % pile : exclu (strictement supérieur)", !ids.includes("a15"));
-  check("16 % avec impact crédible : inclus", ids.includes("b16"));
-  check("impact sur l'écart trop faible (GMV probable < 4 k€) : exclu", !ids.includes("d-petit"));
-  check("déclarée fragile : jamais", !ids.includes("e-frag"));
-  check("> 25 % : listée mais marquée « Déjà proposé dans Forecast »", out.find((e) => e.row.opportunityId === "c30")?.inForecast === true && out.find((e) => e.row.opportunityId === "b16")?.inForecast === false);
-  const many = expectedChallengers({ examine: Array.from({ length: 11 }, (_, i) => row(`x${i}`, 0.2, 10_000 + i)) });
-  check("aucune limite arbitraire : 11 passent -> 11", many.length === 11);
+  const b = fakeBoard([
+    ["p150", 0.15], ["p151", 0.151], ["p250", 0.25], ["p251", 0.251], ["p800", 0.8],
+    ["petite", 0.3, { gmv: 3_000, expectedGmv: 900 }],
+    ["declaree", 0.5, { outsideKanban: false }], ["signee", 0.9, { isSignedRow: true }], ["gelee", 0.5, { frozenMonthEnd: true }],
+  ]);
+  const f = forecastChallengers(b).map((e) => e.row.opportunityId);
+  const x = expectedChallengers(b).map((e) => e.row.opportunityId);
+  check("15,0 % : absent des deux écrans", !f.includes("p150") && !x.includes("p150"));
+  check("15,1 % : Expected", x.includes("p151") && !f.includes("p151"));
+  check("25,0 % : Expected, pas Forecast", x.includes("p250") && !f.includes("p250"));
+  check("25,1 % : Forecast seulement", f.includes("p251") && !x.includes("p251"));
+  check("aucun recouvrement entre les deux listes", !f.some((id) => x.includes(id)));
+  check("aucun seuil de montant : 3 k€ à 30 % -> Forecast", f.includes("petite"));
+  check("déclarée, signée ou gelée : jamais proposée", !["declaree", "signee", "gelee"].some((id) => f.includes(id) || x.includes(id)));
+  const many = expectedChallengers(fakeBoard(Array.from({ length: 11 }, (_, i) => [`x${i}`, 0.2])));
+  check("aucun nombre maximum : 11 passent -> 11", many.length === 11);
+  const real = buildForecastV2(0);
+  const rf = forecastChallengers(real), rx = expectedChallengers(real);
+  check("état réel : Forecast > 25 % strictement", rf.every((e) => (e.row.expectedProbability ?? 0) > FORECAST_CHALLENGE.minProbability), `${rf.length}`);
+  check("état réel : Expected dans ]15 % ; 25 %]", rx.every((e) => e.row.expectedProbability > 0.15 && e.row.expectedProbability <= 0.25), `${rx.length}`);
+  console.log(`  (info) Forecast : ${rf.map((e) => `${e.row.client} ${(e.row.expectedProbability * 100).toFixed(1)} %`).join(", ") || "—"} · Expected : ${rx.map((e) => `${e.row.client} ${(e.row.expectedProbability * 100).toFixed(1)} %`).join(", ") || "aucune"}`);
 }
 
 section("F4 — écart commerciaux / RM Morning sur M+1");
@@ -97,10 +109,12 @@ section("F5-F7 — fiabilité : backtest, jamais de chiffre inventé");
   const { buildExpectedReliability } = await import(lib("lib/expected-reliability-view.ts"));
   const v = buildExpectedReliability();
   const m2 = v.horizons.find((h) => h.label === "M+2");
-  check("M+2 : aucun pourcentage (pas de prévision RM Morning)", m2.reliability === null && /Aucune prévision/.test(m2.unavailable ?? ""));
-  check("état réel : chaque indice publié est entre 0 et 100 ou absent", [v.global, ...v.horizons].every((h) => h.reliability === null || (h.reliability >= 0 && h.reliability <= 100)));
-  check("état réel : un indice publié repose sur au moins 3 mois", [v.global, ...v.horizons].every((h) => h.reliability === null || h.months >= 3));
-  console.log(`  (info) global ${v.global.reliability ?? "—"} · ${v.horizons.map((h) => `${h.label} ${h.reliability ?? h.unavailable}`).join(" · ")}`);
+  check("aucun indice global (pas de compensation d'erreurs entre horizons)", !("global" in v));
+  check("M+2 : « Pas encore disponible », aucun pourcentage", m2.reliability === null && m2.unavailable === "Pas encore disponible");
+  check("état réel : chaque indice publié est entre 0 et 100 ou absent", v.horizons.every((h) => h.reliability === null || (h.reliability >= 0 && h.reliability <= 100)));
+  check("état réel : un indice publié repose sur au moins 3 mois", v.horizons.every((h) => h.reliability === null || h.months >= 3));
+  check("moins de 12 mois : indicatif ; 12 et plus : mature", v.horizons.every((h) => h.reliability === null || h.mature === h.months >= 12));
+  console.log(`  (info) ${v.horizons.map((h) => `${h.label} ${h.reliability ?? h.unavailable}${h.reliability != null ? ` (${h.months} mois${h.mature ? "" : ", indicatif"})` : ""}`).join(" · ")}`);
 }
 
 console.log(failures === 0 ? "\nTOUS LES CONTRÔLES PASSENT" : `\n${failures} CONTRÔLE(S) EN ÉCHEC`);

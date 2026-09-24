@@ -17,6 +17,10 @@
  *   — M+2 : RM Morning ne publie AUCUNE prévision à cet horizon (C8.1 : le
  *           classement M+2 ne fait pas mieux que le hasard). Pas d'indice.
  *
+ * AUCUN INDICE GLOBAL (verrous du 24/09/2026) : additionner M et M+1 laissait
+ * leurs erreurs se compenser (91 % sur 3 mois, quand chaque horizon pris seul
+ * est à 68 % et 73 %). Chaque horizon est mesuré et affiché séparément.
+ *
  * MÉTRIQUE : erreur absolue agrégée pondérée (WAPE), calculée par MOIS CIBLE
  * pour qu'un mois suivi chaque jour ne pèse pas plus qu'un mois suivi chaque
  * semaine : WAPE = Σ_mois (erreur absolue moyenne) / Σ_mois (GMV final). Le MAPE
@@ -53,11 +57,16 @@ export type BucketReliability = Bucket & {
 };
 
 export const RELIABILITY = {
-  /** Mois cibles distincts exigés pour publier un indice. */
+  /** Mois cibles distincts exigés pour publier un indice, même indicatif. */
   minMonths: 3,
+  /**
+   * En deçà, l'indice est affiché « indicatif » avec sa taille d'échantillon :
+   * une année de mois cibles, pour qu'un mois atypique (août) ne pèse pas seul.
+   */
+  matureMonths: 12,
   /** Seuil de « très fiable ». */
   target: 90,
-  /** Tranches d'horizon, en jours restants dans le mois (M, et total M + M+1). */
+  /** Tranches d'horizon, en jours restants dans le mois cible (M). */
   bucketsM: [
     { from: 0, to: 7 },
     { from: 8, to: 14 },
@@ -159,24 +168,4 @@ export function daysUntilReliable(
     }
     if (bucket?.reliability != null && bucket.reliability >= threshold) return { days: t, date: day };
   }
-}
-
-// --- Assemblage des points ----------------------------------------------------
-
-/** Paires M + M+1 observées à la même date : le total des deux mois. */
-export function combinedPoints(m: ReliabilityPoint[], m1: ReliabilityPoint[]): ReliabilityPoint[] {
-  const byDate = new Map(m1.map((p) => [p.date, p]));
-  const out: ReliabilityPoint[] = [];
-  for (const p of m) {
-    const q = byDate.get(p.date);
-    if (!q) continue;
-    out.push({
-      date: p.date,
-      target: `${p.target}+${q.target}`,
-      horizonDays: p.horizonDays,
-      predicted: p.predicted + q.predicted,
-      actual: p.actual + q.actual,
-    });
-  }
-  return out;
 }

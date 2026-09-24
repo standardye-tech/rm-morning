@@ -1054,14 +1054,14 @@ export const FORECAST_VISIBILITY = {
 } as const;
 
 /**
- * « À challenger » — seuils des deux écrans (lot de simplification, E1 / F9).
+ * « À challenger » — frontière unique entre les deux écrans (verrous du
+ * 24/09/2026), sur la probabilité RM Morning de signer d'ici la fin du mois :
  *
- *   Forecast      : chance de signer sur le mois STRICTEMENT > 25 % ;
- *   Expected GMV  : pMonthEnd STRICTEMENT > 15 %, et un impact crédible sur
- *                   l'écart (GMV probable au moins `minExpectedGap`).
+ *   Forecast      : pMonthEnd > 25 %
+ *   Expected GMV  : 15 % < pMonthEnd ≤ 25 %
  *
- * Une affaire au-delà de 25 % est déjà proposée dans Forecast : Expected
- * l'affiche discrètement comme telle, sans répéter l'alerte.
+ * Aucun seuil de montant, aucun nombre maximum : les deux listes sont
+ * complémentaires et ne se recouvrent jamais.
  */
 export const FORECAST_CHALLENGE = {
   minProbability: 0.25,
@@ -1069,8 +1069,6 @@ export const FORECAST_CHALLENGE = {
 
 export const EXPECTED_CHALLENGE = {
   minProbability: 0.15,
-  /** GMV probable (GMV × pMonthEnd) en deçà duquel l'affaire ne pèse pas sur l'écart. */
-  minExpectedGap: 4_000,
 } as const;
 
 /**

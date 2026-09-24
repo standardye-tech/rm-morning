@@ -691,52 +691,70 @@ export function buildForecastV2(
 }
 
 /**
- * « À challenger » dans Forecast — lot de simplification, E1.
+ * Affaires NON déclarées sur le mois en cours que RM Morning peut proposer
+ * d'ajouter : ni signées, ni gelées en stand-by au-delà de la fin du mois,
+ * absentes du Kanban du mois, et scorées. Aucun seuil de montant — la seule
+ * frontière est la probabilité, et elle partage les deux écrans :
  *
- * Forecast ne propose d'ajouter au mois qu'une affaire que RM Morning juge
- * réellement probable : chance de signer sur le mois affiché STRICTEMENT
- * supérieure à 25 % (`FORECAST_CHALLENGE.minProbability`), probabilité RM
- * Morning canonique (`expectedProbability`). Une affaire exactement à 25 % reste
- * visible (règle de visibilité ≥ 25 %) mais n'est pas proposée.
+ *   pMonthEnd > 25 %          → Forecast (`forecastChallengers`)
+ *   15 % < pMonthEnd ≤ 25 %   → Expected GMV (`expectedChallengers`)
  *
- * Les affaires DÉCLARÉES mais fragiles (`declaree_fragile`) ne sont pas des
- * challengers de Forecast : leur probabilité est par construction très faible.
- * Elles restent dans le moteur (`examine`, Plan du jour) et Expected GMV les
- * explique dans l'écart commerciaux / RM Morning.
- *
- * Source unique : Forecast, Ma semaine et Expected GMV lisent cette liste.
+ * Verrous du 24/09/2026 : l'ancienne liste `examine` exigeait en plus 4 k€ de
+ * GMV probable, ce qui faisait disparaître des deux écrans une petite affaire
+ * pourtant très probable. `examine` reste inchangée pour le Plan du jour.
  */
-export function forecastChallengers(board: Pick<ForecastV2Board, "examine">): ForecastV2Examine[] {
-  return board.examine.filter(
-    (e) =>
-      e.kind !== "declaree_fragile" &&
-      (e.row.expectedProbability ?? 0) > FORECAST_CHALLENGE.minProbability,
-  );
+function outsideMonthCandidates(board: Pick<ForecastV2Board, "salespeople" | "month">): ForecastV2Examine[] {
+  const [y, m] = board.month.split("-").map(Number);
+  const nextMonth = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
+  return board.salespeople
+    .flatMap((s) => s.opportunities)
+    .filter((r) => !r.isSignedRow && r.outsideKanban && !r.frozenMonthEnd && r.expectedProbability != null)
+    .map((row): ForecastV2Examine => ({
+      row,
+      kind: row.kanbanMonth === nextMonth ? "prevue_mois_suivant" : "absente_du_mois",
+      reason:
+        row.kanbanMonth === nextMonth
+          ? "Prévue le mois prochain, mais elle pourrait signer ce mois-ci"
+          : row.kanbanMonth
+            ? `Prévue sur ${row.kanbanMonth}, pas sur ce mois`
+            : "Aucune prévision commerciale sur un mois",
+    }));
+}
+
+const byExpected = (a: ForecastV2Examine, b: ForecastV2Examine) =>
+  (b.row.expectedGmv ?? 0) - (a.row.expectedGmv ?? 0) || a.row.client.localeCompare(b.row.client, "fr");
+
+/**
+ * « À challenger » dans Forecast — chance de signer sur le mois affiché
+ * STRICTEMENT supérieure à 25 %, probabilité RM Morning canonique.
+ *
+ * Mois en cours : toutes les affaires non déclarées du mois (voir
+ * `outsideMonthCandidates`). Vue M+1 : les suggestions M+1 déjà sélectionnées
+ * (`examineM1`), au-delà du même seuil. Source unique pour Forecast et Ma
+ * semaine.
+ */
+export function forecastChallengers(
+  board: Pick<ForecastV2Board, "examine" | "salespeople" | "month" | "horizon">,
+): ForecastV2Examine[] {
+  const pool = board.horizon === 0 ? outsideMonthCandidates(board) : board.examine;
+  return pool.filter((e) => (e.row.expectedProbability ?? 0) > FORECAST_CHALLENGE.minProbability).sort(byExpected);
 }
 
 /**
- * « À challenger » dans Expected GMV, mois en cours — lot de simplification (F9,
- * F10). Plus large que Forecast : pMonthEnd STRICTEMENT > 15 %, et un impact
- * crédible sur l'écart (GMV probable ≥ `EXPECTED_CHALLENGE.minExpectedGap`).
- * Aucune limite de nombre : 3 affaires passent → 3, 11 → 11.
- *
- * Celles qui dépassent aussi 25 % sont déjà proposées dans Forecast : elles
- * restent listées (jamais de disparition silencieuse) mais marquées
- * `inForecast`, pour que l'écran n'en répète pas l'alerte.
+ * « À challenger » dans Expected GMV, mois en cours : 15 % < pMonthEnd ≤ 25 %.
+ * Complémentaire de Forecast, sans recouvrement : une affaire au-delà de 25 %
+ * est proposée dans Forecast et n'est pas répétée ici. Aucun nombre maximum,
+ * aucun autre filtre quantitatif.
  */
 export function expectedChallengers(
-  board: Pick<ForecastV2Board, "examine">,
-): (ForecastV2Examine & { inForecast: boolean })[] {
-  const forecast = new Set(forecastChallengers(board).map((e) => e.row.opportunityId));
-  return board.examine
-    .filter(
-      (e) =>
-        e.kind !== "declaree_fragile" &&
-        (e.row.expectedProbability ?? 0) > EXPECTED_CHALLENGE.minProbability &&
-        (e.row.expectedGmv ?? 0) >= EXPECTED_CHALLENGE.minExpectedGap,
-    )
-    .map((e) => ({ ...e, inForecast: forecast.has(e.row.opportunityId) }))
-    .sort((a, b) => (b.row.expectedGmv ?? 0) - (a.row.expectedGmv ?? 0) || a.row.client.localeCompare(b.row.client, "fr"));
+  board: Pick<ForecastV2Board, "salespeople" | "month">,
+): ForecastV2Examine[] {
+  return outsideMonthCandidates(board)
+    .filter((e) => {
+      const p = e.row.expectedProbability ?? 0;
+      return p > EXPECTED_CHALLENGE.minProbability && p <= FORECAST_CHALLENGE.minProbability;
+    })
+    .sort(byExpected);
 }
 
 /**

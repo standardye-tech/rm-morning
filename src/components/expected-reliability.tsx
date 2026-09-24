@@ -2,12 +2,14 @@ import { Card, SectionTitle } from "@/components/ui";
 import type { ExpectedReliabilityView, HorizonReliability } from "@/lib/expected-reliability-view";
 
 /**
- * « Fiabilité d'Expected GMV » — lot de simplification (F5 à F7).
+ * « Fiabilité d'Expected GMV » — lot de simplification (F5 à F7), verrous du
+ * 24/09/2026.
  *
  * Chaque pourcentage vient d'un backtest historique réel, jamais de la
- * « confiance » du modèle : voir `expected-reliability.ts`. Quand l'historique ne
- * suffit pas, l'écran dit « Données insuffisantes » ; quand le seuil de 90 % n'a
- * jamais été atteint, il le dit aussi — aucune date fictive.
+ * « confiance » du modèle : voir `expected-reliability.ts`. Un horizon par ligne,
+ * jamais de total : additionner les horizons laisserait leurs erreurs se
+ * compenser. Un indice fondé sur moins d'une année de mois cibles est dit
+ * « indicatif », avec sa taille d'échantillon. Aucune date fictive.
  */
 
 const DDMM = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
@@ -18,40 +20,34 @@ function horizonText(h: HorizonReliability): string {
   return `Fiabilité > 90 % estimée dans ${h.reliableIn.days} jour${h.reliableIn.days > 1 ? "s" : ""} (le ${DDMM(h.reliableIn.date)})`;
 }
 
-function Value({ h, large = false }: { h: HorizonReliability; large?: boolean }) {
-  if (h.reliability == null) {
-    return <span className={`text-ink-faint ${large ? "text-base" : "text-sm"}`}>{h.unavailable ?? "Données insuffisantes"}</span>;
-  }
-  return <span className={`tabular font-semibold ${large ? "text-2xl" : "text-base"}`}>{h.reliability} %</span>;
+const LABEL: Record<string, (h: HorizonReliability) => string> = {
+  "Mois en cours": (h) => `Mois en cours (${h.monthLabel})`,
+  "M+1": (h) => `Fiabilité historique M+1 (${h.monthLabel})`,
+  "M+2": (h) => `M+2 (${h.monthLabel})`,
+};
+
+function Value({ h }: { h: HorizonReliability }) {
+  if (h.reliability == null) return <span className="text-ink-faint">{h.unavailable ?? "Données insuffisantes"}</span>;
+  return (
+    <>
+      <span className="tabular text-base font-semibold">{h.reliability} %</span>
+      <span className="ml-2 text-xs text-ink-faint">
+        {h.mature ? `sur ${h.months} mois` : `indicatif · seulement ${h.months} mois d'historique`}
+      </span>
+    </>
+  );
 }
 
 export function ExpectedReliabilityBlock({ view }: { view: ExpectedReliabilityView }) {
-  const g = view.global;
   return (
     <Card>
       <SectionTitle eyebrow="Confiance dans les chiffres" title="Fiabilité d'Expected GMV" aside="estimation basée sur l'historique" />
-      <div className="flex flex-wrap items-baseline justify-between gap-3 border-b border-line px-4 pb-4 md:px-6">
-        <div>
-          <p className="text-sm text-ink-soft">
-            {g.label} ({g.monthLabel}) : <Value h={g} large />
-          </p>
-          <p className="mt-0.5 text-xs text-ink-faint">
-            {g.reliability != null
-              ? `Mesurée sur ${g.months} mois passés, au même stade du mois. Sur si peu de mois, les écarts de M et de M+1 ont pu se compenser : à lire avec les deux lignes ci-dessous.`
-              : "Pas assez de mois passés où les deux prévisions coexistaient."}
-          </p>
-        </div>
-        <p className="text-xs text-ink-soft">{horizonText(g)}</p>
-      </div>
       <ul className="divide-y divide-line">
         {view.horizons.map((h) => (
           <li key={h.label} className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1 px-4 py-3 md:px-6">
             <p className="text-sm">
-              <span className="text-ink-soft">
-                {h.label} ({h.monthLabel}) :{" "}
-              </span>
+              <span className="text-ink-soft">{(LABEL[h.label] ?? ((x: HorizonReliability) => x.label))(h)} : </span>
               <Value h={h} />
-              {h.reliability != null ? <span className="ml-2 text-xs text-ink-faint">sur {h.months} mois passés</span> : null}
             </p>
             <p className="text-xs text-ink-soft">{horizonText(h)}</p>
           </li>
@@ -64,7 +60,7 @@ export function ExpectedReliabilityBlock({ view }: { view: ExpectedReliabilityVi
             Fiabilité = 100 × (1 − erreur absolue agrégée) : on reprend les prévisions que RM Morning a faites (ou
             aurait faites avec la même règle, sans rien savoir de la suite) au même stade d&apos;un mois passé, et on
             les compare au GMV final officiel (Travaux). Chaque mois passé pèse autant, qu&apos;il ait été suivi chaque
-            jour ou chaque semaine.
+            jour ou chaque semaine. Moins d&apos;une année de mois passés : l&apos;indice est seulement indicatif.
           </p>
           <p>
             « Estimée dans N jours » : le premier moment où, par le passé, l&apos;indice a atteint 90 %. C&apos;est une
@@ -73,7 +69,10 @@ export function ExpectedReliabilityBlock({ view }: { view: ExpectedReliabilityVi
           <p>
             Historique utilisé : {view.sources.mMonths} mois pour le mois en cours ({view.sources.mPoints} prévisions),{" "}
             {view.sources.m1Months} mois pour le mois suivant ({view.sources.m1Points} prévisions)
-            {view.sources.from && view.sources.to ? `, du ${DDMM(view.sources.from)}/${view.sources.from.slice(0, 4)} au ${DDMM(view.sources.to)}/${view.sources.to.slice(0, 4)}` : ""}.
+            {view.sources.from && view.sources.to
+              ? `, du ${DDMM(view.sources.from)}/${view.sources.from.slice(0, 4)} au ${DDMM(view.sources.to)}/${view.sources.to.slice(0, 4)}`
+              : ""}
+            .
           </p>
           {view.notes.map((n) => (
             <p key={n}>{n}</p>
@@ -86,7 +85,7 @@ export function ExpectedReliabilityBlock({ view }: { view: ExpectedReliabilityVi
 }
 
 function CurveTable({ view }: { view: ExpectedReliabilityView }) {
-  const rows = [view.global, ...view.horizons].filter((h) => h.curve);
+  const rows = view.horizons.filter((h) => h.curve);
   return (
     <div className="mt-2 overflow-x-auto">
       <table className="text-xs">

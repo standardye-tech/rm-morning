@@ -8,7 +8,6 @@ import { getDb } from "./db";
 import {
   RELIABILITY,
   bucketAt,
-  combinedPoints,
   daysUntilReliable,
   reliabilityCurve,
   type BucketReliability,
@@ -42,6 +41,8 @@ export type HorizonReliability = {
   unavailable: string | null;
   /** Mois cibles passés qui fondent l'indice à cet horizon. */
   months: number;
+  /** Faux = indice publié mais indicatif (moins de `RELIABILITY.matureMonths` mois). */
+  mature: boolean;
   /** Jours avant que l'indice historique atteigne 90 % ; null = jamais atteint. */
   reliableIn: { days: number; date: string } | null;
   curve: BucketReliability[] | null;
@@ -49,7 +50,6 @@ export type HorizonReliability = {
 
 export type ExpectedReliabilityView = {
   today: string;
-  global: HorizonReliability;
   horizons: HorizonReliability[];
   sources: { mPoints: number; mMonths: number; m1Points: number; m1Months: number; from: string | null; to: string | null };
   notes: string[];
@@ -165,11 +165,9 @@ export function buildExpectedReliability(now = new Date()): ExpectedReliabilityV
 
   const m = pointsM(month);
   const m1 = pointsM1(month);
-  const both = combinedPoints(m, m1);
 
   const curveM = reliabilityCurve(m, RELIABILITY.bucketsM);
   const curveM1 = reliabilityCurve(m1, RELIABILITY.bucketsM1);
-  const curveBoth = reliabilityCurve(both, RELIABILITY.bucketsM);
 
   const leftM = daysLeftIn(today);
   const beforeM1 = daysBefore(today, m1Month);
@@ -191,40 +189,19 @@ export function buildExpectedReliability(now = new Date()): ExpectedReliabilityV
       reliability: bucket?.reliability ?? null,
       unavailable: unavailable ?? (bucket?.reliability == null ? insufficient : null),
       months: bucket?.months ?? 0,
+      mature: (bucket?.months ?? 0) >= RELIABILITY.matureMonths,
       reliableIn: daysUntilReliable(today, target, curveM, curveM1),
       curve,
     };
   };
 
-  const bothBucket = at(curveBoth, leftM);
-  const global: HorizonReliability = {
-    label: "Fiabilité globale",
-    month: `${month}+${m1Month}`,
-    monthLabel: `${monthName(month)} + ${monthName(m1Month)}`,
-    reliability: bothBucket?.reliability ?? null,
-    unavailable: bothBucket?.reliability == null ? insufficient : null,
-    months: bothBucket?.months ?? 0,
-    reliableIn: (() => {
-      // Le total n'existe que dans le mois courant : on parcourt ses jours restants.
-      for (let t = 0; t <= leftM; t += 1) {
-        const b = at(curveBoth, leftM - t);
-        if (b?.reliability != null && b.reliability >= RELIABILITY.target) {
-          return { days: t, date: new Date(Date.parse(`${today}T12:00:00Z`) + t * DAY).toISOString().slice(0, 10) };
-        }
-      }
-      return null;
-    })(),
-    curve: curveBoth,
-  };
-
   const dates = [...m, ...m1].map((p) => p.date).sort();
   return {
     today,
-    global,
     horizons: [
       horizon("Mois en cours", month, curveM, leftM, null),
       horizon("M+1", m1Month, curveM1, beforeM1, null),
-      horizon("M+2", m2Month, null, null, "Aucune prévision RM Morning à cet horizon"),
+      horizon("M+2", m2Month, null, null, "Pas encore disponible"),
     ],
     sources: {
       mPoints: m.length,
@@ -235,7 +212,7 @@ export function buildExpectedReliability(now = new Date()): ExpectedReliabilityV
       to: dates[dates.length - 1] ?? null,
     },
     notes: [
-      "Le total ne couvre que M et M+1 : RM Morning ne publie aucune prévision M+2 (classement jugé non fiable en C8.1), il n'y a donc rien à mesurer pour M+2.",
+      "Aucun indice global : additionner les horizons laisserait leurs erreurs se compenser. M+2 n'a pas d'indice car RM Morning ne publie aucune prévision à cet horizon.",
       "Côté M+1, la pondération du pipe (50 %) a été choisie sur des mois de 2026 : l'indice peut être légèrement optimiste sur ces mois-là.",
     ],
   };
