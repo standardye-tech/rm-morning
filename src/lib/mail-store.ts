@@ -227,6 +227,8 @@ export type MailSyncRow = {
   matchedProbable: number;
   matchedUncertain: number;
   errors: string[];
+  /** Appels au modèle de ce passage ; `null` avant la mesure (24/09/2026). */
+  aiCalls: number | null;
 };
 
 export function startSync(windowStart: string, windowEnd: string): number {
@@ -249,6 +251,8 @@ export function finishSync(
     matchedProbable: number;
     matchedUncertain: number;
     errors: string[];
+    aiCalls?: number;
+    aiBudgetReached?: boolean;
   },
 ): void {
   getDb()
@@ -256,7 +260,7 @@ export function finishSync(
       `UPDATE mail_sync
           SET finished_at = ?, seen = ?, excluded = ?, kept = ?,
               matched_certain = ?, matched_probable = ?, matched_uncertain = ?,
-              errors = ?
+              errors = ?, ai_calls = ?, ai_budget_reached = ?
         WHERE id = ?`,
     )
     .run(
@@ -268,6 +272,8 @@ export function finishSync(
       counters.matchedProbable,
       counters.matchedUncertain,
       JSON.stringify(counters.errors),
+      counters.aiCalls ?? null,
+      counters.aiBudgetReached == null ? null : counters.aiBudgetReached ? 1 : 0,
       id,
     );
 }
@@ -286,6 +292,7 @@ function toSyncRow(r: Record<string, unknown>): MailSyncRow {
     matchedProbable: Number(r.matched_probable),
     matchedUncertain: Number(r.matched_uncertain),
     errors: JSON.parse(String(r.errors ?? "[]")) as string[],
+    aiCalls: r.ai_calls == null ? null : Number(r.ai_calls),
   };
 }
 

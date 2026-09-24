@@ -1140,6 +1140,19 @@ export const GMAIL_SYNC = {
 
   /** Fils classés en parallèle. Plus bas : chaque fil peut appeler le modèle. */
   classifyConcurrency: 4,
+
+  /**
+   * Garde-fou de coût : appels au modèle permis par passage. Au-delà, les
+   * fils restants sont classés par les règles et la synchro l'écrit
+   * (« budget IA de la synchronisation atteint »).
+   *
+   * Calibré le 24/09/2026 sur septembre en production (44 synchros) : au plus
+   * 67 fils classés par passage, dont ~90 % escaladés vers le modèle, soit
+   * ~60 appels au pire observé. 100 laisse une marge de 50 % sans jamais
+   * couper une journée normale, et borne les cas anormaux mesurés : reprise
+   * d'amorçage sur 7 jours = 146 appels.
+   */
+  maxModelCallsPerRun: 100,
 } as const;
 
 /**

@@ -814,6 +814,24 @@ CREATE TABLE IF NOT EXISTS mail_sync (
   errors            TEXT NOT NULL DEFAULT '[]'
 );
 
+-- Consommation IA, AGRÉGÉE par jour (Europe/Paris), modèle et origine
+-- (synchro, retraitement, contrôle…). Uniquement des compteurs : jamais de
+-- contenu d'email, d'adresse ni de clé. calls compte les requêtes envoyées,
+-- réussies ou non ; failures celles qui ont échoué. Le coût n'est pas
+-- stocké : il se calcule à la lecture (ai-usage.ts), tarif en un seul endroit.
+CREATE TABLE IF NOT EXISTS ai_usage_daily (
+  day                   TEXT NOT NULL,
+  model                 TEXT NOT NULL,
+  origin                TEXT NOT NULL,
+  calls                 INTEGER NOT NULL DEFAULT 0,
+  failures              INTEGER NOT NULL DEFAULT 0,
+  input_tokens          INTEGER NOT NULL DEFAULT 0,
+  output_tokens         INTEGER NOT NULL DEFAULT 0,
+  cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (day, model, origin)
+);
+
 -- ÉTAT COURANT du forecast déclaré — bloc « EN COURS » du classeur.
 --
 -- Table SÉPARÉE de forecast_snapshot, et c'est tout l'intérêt : l'historique
@@ -938,6 +956,18 @@ function migrate(db: DatabaseSync): void {
   if (!columns.some((c) => c.name === "standby_flag")) {
     db.exec("ALTER TABLE opportunity ADD COLUMN standby_flag INTEGER");
   }
+  // Audit coût IA (24/09/2026) : appels modèle d'une synchro Gmail, et
+  // atteinte du budget par passage. NULL = synchro antérieure à la mesure.
+  const syncColumns = db.prepare("PRAGMA table_info(mail_sync)").all() as { name: string }[];
+  for (const [name, type] of [
+    ["ai_calls", "INTEGER"],
+    ["ai_budget_reached", "INTEGER"],
+  ] as [string, string][]) {
+    if (syncColumns.length > 0 && !syncColumns.some((c) => c.name === name)) {
+      db.exec(`ALTER TABLE mail_sync ADD COLUMN ${name} ${type}`);
+    }
+  }
+
   //  préexiste au Passage C2 : la colonne d'activation
   // des opportunités doit être ajoutée, pas recréée.
   const stateColumns = db

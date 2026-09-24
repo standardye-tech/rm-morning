@@ -4,6 +4,8 @@ import { ObjectiveForm, type ObjectiveRow } from "@/components/objective-form";
 import { TeamScope } from "@/components/team-scope";
 import { Card, EmptyState, SectionTitle, Stat } from "@/components/ui";
 import { latestSync, mailSignalCount } from "@/lib/mail-store";
+import { AI_PRICING_USD_PER_MTOK, aiUsageSummary } from "@/lib/ai-usage";
+import { AI_MODEL } from "@/lib/mail-classify-ai";
 import { latestMilestoneCoverage } from "@/lib/lead-store";
 import { formatEurShort } from "@/lib/normalize";
 import { latestForecastImport, latestImport, loadOpportunities } from "@/lib/repository";
@@ -39,6 +41,17 @@ const DATE_SHORT = new Intl.DateTimeFormat("fr-FR", {
 
 const label = (field: string) =>
   RAW_FIELD_LABELS[field as keyof RawOpportunity] ?? field;
+
+/** « 12,3 k » — ordre de grandeur, pas de fausse précision. */
+function formatTokens(n: number): string {
+  return n < 1000 ? String(n) : `${(n / 1000).toLocaleString("fr-FR", { maximumFractionDigits: 1 })} k`;
+}
+
+/** Coût en dollars ; « — » quand un modèle consommé n'a pas de tarif connu. */
+function formatUsd(v: number | null): string {
+  if (v == null) return "—";
+  return `${v.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: v < 1 ? 3 : 2 })} $`;
+}
 
 export default async function DonneesPage({
   searchParams,
@@ -77,6 +90,7 @@ export default async function DonneesPage({
   // exception commerciale — d'où sa place ici, sur la santé des sources.
   const coverage = latestMilestoneCoverage();
   const signalCount = mailSignalCount();
+  const aiUsage = aiUsageSummary();
 
   if (!lastImport) {
     return (
@@ -505,7 +519,20 @@ export default async function DonneesPage({
             </div>
             <p className="mt-4 text-xs text-ink-faint">
               {signalCount.toLocaleString("fr-FR")} signaux stockés au total. Aucun corps de
-              message n&apos;est conservé. Classification sémantique : non branchée.
+              message n&apos;est conservé.
+            </p>
+            <p className="mt-1 text-xs text-ink-faint tabular">
+              Scanner email IA · {AI_PRICING_USD_PER_MTOK[AI_MODEL]?.label ?? AI_MODEL} ·{" "}
+              {aiUsage.today.calls} analyse{aiUsage.today.calls > 1 ? "s" : ""} aujourd&apos;hui ·{" "}
+              {formatTokens(aiUsage.today.inputTokens + aiUsage.today.outputTokens)} tokens · coût{" "}
+              {formatUsd(aiUsage.today.costUsd)} aujourd&apos;hui, {formatUsd(aiUsage.month.costUsd)} ce mois
+              {aiUsage.month.failures > 0 ? ` · ${aiUsage.month.failures} appel(s) en échec ce mois` : ""}
+            </p>
+            <p className="mt-1 text-xs text-ink-faint tabular">
+              Dernière actualisation :{" "}
+              {lastSync.aiCalls == null
+                ? "appels IA non mesurés (synchro antérieure au compteur)"
+                : `${lastSync.aiCalls} appel${lastSync.aiCalls > 1 ? "s" : ""} IA`}
             </p>
             {lastSync.errors.length > 0 ? (
               <div className="mt-3 rounded-lg border border-line bg-danger-soft px-3 py-2">

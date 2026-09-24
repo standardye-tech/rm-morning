@@ -51,6 +51,16 @@ export type HybridResult = {
 
 const EMPTY = { inputTokens: 0, outputTokens: 0, latencyMs: 0 };
 
+/** Motif de repli quand le budget d'appels d'un passage est épuisé. */
+export const AI_BUDGET_REACHED = "budget IA de la synchronisation atteint";
+
+/**
+ * Budget d'appels au modèle, partagé par tous les fils d'un même passage.
+ * Décrémenté AVANT l'appel (tentative comptée, même si elle échoue) ; la
+ * lecture et l'écriture sont synchrones, donc sûres malgré la concurrence.
+ */
+export type ModelBudget = { remaining: number };
+
 /**
  * Classe l'état courant d'un fil. Ne lève jamais : en cas de problème, le
  * verdict des règles est renvoyé avec `source: "rules_fallback"`.
@@ -58,6 +68,7 @@ const EMPTY = { inputTokens: 0, outputTokens: 0, latencyMs: 0 };
 export async function classifyHybrid(
   messages: ClassifiableMessage[],
   context: ThreadContext = {},
+  budget?: ModelBudget,
 ): Promise<HybridResult | null> {
   const rules = classifyThread(messages);
   if (!rules) return null;
@@ -74,6 +85,21 @@ export async function classifyHybrid(
       ...EMPTY,
       fallbackReason: null,
     };
+  }
+
+  // Garde-fou de coût : budget épuisé → verdict des règles, aucun appel.
+  if (budget) {
+    if (budget.remaining <= 0) {
+      return {
+        classification: { ...rules, classifier: "rules_fallback" },
+        source: "rules_fallback",
+        escalated: false,
+        clamped: false,
+        ...EMPTY,
+        fallbackReason: AI_BUDGET_REACHED,
+      };
+    }
+    budget.remaining -= 1;
   }
 
   try {

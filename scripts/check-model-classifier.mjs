@@ -6,9 +6,12 @@
  *
  * Pour chaque fil récent déjà connu en base : relecture Gmail en LECTURE SEULE
  * (métadonnées + extrait, `fetchThreadMessages`), puis `classifyHybrid` — le
- * même appel que la synchronisation. Rien n'est écrit, ni en base ni dans
+ * même appel que la synchronisation. Aucune classification n'est écrite, ni en base ni dans
  * Gmail. Aucun contenu d'email n'est affiché : seulement les compteurs et les
  * motifs de repli (fournisseur, modèle, statut, type d'erreur).
+ *
+ * COÛT : au plus N appels réels au modèle (un par fil escaladé), consignés
+ * dans le registre de consommation IA avec l'origine « controle ».
  *
  * Créé après la panne du 14/09/2026 (crédit API épuisé, 98 % des fils en
  * `rules_fallback` sans aucune trace) : c'est la preuve à rejouer après tout
@@ -38,7 +41,7 @@ const reasons = new Map();
 for (const t of threads) {
   try {
     const thread = await fetchThreadMessages(t.thread_id);
-    const result = await classifyHybrid(thread, { stage: t.stage ?? null });
+    const result = await classifyHybrid(thread, { stage: t.stage ?? null, origin: "controle" });
     if (!result) continue;
     counts.tested += 1;
     counts[result.source] += 1;

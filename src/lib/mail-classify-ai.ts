@@ -1,9 +1,8 @@
 /**
- * Classification sémantique par modèle — VARIANTE B. PRÉPARÉE, NON BRANCHÉE.
- *
- * Ce module n'est appelé par aucune page, aucune route, aucun import de
- * l'application. Il existe pour être mesuré face aux règles, et pour que le
- * jour où la comparaison justifie un modèle, il ne reste qu'à l'appeler.
+ * Classification sémantique par modèle — appelée UNIQUEMENT via
+ * `classifyHybrid` (synchro Gmail et scripts manuels). C'est le seul appel à un
+ * LLM de l'application ; chaque requête envoyée est consignée dans le registre
+ * de consommation (`ai-usage.ts`).
  *
  * Minimisation des données — c'est la partie qui compte :
  *
@@ -17,6 +16,7 @@
  * seulement sous forme structurée.
  */
 
+import { recordAiCall, type AiOrigin } from "./ai-usage";
 import { acceptProof, selectInterestProof } from "./interest-proof";
 import type { Classification, ClassifiableMessage, SignalType } from "./mail-classify";
 
@@ -91,6 +91,8 @@ export type ThreadContext = {
   stage?: string | null;
   /** Confiance déclarée au forecast, entre 0 et 1. */
   forecastConfidence?: number | null;
+  /** Qui déclenche l'appel, pour le registre de consommation. Jamais envoyé au modèle. */
+  origin?: AiOrigin;
 };
 
 export type ModelPayload = {
@@ -253,7 +255,11 @@ export async function classifyWithModelDetailed(
     }),
   });
 
+  const origin = context.origin ?? "verification";
   if (!response.ok) {
+    // Requête envoyée mais refusée : comptée comme appel échoué, sans tokens
+    // (l'API ne facture pas une requête rejetée).
+    recordAiCall(AI_MODEL, origin, false, { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 });
     const detail = (await response.json().catch(() => null)) as {
       error?: { type?: string; message?: string };
     } | null;
@@ -267,9 +273,22 @@ export async function classifyWithModelDetailed(
 
   const body = (await response.json()) as {
     content?: { text?: string }[];
-    usage?: { input_tokens?: number; output_tokens?: number };
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_creation_input_tokens?: number;
+      cache_read_input_tokens?: number;
+    };
   };
   const latencyMs = Date.now() - startedAt;
+  // Consigné dès la réponse reçue, y compris quand elle arrive après le délai
+  // de repli de `classifyHybrid` : la requête a été facturée quand même.
+  const usage = {
+    inputTokens: body.usage?.input_tokens ?? 0,
+    outputTokens: body.usage?.output_tokens ?? 0,
+    cacheCreationTokens: body.usage?.cache_creation_input_tokens ?? 0,
+    cacheReadTokens: body.usage?.cache_read_input_tokens ?? 0,
+  };
   const raw = body.content?.[0]?.text ?? "";
   const json = raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1);
 
@@ -277,6 +296,7 @@ export async function classifyWithModelDetailed(
   try {
     parsed = JSON.parse(json) as Record<string, unknown>;
   } catch {
+    recordAiCall(AI_MODEL, origin, false, usage);
     throw new ClassifierUnavailableError("Réponse du modèle illisible (JSON invalide).", response.status, "reponse_illisible");
   }
 
@@ -284,6 +304,7 @@ export async function classifyWithModelDetailed(
     ? (parsed.signal_type as SignalType)
     : "neutre";
   const ordered = [...messages].sort((a, b) => a.date.localeCompare(b.date));
+  recordAiCall(AI_MODEL, origin, true, usage);
 
   return {
     classification: {
@@ -302,8 +323,8 @@ export async function classifyWithModelDetailed(
         selectInterestProof(payload.lastMessage)?.quote ??
         null,
     },
-    inputTokens: body.usage?.input_tokens ?? 0,
-    outputTokens: body.usage?.output_tokens ?? 0,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
     latencyMs,
   };
 }

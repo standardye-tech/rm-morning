@@ -29,7 +29,13 @@ import {
 } from "../mail-store";
 import { extractQuoteFromMessage, messageBody } from "../mail-classify";
 import { selectInterestProof } from "../interest-proof";
-import { classifyHybrid, type ClassificationSource } from "../mail-classify-hybrid";
+import {
+  AI_BUDGET_REACHED,
+  classifyHybrid,
+  type ClassificationSource,
+  type ModelBudget,
+} from "../mail-classify-hybrid";
+import type { AiOrigin } from "../ai-usage";
 import { threadsNeedingQuote, whatClientSays } from "../morning-events";
 import type { ClassifiableMessage } from "../mail-classify";
 import {
@@ -305,9 +311,14 @@ export async function fetchThreadMessages(threadId: string): Promise<Classifiabl
  * extraite du dernier message entrant, jamais d'une réponse de RM qui
  * clôturerait le fil (holdout du 24/09/2026, même règle que le rattrapage).
  */
-export async function classifyThreadForStore(threadId: string, stage: string | null) {
+export async function classifyThreadForStore(
+  threadId: string,
+  stage: string | null,
+  origin: AiOrigin = "synchro",
+  budget?: ModelBudget,
+) {
   const thread = await fetchThreadMessages(threadId);
-  const result = await classifyHybrid(thread, { stage });
+  const result = await classifyHybrid(thread, { stage, origin }, budget);
   if (!result) return null;
   const lastInbound = thread.filter((m) => m.direction === "entrant").pop();
   const quote =
@@ -440,6 +451,10 @@ export type SyncReport = {
   clamped: number;
   inputTokens: number;
   outputTokens: number;
+  /** Requêtes envoyées au modèle par ce passage (tentatives, réussies ou non). */
+  aiCalls: number;
+  /** Fils classés par les règles faute de budget IA restant. */
+  aiBudgetSkipped: number;
   classifyMs: number;
 };
 
@@ -735,16 +750,21 @@ export class GmailSource implements MailSource {
     // calculés puis jetés : un crédit API épuisé a ainsi fait basculer 98 % des
     // fils en `rules_fallback` pendant dix jours sans aucune trace.
     const modelFallbacks = new Map<string, number>();
+    // Garde-fou de coût : au plus `maxModelCallsPerRun` appels par passage.
+    const budget: ModelBudget = { remaining: GMAIL_SYNC.maxModelCallsPerRun };
+    let aiBudgetSkipped = 0;
     await mapLimited([...touchedThreads.entries()], GMAIL_SYNC.classifyConcurrency, async ([threadId, stage]) => {
       try {
-        const classified_ = await classifyThreadForStore(threadId, stage);
+        const classified_ = await classifyThreadForStore(threadId, stage, "synchro", budget);
         if (!classified_) return;
         const { result, stored } = classified_;
         updateThreadClassification(threadId, stored);
 
         classified += 1;
         bySource[result.source] += 1;
-        if (result.fallbackReason) {
+        if (result.fallbackReason === AI_BUDGET_REACHED) {
+          aiBudgetSkipped += 1;
+        } else if (result.fallbackReason) {
           modelFallbacks.set(result.fallbackReason, (modelFallbacks.get(result.fallbackReason) ?? 0) + 1);
         }
         if (result.clamped) clamped += 1;
@@ -765,6 +785,7 @@ export class GmailSource implements MailSource {
       }
     });
     const classifyMs = Date.now() - classifyStart;
+    const aiCalls = GMAIL_SYNC.maxModelCallsPerRun - budget.remaining;
 
     // --- Rattrapage de la phrase du client sur les événements Morning ouverts.
     //
@@ -792,8 +813,16 @@ export class GmailSource implements MailSource {
       // Journal sûr : fournisseur, modèle, statut, type d'erreur. Jamais la clé ni un email.
       console.warn(`[gmail] repli du modèle sur les règles : ${reason} — ${n} fil(s)`);
     }
+    if (aiBudgetSkipped > 0) {
+      console.warn(
+        `[gmail] ${AI_BUDGET_REACHED} (${GMAIL_SYNC.maxModelCallsPerRun} appels) — ${aiBudgetSkipped} fil(s) classé(s) par les règles`,
+      );
+    }
     const errors: string[] = [
       ...(failure ? [`lecture : ${failure}`] : []),
+      ...(aiBudgetSkipped > 0
+        ? [`${AI_BUDGET_REACHED} (${GMAIL_SYNC.maxModelCallsPerRun} appels) : ${aiBudgetSkipped} fil(s) classé(s) par les règles`]
+        : []),
       ...[...modelFallbacks].map(([reason, n]) => `modèle indisponible (${reason}) : ${n} fil(s) classé(s) par les règles`),
       ...unreadMessages.map((f) => `message ${f.id} non lu : ${f.reason}`),
       ...unclassifiedThreads.map((f) => `fil ${f.id} non classé : ${f.reason}`),
@@ -807,6 +836,8 @@ export class GmailSource implements MailSource {
       matchedProbable: levels.B,
       matchedUncertain: levels.C,
       errors,
+      aiCalls,
+      aiBudgetReached: aiBudgetSkipped > 0,
     });
 
     return {
@@ -834,6 +865,8 @@ export class GmailSource implements MailSource {
       clamped,
       inputTokens,
       outputTokens,
+      aiCalls,
+      aiBudgetSkipped,
       classifyMs,
     };
   }

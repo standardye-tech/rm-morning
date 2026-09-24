@@ -5,6 +5,11 @@
  *   npm run mail:reclassify                 DRY-RUN, 14 derniers jours
  *   npm run mail:reclassify -- --days 7     DRY-RUN, 7 jours
  *   npm run mail:reclassify -- --apply      ÉCRIT dans la base configurée
+ *   npm run mail:reclassify -- --max-appels 100   plafond d'appels IA (défaut 400)
+ *
+ * COÛT : le DRY-RUN appelle RÉELLEMENT le modèle (seule la base est copiée).
+ * 14 jours ≈ 320 fils ≈ 320 appels au 24/09/2026. Au-delà du plafond, les
+ * fils restants sont classés par les règles et le rapport le dit.
  *
  * Pour chaque fil ayant reçu un message client dans la fenêtre : relecture
  * Gmail en LECTURE SEULE puis classification exactement comme la synchro
@@ -27,6 +32,7 @@ import { pathToFileURL } from "node:url";
 const args = process.argv.slice(2);
 const apply = args.includes("--apply");
 const days = Number(args[args.indexOf("--days") + 1] ?? NaN) || 14;
+const maxCalls = args.includes("--max-appels") ? Number(args[args.indexOf("--max-appels") + 1]) : 400;
 
 const source = path.resolve(process.cwd(), process.env.RM_DB_PATH ?? "data/rm-morning.db");
 let tmp = null;
@@ -41,6 +47,7 @@ const lib = (n) => pathToFileURL(path.resolve(process.cwd(), `src/lib/${n}.ts`))
 const { getDb } = await import(lib("db"));
 const { classifyThreadForStore } = await import(lib("sources/gmail"));
 const { updateThreadClassification } = await import(lib("mail-store"));
+const { AI_BUDGET_REACHED } = await import(lib("mail-classify-hybrid"));
 const ev = await import(lib("morning-events"));
 
 const db = getDb();
@@ -61,16 +68,18 @@ const threads = db
   )
   .all(cutoff);
 
+const budget = { remaining: maxCalls };
 const before = snapshot();
-const tally = { threads: threads.length, reclassified: 0, model: 0, rules: 0, rules_fallback: 0, errors: 0 };
+const tally = { threads: threads.length, reclassified: 0, model: 0, rules: 0, rules_fallback: 0, errors: 0, budgetSkipped: 0 };
 const reasons = new Map();
 for (const t of threads) {
   try {
     const previous = db.prepare("SELECT signal_type, summary, classifier, quote FROM mail_signal WHERE thread_id = ? LIMIT 1").get(t.thread_id);
-    const out = await classifyThreadForStore(t.thread_id, t.stage ?? null);
+    const out = await classifyThreadForStore(t.thread_id, t.stage ?? null, "retraitement", budget);
     if (!out) continue;
     tally[out.result.source] += 1;
-    if (out.result.fallbackReason) reasons.set(out.result.fallbackReason, (reasons.get(out.result.fallbackReason) ?? 0) + 1);
+    if (out.result.fallbackReason === AI_BUDGET_REACHED) tally.budgetSkipped += 1;
+    else if (out.result.fallbackReason) reasons.set(out.result.fallbackReason, (reasons.get(out.result.fallbackReason) ?? 0) + 1);
     const s = out.stored;
     if (!previous || previous.signal_type !== s.signalType || previous.summary !== s.summary.slice(0, 200) || previous.classifier !== s.classifier || (previous.quote ?? null) !== (s.quote == null ? null : s.quote.slice(0, 160))) {
       tally.reclassified += 1;
@@ -97,6 +106,7 @@ for (const id of ids) {
 console.log(`\n${apply ? "APPLIQUÉ" : "DRY-RUN (copie temporaire, base source intacte)"} — fenêtre ${days} jours`);
 console.log(`fils concernés ${tally.threads} | reclassés ${tally.reclassified} | modèle ${tally.model} | repli ${tally.rules_fallback} | règles sûres ${tally.rules} | erreurs ${tally.errors}`);
 for (const [r, n] of reasons) console.log(`  motif de repli : ${r} — ${n}`);
+console.log(`appels IA envoyés ${maxCalls - budget.remaining} (plafond ${maxCalls})${tally.budgetSkipped ? ` — ${AI_BUDGET_REACHED} : ${tally.budgetSkipped} fil(s) classé(s) par les règles` : ""}`);
 console.log(`Morning avant : ${before.hot.size} chaud(s), ${before.waiting.size} attente(s) · après : ${after.hot.size} chaud(s), ${after.waiting.size} attente(s)`);
 console.log(`entrent en chaud ${moves.entrent_chaud} | entrent en attente ${moves.entrent_attente} | sortent de chaud ${moves.sortent_chaud} | sortent d'attente ${moves.sortent_attente} | chaud → attente ${moves.chaud_vers_attente} | attente → chaud ${moves.attente_vers_chaud}`);
 
