@@ -27,7 +27,7 @@
  *         C8.1 fait moins bien que le hasard (lift 0,9×), il est rejeté.
  */
 
-import { EXPECTED_M1, FORECAST_DIVERGENCE, FORECAST_VISIBILITY } from "./config";
+import { EXPECTED_M1, FORECAST_CHALLENGE, FORECAST_DIVERGENCE, FORECAST_VISIBILITY } from "./config";
 import {
   buildForecastBoard,
   type ForecastMonthBoard,
@@ -688,6 +688,30 @@ export function buildForecastV2(
           : [],
     issues,
   };
+}
+
+/**
+ * « À challenger » dans Forecast — lot de simplification, E1.
+ *
+ * Forecast ne propose d'ajouter au mois qu'une affaire que RM Morning juge
+ * réellement probable : chance de signer sur le mois affiché STRICTEMENT
+ * supérieure à 25 % (`FORECAST_CHALLENGE.minProbability`), probabilité RM
+ * Morning canonique (`expectedProbability`). Une affaire exactement à 25 % reste
+ * visible (règle de visibilité ≥ 25 %) mais n'est pas proposée.
+ *
+ * Les affaires DÉCLARÉES mais fragiles (`declaree_fragile`) ne sont pas des
+ * challengers de Forecast : leur probabilité est par construction très faible.
+ * Elles restent dans le moteur (`examine`, Plan du jour) et Expected GMV les
+ * explique dans l'écart commerciaux / RM Morning.
+ *
+ * Source unique : Forecast, Ma semaine et Expected GMV lisent cette liste.
+ */
+export function forecastChallengers(board: Pick<ForecastV2Board, "examine">): ForecastV2Examine[] {
+  return board.examine.filter(
+    (e) =>
+      e.kind !== "declaree_fragile" &&
+      (e.row.expectedProbability ?? 0) > FORECAST_CHALLENGE.minProbability,
+  );
 }
 
 /**

@@ -114,8 +114,9 @@ const surfaces = [
   ["Expected GMV · M (challenge, affaires suivies)", "src/components/expected-gmv.tsx", 2],
   ["Expected GMV · M+1 (Construire M+1)", "src/components/construire-m1.tsx", 1],
   ["Monitoring · Opportunités", "src/components/monitoring-opportunities.tsx", 3],
-  ["Ma semaine · gros dossiers", "src/components/week.tsx", 1],
-  ["Ma semaine · affaire de la semaine", "src/components/deal-of-week.tsx", 2],
+  // Lot de simplification : les blocs de Ma semaine sont fondus dans le
+  // planning recommandé — les affaires clés de chaque carte portent le lien.
+  ["Ma semaine · planning recommandé (affaires clés)", "src/components/week-agenda.tsx", 1],
 ];
 {
   const mon = read("src/components/monitoring.tsx");

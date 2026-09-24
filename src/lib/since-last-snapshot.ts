@@ -539,6 +539,11 @@ export type OwnerMomentum = {
   standbyReturned: number;
   /** Au plus 3, triées par ampleur de mouvement — jamais un classement de commercial. */
   topMoves: SelectedChange[];
+  /**
+   * Toutes les affaires du commercial qui ont bougé sur la fenêtre (une ligne
+   * par affaire). Sert à « Ma semaine », qui en tire les sujets à traiter.
+   */
+  changes: OpportunityDelta[];
 };
 
 /**
@@ -589,6 +594,7 @@ export function aggregateOwnerMomentum(owner: string, changes: OpportunityDelta[
     standbyEntered,
     standbyReturned,
     topMoves,
+    changes,
   };
 }
 

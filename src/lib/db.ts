@@ -694,6 +694,23 @@ CREATE TABLE IF NOT EXISTS morning_action_done (
   PRIMARY KEY (action_key, done_on)
 );
 
+-- « Ma semaine » — état HEBDOMADAIRE du planning recommandé (lot de
+-- simplification, B5-B6). Deux gestes seulement : un sujet coché « traité », un
+-- ET placé dans un créneau. Chaque ligne porte sa semaine (lundi ISO) : la
+-- semaine suivante repart d'une page blanche recalculée, les précédentes restent
+-- archivées telles quelles. Ce n'est PAS un gestionnaire de tâches : ni
+-- échéance, ni report, ni rappel, et rien ne survit au changement de semaine.
+CREATE TABLE IF NOT EXISTS week_agenda_state (
+  week_start TEXT NOT NULL,
+  item_key   TEXT NOT NULL,
+  kind       TEXT NOT NULL,
+  owner      TEXT,
+  label      TEXT,
+  value      TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (week_start, item_key)
+);
+
 -- Journal du Plan du jour : ce que RM Morning a RECOMMANDÉ, à quel rang, pour
 -- quel montant. Un carnet d'observation, PAS un gestionnaire de tâches : aucune
 -- colonne de statut, d'échéance, de report ni de rappel, et rien ne le relit

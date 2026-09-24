@@ -1,18 +1,11 @@
 import Link from "next/link";
 
-import { DealOfWeek } from "@/components/deal-of-week";
-import { RadarPipeline, RadarToProcess } from "@/components/radar";
-import {
-  BigDeals,
-  TeamAttention,
-  WeekActions,
-  WeekEmpty,
-  WeekNotes,
-  WeekPlanning,
-  WeekSummaryBand,
-} from "@/components/week";
+import { RadarPipeline } from "@/components/radar";
+import { Card, EmptyState } from "@/components/ui";
+import { WeekAgendaBoard } from "@/components/week-agenda";
+import { listRadarContacts } from "@/lib/radar-store";
 import { latestImport } from "@/lib/repository";
-import { buildWeek } from "@/lib/week";
+import { buildWeekAgenda } from "@/lib/week-agenda-view";
 
 export const dynamic = "force-dynamic";
 
@@ -26,12 +19,16 @@ function freshness(iso: string): string {
 }
 
 /**
- * « Ma semaine » — où investir le temps du directeur régional cette semaine.
+ * « Ma semaine » — mon planning recommandé de management des ET.
  *
- * Ce n'est pas un agenda. Google Calendar garde les blocs ; cette page dit
- * lesquels méritent d'être remplis, avec qui, et ce qu'il faut en obtenir.
- * Tout est recalculé à chaque affichage, sur les données de la dernière
- * actualisation.
+ * Lot de simplification (B) : la page n'est plus une juxtaposition de blocs
+ * (Performance, Attention, Gros dossiers, À traiter, puis planning). Ces moteurs
+ * tournent toujours — attention managériale, gros dossiers, Momentum 7 jours,
+ * Plan du jour, challengers Forecast — mais leur sortie est digérée en UNE
+ * carte par ET dans un seul planning (`week-agenda.ts`).
+ *
+ * Le radar des candidatures reste consultable dans sa propre vue : c'est du
+ * recrutement, pas du management des ET.
  */
 export default async function SemainePage({
   searchParams,
@@ -45,30 +42,33 @@ export default async function SemainePage({
     return (
       <div className="py-8">
         <h1 className="text-2xl font-semibold tracking-tight">Ma semaine</h1>
-        <WeekEmpty />
+        <Card className="mt-6">
+          <EmptyState>
+            Aucune donnée importée. Lancez « Actualiser RM Morning » depuis l&apos;en-tête : la semaine se construit à
+            partir de Salesforce, de la Perspective et du Monitoring.
+          </EmptyState>
+        </Card>
       </div>
     );
   }
 
-  const view = buildWeek(new Date());
+  const view = vue === "semaine" ? buildWeekAgenda(new Date()) : null;
 
   return (
     <div className="py-8">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Ma semaine</h1>
-          <p className="mt-1 text-sm text-ink-soft">
-            {view.weekLabel} ·{" "}
-            {view.dataAt ? `données mises à jour ${freshness(view.dataAt)}` : "aucune actualisation enregistrée"}
-          </p>
-          <p className="mt-1 max-w-3xl text-xs text-ink-faint">
-            Où investir votre temps pour avoir le plus d&apos;impact. Recommandations, pas agenda : vos blocs
-            fixes restent dans Google Calendar.
-          </p>
+          {view ? (
+            <p className="mt-1 text-sm text-ink-soft">
+              {view.weekLabel} ·{" "}
+              {view.dataAt ? `données mises à jour ${freshness(view.dataAt)}` : "aucune actualisation enregistrée"}
+            </p>
+          ) : null}
         </div>
         <nav className="flex gap-1 text-sm" aria-label="Vue">
           {[
-            { key: "semaine", label: "Semaine", href: "/semaine" },
+            { key: "semaine", label: "Planning", href: "/semaine" },
             { key: "radar", label: "Radar", href: "/semaine?vue=radar" },
           ].map((v) => (
             <Link
@@ -85,32 +85,7 @@ export default async function SemainePage({
         </nav>
       </div>
 
-      {vue === "radar" ? (
-        <RadarPipeline contacts={view.radar.all} />
-      ) : (
-        <>
-          {/*
-            Ordre de lecture voulu : la recommandation avant l'analyse. Le
-            bandeau compte, le planning répond « que dois-je faire cette
-            semaine ? », le tableau des ET explique pourquoi ils y sont, puis
-            viennent le détail des actions, les gros dossiers, l'affaire de la
-            semaine et, en bas, les candidatures.
-          */}
-          <WeekSummaryBand view={view} />
-          <WeekPlanning planning={view.planning} />
-          <TeamAttention verdicts={view.verdicts} />
-          <WeekActions items={view.actions} />
-          <BigDeals deals={view.bigDeals} />
-          <DealOfWeek
-            current={view.dealOfWeek}
-            recommendation={view.recommendation}
-            ignoredThisWeek={view.ignoredThisWeek}
-            candidates={view.candidates}
-          />
-          <RadarToProcess contacts={view.radar.toProcess} />
-          <WeekNotes notes={view.notes} />
-        </>
-      )}
+      {view ? <WeekAgendaBoard view={view} /> : <RadarPipeline contacts={listRadarContacts()} />}
     </div>
   );
 }

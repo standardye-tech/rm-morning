@@ -291,6 +291,25 @@ export const WEEK_SLOTS: WeekSlot[] = [
   { day: 4, time: "15:00", kind: "candidatures" },
 ];
 
+/**
+ * « Ma semaine » — planning recommandé (lot de simplification, B). Seuils du
+ * moteur `week-agenda.ts`, jamais dans le moteur lui-même.
+ */
+export const WEEK_AGENDA = {
+  /** Sujets retenus par ET et par semaine (traités compris). */
+  maxTasks: 4,
+  /** Affaires clés citées sur une carte. */
+  keyDeals: 3,
+  /** Baisse de GMV (qualifiée par la règle du delta manager) qui mérite un sujet. */
+  minGmvDown: 20_000,
+  /** Sortie du mois qui mérite un sujet. */
+  minGmvExit: 20_000,
+  /** Passage en stand-by qui mérite un sujet. */
+  minGmvStandby: 50_000,
+  /** Changements de stade de la semaine à partir desquels un point est proposé. */
+  minStageChanges: 5,
+} as const;
+
 /** Créneaux réaffectables quand leur type n'a aucun candidat. */
 export const WEEK_REASSIGNABLE: WeekSlotKind[] = ["et_rouge", "et_orange", "gros_dossier", "affaire_semaine"];
 
@@ -1022,6 +1041,26 @@ export const PERFORMANCE = {
 export const FORECAST_VISIBILITY = {
   /** Chance de signer sur le mois à partir de laquelle une affaire s'affiche. */
   minProbability: 0.25,
+} as const;
+
+/**
+ * « À challenger » — seuils des deux écrans (lot de simplification, E1 / F9).
+ *
+ *   Forecast      : chance de signer sur le mois STRICTEMENT > 25 % ;
+ *   Expected GMV  : pMonthEnd STRICTEMENT > 15 %, et un impact crédible sur
+ *                   l'écart (GMV probable au moins `minExpectedGap`).
+ *
+ * Une affaire au-delà de 25 % est déjà proposée dans Forecast : Expected
+ * l'affiche discrètement comme telle, sans répéter l'alerte.
+ */
+export const FORECAST_CHALLENGE = {
+  minProbability: 0.25,
+} as const;
+
+export const EXPECTED_CHALLENGE = {
+  minProbability: 0.15,
+  /** GMV probable (GMV × pMonthEnd) en deçà duquel l'affaire ne pèse pas sur l'écart. */
+  minExpectedGap: 4_000,
 } as const;
 
 /**
