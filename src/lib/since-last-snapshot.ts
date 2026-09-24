@@ -615,39 +615,84 @@ export type MomentumScore = {
   parts: { label: string; value: number }[];
 };
 
+/** Composante de la note, dans l'ordre de priorité en cas d'égalité exacte. */
+const SCORE_COMPONENTS = ["signature", "kanban", "gmv", "standby"] as const;
+type ScoreComponent = (typeof SCORE_COMPONENTS)[number];
+
+/**
+ * Contribution pondérée RETENUE pour une affaire : parmi ses composantes, celle
+ * de plus grande valeur absolue, signe conservé. À égalité exacte : signature,
+ * puis entrée/sortie de M, puis variation de GMV, puis stand-by/retour actif.
+ * Null quand l'affaire ne contribue à aucune composante (changement de stade seul).
+ */
+export function retainedContribution(
+  c: OpportunityDelta,
+  rules = MOMENTUM_SCORE,
+): { component: ScoreComponent; label: string; value: number } | null {
+  const w = rules.weights;
+  const candidates: { component: ScoreComponent; label: string; value: number }[] = [];
+  if (c.signed) candidates.push({ component: "signature", label: "signé", value: w.signed * c.signed.gmv });
+  if (c.kanbanChange?.enteredM) candidates.push({ component: "kanban", label: "entrées dans M", value: w.declared * (c.gmv ?? 0) });
+  else if (c.kanbanChange?.exitedM) candidates.push({ component: "kanban", label: "sorties de M", value: -w.declared * (c.gmv ?? 0) });
+  if (c.gmvChange && c.gmvChange.delta !== 0) {
+    candidates.push({ component: "gmv", label: c.gmvChange.delta > 0 ? "hausses GMV" : "baisses GMV", value: w.declared * c.gmvChange.delta });
+  }
+  if (c.standbyChange) {
+    candidates.push({
+      component: "standby",
+      label: "stand-by",
+      value: w.standby * (c.standbyChange.enteredStandby ? -(c.gmv ?? 0) : (c.gmv ?? 0)),
+    });
+  }
+  let best: (typeof candidates)[number] | null = null;
+  for (const k of candidates) {
+    if (k.value === 0) continue;
+    if (
+      !best ||
+      Math.abs(k.value) > Math.abs(best.value) ||
+      (Math.abs(k.value) === Math.abs(best.value) &&
+        SCORE_COMPONENTS.indexOf(k.component) < SCORE_COMPONENTS.indexOf(best.component))
+    ) {
+      best = k;
+    }
+  }
+  return best;
+}
+
 /**
  * Note de momentum /20 — synthèse de la dynamique business OBSERVABLE des 7
  * derniers jours. Ce n'est ni une note de compétence, ni une note RH, ni une
  * performance annuelle.
  *
- *   impact = signé
- *          + ½ × entrées dans M − ½ × sorties de M
- *          + ½ × hausses GMV    − ½ × baisses GMV
- *          + ¼ × (retours actifs − passages en stand-by)      (GMV, en euros)
+ * Contributions pondérées d'une affaire (GMV, en euros) :
+ *   signature                  1   × GMV signée
+ *   entrée / sortie de M       ±½  × GMV
+ *   hausse / baisse de GMV     ½   × variation
+ *   retour actif / stand-by    ±¼  × GMV
  *
+ * UNE AFFAIRE = UNE CONTRIBUTION (verrous du 24/09/2026) : pour la note, chaque
+ * affaire ne compte que par sa contribution de plus grande valeur absolue
+ * (`retainedContribution`). Sur 297 fenêtres, le double comptage — une sortie
+ * de M causée par un passage en stand-by pénalisée deux fois, une entrée dans M
+ * suivie d'une signature récompensée deux fois — changeait 29 notes, jusqu'à
+ * 4 points. Le tableau factuel continue d'afficher toutes les dimensions.
+ *
+ *   impact = Σ contributions retenues
  *   note   = 10 + 10 × borne(impact / 100 k€, −1, +1), au demi-point.
  *
  * Le signé (réalisé, Travaux) pèse plein ; les mouvements déclaratifs (Kanban,
  * montant) pèsent moitié ; le stand-by, signal plus faible, un quart. Les
  * changements de stade n'entrent pas (on ne sait pas qualifier progression et
- * régression), ni le volume d'e-mails ou de tâches.
- *
- * Pondération choisie après simulation sur 297 fenêtres de 7 jours de la copie
- * production (27 dates × 11 ET, août-septembre 2026) : quatre variantes testées,
- * classements très proches (Spearman ≥ 0,94) ; l'échelle absolue de 100 k€ est
- * au niveau du 90e centile observé de |impact| (90 k€) et ne sature qu'aux
- * extrêmes (6 % à 20/20, 2 % à 0/20). Réglages : `MOMENTUM_SCORE`.
+ * régression), ni le volume d'e-mails ou de tâches. Réglages : `MOMENTUM_SCORE`.
  */
 export function momentumScore(o: OwnerMomentum, rules = MOMENTUM_SCORE): MomentumScore {
-  const w = rules.weights;
-  const parts = [
-    { label: "signé", value: w.signed * o.signed.gmv },
-    { label: "entrées dans M", value: w.declared * o.enteredM.gmv },
-    { label: "sorties de M", value: -w.declared * o.exitedM.gmv },
-    { label: "hausses GMV", value: w.declared * o.gmvUp.gmv },
-    { label: "baisses GMV", value: w.declared * o.gmvDown.gmv },
-    { label: "stand-by", value: w.standby * (o.standbyReturnedGmv - o.standbyEnteredGmv) },
-  ];
+  const totals = new Map<string, number>();
+  for (const c of o.changes) {
+    const kept = retainedContribution(c, rules);
+    if (kept) totals.set(kept.label, (totals.get(kept.label) ?? 0) + kept.value);
+  }
+  const order = ["signé", "entrées dans M", "sorties de M", "hausses GMV", "baisses GMV", "stand-by"];
+  const parts = order.map((label) => ({ label, value: totals.get(label) ?? 0 }));
   const impact = parts.reduce((t, p) => t + p.value, 0);
   const raw = 10 + 10 * Math.max(-1, Math.min(1, impact / rules.scale));
   return { score: Math.round(raw * 2) / 2, impact, parts };

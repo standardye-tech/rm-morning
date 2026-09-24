@@ -281,6 +281,20 @@ section("NOTE DE MOMENTUM /20 (lot de simplification C)");
   const odd = momentumScore(agg([delta({ signed: { gmv: 12_345, signatureDate: "2026-09-20" } })]));
   check("au demi-point, jamais de pseudo-précision", Number.isInteger(odd.score * 2), String(odd.score));
   check("l'explication somme exactement l'impact", Math.abs(odd.parts.reduce((t, p) => t + p.value, 0) - odd.impact) < 1e-6);
+
+  // Une affaire = une contribution (verrous du 24/09/2026).
+  const entreeSigne = momentumScore(agg([delta({ gmv: 50_000, signed: { gmv: 50_000, signatureDate: "2026-09-20" }, kanbanChange: { fromLabel: "Oct.", toLabel: "Sept.", enteredM: true, exitedM: false } })]));
+  check("entrée dans M + signature de la même affaire : seule la signature compte (15/20, pas 17,5)", entreeSigne.score === 15, String(entreeSigne.score));
+  const sortieStandby = momentumScore(agg([delta({ gmv: 138_000, kanbanChange: { fromLabel: "Sept.", toLabel: "Oct.", enteredM: false, exitedM: true }, standbyChange: { enteredStandby: true } })]));
+  check("sortie de M + stand-by de la même affaire : pénalisée une seule fois (−69 k€ -> 3/20)", sortieStandby.score === 3 && Math.round(sortieStandby.impact) === -69_000, String(sortieStandby.score));
+  const hausseStandby = momentumScore(agg([delta({ gmv: 111_000, gmvChange: { from: 25_000, to: 111_000, delta: 86_000, suspicious: false }, standbyChange: { enteredStandby: true } })]));
+  check("signe conservé : hausse +43 k€ retenue face au stand-by −27,75 k€", Math.round(hausseStandby.impact) === 43_000, String(Math.round(hausseStandby.impact)));
+  const egalite = momentumScore(agg([delta({ signed: { gmv: 20_000, signatureDate: "2026-09-20" }, gmvChange: { from: 60_000, to: 100_000, delta: 40_000, suspicious: false } })]));
+  check("égalité exacte (signé 20 k€ vs hausse ½ × 40 k€) : la signature l'emporte", egalite.parts.find((p) => p.label === "signé").value === 20_000 && egalite.parts.find((p) => p.label === "hausses GMV").value === 0);
+  const deux = momentumScore(agg([delta({ opportunityId: "006A", signed: { gmv: 30_000, signatureDate: "2026-09-20" } }), delta({ opportunityId: "006B", gmvChange: { from: 50_000, to: 90_000, delta: 40_000, suspicious: false } })]));
+  check("deux affaires distinctes : chacune garde sa contribution (30 + 20 k€)", Math.round(deux.impact) === 50_000);
+  const agr = aggregateOwnerMomentum("Test Commercial", [delta({ gmv: 50_000, signed: { gmv: 50_000, signatureDate: "2026-09-20" }, kanbanChange: { fromLabel: "Oct.", toLabel: "Sept.", enteredM: true, exitedM: false } })]);
+  check("le tableau factuel garde toutes les dimensions (signé ET entrée dans M)", agr.signed.count === 1 && agr.enteredM.count === 1);
 }
 
 console.log(`\n  ${failures === 0 ? "Tous les contrôles passent." : `${failures} contrôle(s) en échec.`}\n`);

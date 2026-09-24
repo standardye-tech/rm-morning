@@ -73,8 +73,9 @@ export function MomentumBlock({
               Une synthèse de la dynamique business observable des 7 derniers jours — pas une note de compétence, ni
               une note RH, ni une performance annuelle. Impact = signé + ½ × (entrées dans M − sorties de M) + ½ ×
               (hausses GMV − baisses GMV) + ¼ × (retours actifs − passages en stand-by), en GMV. Note = 10 + 10 ×
-              impact ÷ 100 k€, bornée entre 0 et 20, au demi-point : 10/20 est une semaine neutre. Les changements de
-              stade, les e-mails et les tâches ne comptent pas.
+              impact ÷ 100 k€, bornée entre 0 et 20, au demi-point : 10/20 est une semaine neutre. Une affaire ne compte
+              qu&apos;une fois, par sa contribution la plus forte (une sortie du mois due à un stand-by n&apos;est pas
+              pénalisée deux fois). Les changements de stade, les e-mails et les tâches ne comptent pas.
             </p>
           </details>
           <p className="border-t border-line px-4 py-2.5 text-xs text-ink-faint md:px-6">
