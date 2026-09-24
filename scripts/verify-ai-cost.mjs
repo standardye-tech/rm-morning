@@ -1,6 +1,7 @@
 /**
- * Contrôles du registre de consommation IA et du garde-fou de coût
- * (audit coût IA du 24/09/2026).
+ * Contrôles du coût IA (audit du 24/09/2026) : registre de consommation,
+ * tarif centralisé, plafond d'appels par synchro, délai avec annulation réelle,
+ * et état de classification (un message relu n'est pas un message à classer).
  *
  *   npm run ia:cout-verify
  *
@@ -20,9 +21,19 @@ process.env.ANTHROPIC_API_KEY = "cle-factice-de-test";
 // Modèle simulé : compte les requêtes, renvoie un verdict neutre et un usage fixe.
 let calls = 0;
 let mode = "ok";
-globalThis.fetch = async (url) => {
+let aborted = 0;
+globalThis.fetch = async (url, init) => {
   if (!String(url).includes("api.anthropic.com")) throw new Error("réseau interdit dans ce test");
   calls += 1;
+  if (mode === "hang") {
+    // Ne répond jamais ; seule l'annulation réelle (AbortSignal) libère la requête.
+    return new Promise((_, reject) => {
+      init?.signal?.addEventListener("abort", () => {
+        aborted += 1;
+        reject(Object.assign(new Error("requête annulée"), { name: "AbortError" }));
+      });
+    });
+  }
   if (mode === "credit") {
     return new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "Your credit balance is too low" } }), { status: 400 });
   }
@@ -39,7 +50,8 @@ const lib = (n) => pathToFileURL(path.resolve(process.cwd(), `src/lib/${n}.ts`))
 const { getDb } = await import(lib("db"));
 const { aiCostUsd, aiUsageSummary, AI_PRICING_USD_PER_MTOK } = await import(lib("ai-usage"));
 const { AI_MODEL } = await import(lib("mail-classify-ai"));
-const { classifyHybrid, AI_BUDGET_REACHED } = await import(lib("mail-classify-hybrid"));
+const { classifyHybrid, AI_BUDGET_REACHED, MODEL_TIMEOUT_MS } = await import(lib("mail-classify-hybrid"));
+const store = await import(lib("mail-store"));
 const { GMAIL_SYNC } = await import(lib("config"));
 
 let failures = 0;
@@ -91,6 +103,53 @@ section("GARDE-FOU — budget d'appels par passage");
   const b2 = calls;
   await Promise.all(Array.from({ length: 10 }, () => classifyHybrid(thread, { origin: "synchro" }, concurrent)));
   check("en parallèle, le budget tient : 3 appels pour 10 fils", calls - b2 === 3, String(calls - b2));
+}
+
+section("DÉLAI — annulation réelle de la requête");
+{
+  mode = "hang";
+  const before = aiUsageSummary().today;
+  const t0 = Date.now();
+  const r = await classifyHybrid(thread, { origin: "synchro" });
+  const elapsed = Date.now() - t0;
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  mode = "ok";
+  const after = aiUsageSummary().today;
+  check(`repli sur les règles au bout de ${MODEL_TIMEOUT_MS} ms`, r.source === "rules_fallback" && elapsed >= MODEL_TIMEOUT_MS && elapsed < MODEL_TIMEOUT_MS + 2000, `${elapsed} ms`);
+  check("motif « timeout » journalisable", /timeout$/.test(r.fallbackReason ?? ""), r.fallbackReason ?? "");
+  check("la requête HTTP est réellement annulée (aucun appel orphelin)", aborted === 1, String(aborted));
+  check("l'échec est consigné : +1 appel, +1 échec, 0 token", after.calls === before.calls + 1 && after.failures === before.failures + 1 && after.inputTokens === before.inputTokens);
+}
+
+section("ÉTAT DE CLASSIFICATION — relu ≠ à classifier");
+{
+  const db = getDb();
+  const sig = (id, thread, at, direction) => ({
+    gmailMessageId: id, threadId: thread, sentAt: at, fromEmail: `${thread}@exemple.fr`, fromName: null, subject: "Projet",
+    direction, filterRule: "conserve", opportunityId: null, matchLevel: "C", matchReason: "test", salesperson: null, rmTo: [], rmCc: [],
+  });
+  const since = "2026-09-01T00:00:00Z";
+  const pendingIds = () => store.threadsPendingClassification(since).map((p) => p.threadId).sort().join(",");
+  const syncId = store.startSync(since, "2026-09-30T00:00:00Z");
+  store.insertSignal(sig("a1", "fa", "2026-09-20T10:00:00Z", "entrant"), syncId);
+  store.insertSignal(sig("b1", "fb", "2026-09-20T10:00:00Z", "sortant"), syncId);
+  store.insertSignal(sig("c1", "fc", "2026-08-01T10:00:00Z", "entrant"), syncId);
+  check("message client inséré, pas encore classé : fil en attente", pendingIds() === "fa", pendingIds());
+  check("réponse RM seule : jamais en attente", !pendingIds().includes("fb"));
+  check("au-delà de la profondeur de reprise : pas repris automatiquement", !pendingIds().includes("fc"));
+  const verdict = { signalType: "positif_bloque", confidence: 0.7, blocker: null, summary: "test", classifier: "rules_fallback", quote: null };
+  store.updateThreadClassification("fa", verdict, false);
+  check("verdict provisoire (repli, budget) : écrit, mais le fil reste en attente", pendingIds() === "fa" && db.prepare("SELECT signal_type FROM mail_signal WHERE gmail_message_id='a1'").get().signal_type === "positif_bloque");
+  store.updateThreadClassification("fa", { ...verdict, classifier: AI_MODEL }, true);
+  check("verdict définitif : plus rien en attente — une relecture ne coûte plus rien", pendingIds() === "", pendingIds());
+  store.insertSignal(sig("a2", "fa", "2026-09-21T10:00:00Z", "sortant"), syncId);
+  store.inheritThreadClassification("a2", "fa");
+  const a2 = db.prepare("SELECT signal_type, classifier FROM mail_signal WHERE gmail_message_id='a2'").get();
+  check("réponse RM : reprend le verdict du fil, sans analyse", a2.signal_type === "positif_bloque" && a2.classifier === AI_MODEL && pendingIds() === "", JSON.stringify(a2));
+  store.insertSignal(sig("a3", "fa", "2026-09-22T10:00:00Z", "entrant"), syncId);
+  check("nouveau message du client après la réponse RM : fil de nouveau en attente", pendingIds() === "fa", pendingIds());
+  store.markThreadAnalyzed("fa");
+  check("fil sans verdict possible : marqué analysé, non relu indéfiniment", pendingIds() === "");
 }
 
 getDb().close();

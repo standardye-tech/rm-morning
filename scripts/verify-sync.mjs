@@ -16,6 +16,7 @@
 
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { guardRealAiCalls } from "./real-ai-guard.mjs";
 
 const lib = (n) => pathToFileURL(path.resolve(process.cwd(), `src/lib/${n}.ts`)).href;
 const { startGlobalSync, runGlobalSyncToCompletion, SyncBusyError } = await import(
@@ -32,6 +33,9 @@ const { officialSignedGmv } = await import(lib("official-signed"));
 
 const db = getDb();
 const doRun = process.argv.includes("--run");
+// Un run réel inclut l'étape Gmail, donc le scanner IA : bloqué sauf
+// ALLOW_REAL_AI_CALLS=1 (le modèle prend alors son repli sur les règles).
+if (doRun) guardRealAiCalls("sync:verify --run");
 
 let failures = 0;
 let total = 0;

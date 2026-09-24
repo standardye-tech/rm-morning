@@ -225,6 +225,8 @@ export type ModelCall = {
 export async function classifyWithModelDetailed(
   messages: ClassifiableMessage[],
   context: ThreadContext = {},
+  /** Annulation RÉELLE de la requête HTTP (délai dépassé) : aucun appel orphelin. */
+  signal?: AbortSignal,
 ): Promise<ModelCall> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -237,41 +239,10 @@ export async function classifyWithModelDetailed(
 
   const payload = buildPayload(messages, context);
   const startedAt = Date.now();
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: AI_MODEL,
-      max_tokens: 400,
-      // Classification, pas rédaction : on veut le même verdict à chaque
-      // appel, sinon la mesure n'est pas reproductible.
-      temperature: 0,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: "user", content: buildUserMessage(payload) }],
-    }),
-  });
-
   const origin = context.origin ?? "verification";
-  if (!response.ok) {
-    // Requête envoyée mais refusée : comptée comme appel échoué, sans tokens
-    // (l'API ne facture pas une requête rejetée).
-    recordAiCall(AI_MODEL, origin, false, { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 });
-    const detail = (await response.json().catch(() => null)) as {
-      error?: { type?: string; message?: string };
-    } | null;
-    // Le message d'erreur de l'API ne contient ni la clé ni le contenu envoyé.
-    throw new ClassifierUnavailableError(
-      detail?.error?.message ?? "erreur",
-      response.status,
-      detail?.error?.type ?? "http_error",
-    );
-  }
-
-  const body = (await response.json()) as {
+  const noUsage = { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 };
+  let status = 0;
+  let body: {
     content?: { text?: string }[];
     usage?: {
       input_tokens?: number;
@@ -280,9 +251,46 @@ export async function classifyWithModelDetailed(
       cache_read_input_tokens?: number;
     };
   };
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: AI_MODEL,
+        max_tokens: 400,
+        // Classification, pas rédaction : on veut le même verdict à chaque
+        // appel, sinon la mesure n'est pas reproductible.
+        temperature: 0,
+        system: SYSTEM_PROMPT,
+        messages: [{ role: "user", content: buildUserMessage(payload) }],
+      }),
+      signal,
+    });
+    status = response.status;
+
+    if (!response.ok) {
+      const detail = (await response.json().catch(() => null)) as {
+        error?: { type?: string; message?: string };
+      } | null;
+      // Le message d'erreur de l'API ne contient ni la clé ni le contenu envoyé.
+      throw new ClassifierUnavailableError(
+        detail?.error?.message ?? "erreur",
+        response.status,
+        detail?.error?.type ?? "http_error",
+      );
+    }
+    body = (await response.json()) as typeof body;
+  } catch (cause) {
+    // Requête envoyée puis refusée, annulée (délai dépassé) ou coupée : comptée
+    // comme appel en échec, sans tokens — aucun n'a été rapporté par l'API.
+    recordAiCall(AI_MODEL, origin, false, noUsage);
+    throw cause;
+  }
   const latencyMs = Date.now() - startedAt;
-  // Consigné dès la réponse reçue, y compris quand elle arrive après le délai
-  // de repli de `classifyHybrid` : la requête a été facturée quand même.
   const usage = {
     inputTokens: body.usage?.input_tokens ?? 0,
     outputTokens: body.usage?.output_tokens ?? 0,
@@ -297,7 +305,7 @@ export async function classifyWithModelDetailed(
     parsed = JSON.parse(json) as Record<string, unknown>;
   } catch {
     recordAiCall(AI_MODEL, origin, false, usage);
-    throw new ClassifierUnavailableError("Réponse du modèle illisible (JSON invalide).", response.status, "reponse_illisible");
+    throw new ClassifierUnavailableError("Réponse du modèle illisible (JSON invalide).", status, "reponse_illisible");
   }
 
   const signalType = VALID.includes(parsed.signal_type as SignalType)

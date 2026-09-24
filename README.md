@@ -157,6 +157,28 @@ npm run semaine:verify
 npm run semaine:agenda-verify
 ```
 
+## Scanner email IA — coût et garde-fous
+
+Seul consommateur de tokens : la classification des fils Gmail
+(`mail-classify-ai.ts`, Haiku 4.5), appelée par la synchronisation Gmail.
+
+- **Un message relu n'est pas un message à classer.** La fenêtre Gmail relit
+  2 h déjà vues ; seuls les fils portant un message client ou interne sans
+  `analyzed_at` partent à la classification. Une réponse RM seule reprend le
+  verdict du fil sans appel. Un passage interrompu est repris au suivant
+  (profondeur `GMAIL_SYNC.pendingLookbackDays`, 7 jours).
+- **Plafond** : `GMAIL_SYNC.maxModelCallsPerRun` (100) appels par synchro ;
+  au-delà, règles et « budget IA de la synchronisation atteint ».
+- **Délai** : 8 s, requête réellement annulée, repli sur les règles.
+- **Mesure** : registre `ai_usage_daily` (appels, échecs, tokens, par jour,
+  modèle et origine, sans contenu) ; tarifs dans `src/lib/ai-usage.ts` seulement ;
+  ligne « Scanner email IA » dans Données.
+- **Scripts** : `mail:model-check` et `mail:reclassify` appellent le vrai
+  modèle, volontairement. Les scripts de vérification qui le pourraient
+  (`verify-fallback`, `verify-classify`, `sync:verify -- --run`) sont bloqués
+  sans `ALLOW_REAL_AI_CALLS=1`. `npm run ia:cout-verify` contrôle le tout sans
+  réseau.
+
 ## Non branché à ce stade
 
 Gmail : seule l'interface `MailSource` existe.

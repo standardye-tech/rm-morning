@@ -80,6 +80,13 @@ export function insertSignal(signal: MailSignalRow, syncId: number): boolean {
  * toutes le même verdict, et lire le signal courant d'une opportunité revient
  * à prendre sa ligne la plus récente.
  *
+ * `analyzed_at` est l'état persistant « classifié avec succès » : une ligne
+ * entrante ou interne sans `analyzed_at` attend encore sa classification (voir
+ * `threadsPendingClassification`). Un verdict PROVISOIRE — repli sur les règles
+ * après une panne du modèle ou un budget épuisé — est écrit pour que Morning
+ * ait quelque chose à montrer, mais ne pose pas `analyzed_at` : le fil sera
+ * repris au passage suivant.
+ *
  * Aucun corps de message n'est écrit ici — seulement le verdict, sa confiance,
  * l'obstacle, un résumé court et l'identité du classifieur.
  */
@@ -94,12 +101,13 @@ export function updateThreadClassification(
     /** Phrase du client, déjà bornée à 160 caractères par le classifieur. */
     quote?: string | null;
   },
+  final = true,
 ): void {
   getDb()
     .prepare(
       `UPDATE mail_signal
           SET signal_type = ?, signal_confidence = ?, blocker = ?, summary = ?,
-              classifier = ?, analyzed_at = ?, quote = ?
+              classifier = ?, quote = ?${final ? ", analyzed_at = ?" : ""}
         WHERE thread_id = ?`,
     )
     .run(
@@ -108,10 +116,70 @@ export function updateThreadClassification(
       classification.blocker,
       classification.summary.slice(0, 200),
       classification.classifier,
-      new Date().toISOString(),
       classification.quote == null ? null : classification.quote.slice(0, 160),
+      ...(final ? [new Date().toISOString()] : []),
       threadId,
     );
+}
+
+/**
+ * Fil examiné sans rien à classer (les règles ne produisent aucun verdict) :
+ * ses lignes en attente sont marquées analysées, pour ne pas le relire à
+ * chaque passage. Le verdict existant n'est pas touché.
+ */
+export function markThreadAnalyzed(threadId: string): void {
+  getDb()
+    .prepare("UPDATE mail_signal SET analyzed_at = ? WHERE thread_id = ? AND analyzed_at IS NULL")
+    .run(new Date().toISOString(), threadId);
+}
+
+/**
+ * Une ligne qui n'appelle pas d'analyse (réponse RM) reprend le verdict déjà
+ * posé sur son fil, sans appel au modèle. Sans cela elle resterait
+ * `non_classifie` et, étant la plus récente, masquerait le signal du fil
+ * (`latestSignalByOpportunity` lit la dernière ligne). Fil jamais classé :
+ * rien à reprendre, la ligne reste telle quelle.
+ */
+export function inheritThreadClassification(gmailMessageId: string, threadId: string): void {
+  getDb()
+    .prepare(
+      `UPDATE mail_signal
+          SET (signal_type, signal_confidence, blocker, summary, classifier, analyzed_at, quote) = (
+                SELECT signal_type, signal_confidence, blocker, summary, classifier, analyzed_at, quote
+                  FROM mail_signal
+                 WHERE thread_id = ? AND gmail_message_id <> ? AND signal_type <> 'non_classifie'
+                 ORDER BY sent_at DESC LIMIT 1)
+        WHERE gmail_message_id = ?
+          AND EXISTS (SELECT 1 FROM mail_signal
+                       WHERE thread_id = ? AND gmail_message_id <> ? AND signal_type <> 'non_classifie')`,
+    )
+    .run(threadId, gmailMessageId, gmailMessageId, threadId, gmailMessageId);
+}
+
+/**
+ * Fils à envoyer à la classification : ceux qui ont au moins un message
+ * entrant ou interne pas encore classifié avec succès, reçu depuis `sinceIso`.
+ *
+ * C'est l'état en BASE qui décide, pas la fenêtre Gmail : un message relu par
+ * le chevauchement et déjà classé ne coûte rien, et un message inséré par un
+ * passage interrompu avant sa classification est repris au suivant. Les
+ * réponses RM (`sortant`) n'appellent jamais d'analyse : le modèle lit
+ * l'intention du client, pas nos propres réponses.
+ *
+ * Le stade renvoyé est celui de l'opportunité du message le plus récent du fil
+ * qui en porte une.
+ */
+export function threadsPendingClassification(sinceIso: string): { threadId: string; stage: string | null }[] {
+  return queryAll<{ thread_id: string; stage: string | null }>(
+    `SELECT p.thread_id,
+            (SELECT o.stage FROM mail_signal x JOIN opportunity o ON o.opportunity_id = x.opportunity_id
+              WHERE x.thread_id = p.thread_id ORDER BY x.sent_at DESC LIMIT 1) AS stage
+       FROM mail_signal p
+      WHERE p.analyzed_at IS NULL AND p.direction <> 'sortant' AND p.sent_at >= ?
+      GROUP BY p.thread_id
+      ORDER BY MAX(p.sent_at) DESC`,
+    sinceIso,
+  ).map((r) => ({ threadId: r.thread_id, stage: r.stage ?? null }));
 }
 
 /**

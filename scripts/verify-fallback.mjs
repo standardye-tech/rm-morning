@@ -13,10 +13,18 @@
  *   — il est marqué `rules_fallback`, pour être distinguable en base ;
  *   — la synchronisation Gmail se termine normalement ;
  *   — le Morning Brief reste généré.
+ *
+ * GARDE-FOU : sans ALLOW_REAL_AI_CALLS=1, aucune requête ne part vers
+ * Anthropic (`real-ai-guard.mjs`) — la « clé invalide » et la synchronisation
+ * éprouvent alors le même repli sans réseau. La synchronisation Gmail, elle,
+ * reste réelle (lecture seule côté Gmail, écriture dans la base configurée).
  */
 
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { guardRealAiCalls } from "./real-ai-guard.mjs";
+
+const realAi = guardRealAiCalls("verify-fallback");
 
 const lib = (n) => pathToFileURL(path.resolve(process.cwd(), `src/lib/${n}.ts`)).href;
 const { classifyHybrid, MODEL_TIMEOUT_MS } = await import(lib("mail-classify-hybrid"));
@@ -59,7 +67,7 @@ check("clé ANTHROPIC_API_KEY absente", await classifyHybrid(thread), "rules_fal
 
 // 2. Clé invalide → erreur API authentique.
 process.env.ANTHROPIC_API_KEY = "sk-ant-cle-invalide-pour-test-de-panne";
-check("clé invalide (erreur API réelle)", await classifyHybrid(thread), "rules_fallback");
+check(realAi ? "clé invalide (erreur API réelle)" : "clé invalide (requête bloquée par le garde-fou)", await classifyHybrid(thread), "rules_fallback");
 
 // 3. Délai dépassé : on rétablit la vraie clé mais on force un temps nul.
 process.env.ANTHROPIC_API_KEY = realKey;

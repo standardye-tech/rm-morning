@@ -29,7 +29,11 @@ import { classifyWithModelDetailed, fallbackLabel, type ThreadContext } from "./
 /** Seuil d'escalade. Au-dessus, le verdict des règles est jugé assez sûr. */
 export const ESCALATION_CONFIDENCE = 0.6;
 
-/** Délai au-delà duquel on renonce au modèle et on garde les règles. */
+/**
+ * Délai au-delà duquel on renonce au modèle et on garde les règles. La requête
+ * HTTP est alors réellement ANNULÉE (AbortController) : aucun appel orphelin ne
+ * continue — ni facturé, ni consommé — après le repli.
+ */
 export const MODEL_TIMEOUT_MS = 8000;
 
 export type ClassificationSource = "rules" | "model" | "rules_fallback";
@@ -102,10 +106,12 @@ export async function classifyHybrid(
     budget.remaining -= 1;
   }
 
+  const controller = new AbortController();
   try {
     const call = await withTimeout(
-      classifyWithModelDetailed(messages, context),
+      classifyWithModelDetailed(messages, context, controller.signal),
       MODEL_TIMEOUT_MS,
+      () => controller.abort(),
     );
 
     // Bridage : le modèle n'a pas autorité pour prononcer une signature ni
@@ -147,9 +153,13 @@ export async function classifyHybrid(
   }
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => void): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`délai de ${ms} ms dépassé`)), ms);
+    const timer = setTimeout(() => {
+      // Motif d'abord (le repli est étiqueté « timeout »), annulation ensuite.
+      reject(new Error(`délai de ${ms} ms dépassé`));
+      onTimeout();
+    }, ms);
     promise.then(
       (value) => {
         clearTimeout(timer);

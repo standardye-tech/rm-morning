@@ -1128,7 +1128,8 @@ export const GMAIL_SYNC = {
   /**
    * Chevauchement repris avant le curseur. Couvre les messages arrivés
    * pendant la synchronisation précédente et les latences d'indexation Gmail.
-   * Sans risque : la clé primaire `gmail_message_id` absorbe les doublons.
+   * Sans risque : la clé primaire `gmail_message_id` absorbe les doublons, et
+   * un message relu déjà classifié (`analyzed_at`) ne repart pas au modèle.
    */
   overlapHours: 2,
 
@@ -1153,6 +1154,15 @@ export const GMAIL_SYNC = {
    * d'amorçage sur 7 jours = 146 appels.
    */
   maxModelCallsPerRun: 100,
+
+  /**
+   * Profondeur de reprise des messages pas encore classifiés avec succès
+   * (passage interrompu, panne du modèle, budget atteint). Au-delà, un fil
+   * n'est plus repris automatiquement : `npm run mail:reclassify` reste
+   * l'opération explicite. Égale à l'amorçage : une reprise après perte de
+   * l'historique ne rouvre pas plus loin que ce qu'elle relit.
+   */
+  pendingLookbackDays: 7,
 } as const;
 
 /**

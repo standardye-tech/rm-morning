@@ -46,7 +46,7 @@ if (!apply) {
 const lib = (n) => pathToFileURL(path.resolve(process.cwd(), `src/lib/${n}.ts`)).href;
 const { getDb } = await import(lib("db"));
 const { classifyThreadForStore } = await import(lib("sources/gmail"));
-const { updateThreadClassification } = await import(lib("mail-store"));
+const { updateThreadClassification, markThreadAnalyzed } = await import(lib("mail-store"));
 const { AI_BUDGET_REACHED } = await import(lib("mail-classify-hybrid"));
 const ev = await import(lib("morning-events"));
 
@@ -76,7 +76,10 @@ for (const t of threads) {
   try {
     const previous = db.prepare("SELECT signal_type, summary, classifier, quote FROM mail_signal WHERE thread_id = ? LIMIT 1").get(t.thread_id);
     const out = await classifyThreadForStore(t.thread_id, t.stage ?? null, "retraitement", budget);
-    if (!out) continue;
+    if (!out) {
+      markThreadAnalyzed(t.thread_id);
+      continue;
+    }
     tally[out.result.source] += 1;
     if (out.result.fallbackReason === AI_BUDGET_REACHED) tally.budgetSkipped += 1;
     else if (out.result.fallbackReason) reasons.set(out.result.fallbackReason, (reasons.get(out.result.fallbackReason) ?? 0) + 1);
@@ -84,7 +87,8 @@ for (const t of threads) {
     if (!previous || previous.signal_type !== s.signalType || previous.summary !== s.summary.slice(0, 200) || previous.classifier !== s.classifier || (previous.quote ?? null) !== (s.quote == null ? null : s.quote.slice(0, 160))) {
       tally.reclassified += 1;
     }
-    updateThreadClassification(t.thread_id, s);
+    // Repli (panne, plafond) : verdict provisoire, fil laissé en attente.
+    updateThreadClassification(t.thread_id, s, out.final);
   } catch {
     tally.errors += 1;
   }

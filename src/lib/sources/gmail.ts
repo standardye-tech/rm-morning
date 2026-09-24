@@ -21,9 +21,12 @@ import { getAccessToken } from "../google-oauth";
 import { queryAll } from "../db";
 import {
   finishSync,
+  inheritThreadClassification,
   insertSignal,
   lastCompletedSync,
+  markThreadAnalyzed,
   startSync,
+  threadsPendingClassification,
   updateThreadClassification,
   setThreadQuote,
 } from "../mail-store";
@@ -329,6 +332,9 @@ export async function classifyThreadForStore(
         : null;
   return {
     result,
+    // Verdict définitif (pose `analyzed_at`) sauf repli : panne du modèle ou
+    // budget épuisé laissent le fil en attente pour le passage suivant.
+    final: result.source !== "rules_fallback",
     stored: {
       signalType: result.classification.signalType,
       confidence: result.classification.confidence,
@@ -592,8 +598,10 @@ export class GmailSource implements MailSource {
     let inserted = 0;
     let duplicates = 0;
     const levels = { A: 0, B: 0, C: 0 };
-    // Fils touchés par ce passage → stade Salesforce, pour la classification.
-    const touchedThreads = new Map<string, string | null>();
+    // Fils relus par ce passage (nouveaux messages ou doublons du
+    // chevauchement) : ne décident PAS de la classification, seulement du
+    // rattrapage des citations.
+    const touchedThreads = new Set<string>();
     let classified = 0;
     let clamped = 0;
     let inputTokens = 0;
@@ -710,6 +718,11 @@ export class GmailSource implements MailSource {
           (a) => domainOf(a) === INTERNAL_DOMAIN,
         );
 
+        const direction = allInternal
+          ? "interne"
+          : fromDomain === INTERNAL_DOMAIN
+            ? "sortant"
+            : "entrant";
         const isNew = insertSignal(
           {
             gmailMessageId: message.id,
@@ -718,11 +731,7 @@ export class GmailSource implements MailSource {
             fromEmail: message.from,
             fromName: fromName || null,
             subject: message.subject || null,
-            direction: allInternal
-              ? "interne"
-              : fromDomain === INTERNAL_DOMAIN
-                ? "sortant"
-                : "entrant",
+            direction,
             filterRule: verdict.rule,
             opportunityId: match.opportunityId,
             matchLevel: match.level,
@@ -736,15 +745,26 @@ export class GmailSource implements MailSource {
         if (isNew) inserted += 1;
         else duplicates += 1;
 
-        // Seuls les fils touchés par ce passage seront reclassés : on ne
-        // rejoue jamais tout l'historique.
-        touchedThreads.set(message.threadId, opportunity?.stage ?? null);
+        // Relire un message ne suffit pas à le reclasser : c'est l'état en base
+        // (`analyzed_at`) qui décide, après la boucle. Une réponse RM reprend
+        // simplement le verdict du fil, sans analyse.
+        if (isNew && direction === "sortant") inheritThreadClassification(message.id, message.threadId);
+        touchedThreads.add(message.threadId);
       }
     } catch (cause) {
       failure = cause instanceof Error ? cause.message : String(cause);
     }
 
-    // --- Classification hybride bridée des fils touchés.
+    // --- Classification hybride bridée des fils EN ATTENTE.
+    //
+    // Découplage (24/09/2026) : la fenêtre relit volontairement deux heures
+    // déjà vues, et chaque message relu faisait reclasser son fil — 7 à 8
+    // appels au modèle pour une actualisation sans aucun nouveau mail. Seuls
+    // les fils portant un message entrant ou interne pas encore classifié avec
+    // succès partent désormais à la classification, qu'ils viennent de ce
+    // passage ou d'un passage interrompu avant sa classification.
+    const pendingSince = new Date(now.getTime() - GMAIL_SYNC.pendingLookbackDays * 864e5).toISOString();
+    const pending = threadsPendingClassification(pendingSince);
     const classifyStart = Date.now();
     // Motifs de repli du modèle, comptés par fil. Jusqu'au 24/09/2026 ils étaient
     // calculés puis jetés : un crédit API épuisé a ainsi fait basculer 98 % des
@@ -753,12 +773,15 @@ export class GmailSource implements MailSource {
     // Garde-fou de coût : au plus `maxModelCallsPerRun` appels par passage.
     const budget: ModelBudget = { remaining: GMAIL_SYNC.maxModelCallsPerRun };
     let aiBudgetSkipped = 0;
-    await mapLimited([...touchedThreads.entries()], GMAIL_SYNC.classifyConcurrency, async ([threadId, stage]) => {
+    await mapLimited(pending, GMAIL_SYNC.classifyConcurrency, async ({ threadId, stage }) => {
       try {
         const classified_ = await classifyThreadForStore(threadId, stage, "synchro", budget);
-        if (!classified_) return;
-        const { result, stored } = classified_;
-        updateThreadClassification(threadId, stored);
+        if (!classified_) {
+          markThreadAnalyzed(threadId);
+          return;
+        }
+        const { result, stored, final } = classified_;
+        updateThreadClassification(threadId, stored, final);
 
         classified += 1;
         bySource[result.source] += 1;
@@ -772,8 +795,9 @@ export class GmailSource implements MailSource {
         outputTokens += result.outputTokens;
       } catch (cause) {
         // Une classification qui échoue n'invalide pas la synchronisation :
-        // le message reste stocké, simplement `non_classifie`. Ce n'est donc
-        // PAS un message illisible, et ce compteur-ci le dit.
+        // le message reste stocké, `non_classifie` et EN ATTENTE — il sera
+        // repris au passage suivant. Ce n'est donc PAS un message illisible,
+        // et ce compteur-ci le dit.
         //
         // `classifyHybrid` ne lève jamais — tout échec du modèle rend la main
         // aux règles. Ce qui atterrit ici vient forcément de la relecture du
@@ -795,7 +819,10 @@ export class GmailSource implements MailSource {
     // bloquant : un échec laisse la colonne vide et la ligne retombe sur le
     // résumé. Une chaîne vide marque « cherché, rien trouvé » pour ne pas
     // relire le même fil à chaque passage.
-    const backfill = threadsNeedingQuote(QUOTE_BACKFILL_LIMIT).filter((t) => !touchedThreads.has(t));
+    const classifiedNow = new Set(pending.map((p) => p.threadId));
+    const backfill = threadsNeedingQuote(QUOTE_BACKFILL_LIMIT).filter(
+      (t) => !touchedThreads.has(t) && !classifiedNow.has(t),
+    );
     await mapLimited(backfill, GMAIL_SYNC.classifyConcurrency, async (threadId) => {
       try {
         const thread = await fetchThreadMessages(threadId);

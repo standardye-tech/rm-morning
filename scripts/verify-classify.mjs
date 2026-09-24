@@ -20,6 +20,14 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { guardRealAiCalls } from "./real-ai-guard.mjs";
+
+// Ce script mesure le VRAI modèle sur tout le corpus : sans autorisation
+// explicite, il refuse plutôt que de dépenser en silence.
+if (!guardRealAiCalls("verify-classify")) {
+  console.log("Refus : ce script appelle le modèle réel sur tout le corpus. Relancer avec ALLOW_REAL_AI_CALLS=1.");
+  process.exit(2);
+}
 
 const lib = (n) => pathToFileURL(path.resolve(process.cwd(), `src/lib/${n}.ts`)).href;
 const { classifyThread } = await import(lib("mail-classify"));
@@ -28,9 +36,10 @@ const { classifyWithModelDetailed, buildPayload, buildUserMessage, AI_MODEL } = 
 );
 const { getAccessToken } = await import(lib("google-oauth"));
 
-/** Tarifs publics Haiku 4.5, en dollars par million de jetons. */
-const PRICE_IN = 1.0;
-const PRICE_OUT = 5.0;
+// Tarifs : une seule source, `src/lib/ai-usage.ts`.
+const { AI_PRICING_USD_PER_MTOK } = await import(lib("ai-usage"));
+const PRICE_IN = AI_PRICING_USD_PER_MTOK[AI_MODEL].input;
+const PRICE_OUT = AI_PRICING_USD_PER_MTOK[AI_MODEL].output;
 
 const ESCALATE_CONFIDENCE = 0.6;
 
