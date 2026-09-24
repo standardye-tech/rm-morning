@@ -1,4 +1,5 @@
 import { SalesforceOpportunityLink } from "@/components/salesforce-link";
+import { SortableTable } from "@/components/sortable-table";
 import { formatEurShort } from "@/lib/normalize";
 import {
   MILESTONE_LABEL,
@@ -156,59 +157,60 @@ export function OpportunityOwnerTable({ owners }: { owners: OwnerOpportunityMetr
     <section>
       <SectionTitle title="Par commercial" aside={`${active.length} commerciaux`} />
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[880px] text-sm">
-          <thead>
-            <tr className="border-b border-line text-left text-[11px] uppercase tracking-wide text-ink-faint">
-              <th className="px-4 md:px-6 py-2 font-medium">Commercial</th>
-              <th className="px-3 py-2 text-right font-medium">Opps</th>
-              <th className="px-3 py-2 text-right font-medium">GMV</th>
-              <th className="px-3 py-2 text-right font-medium">Estim. sans relance</th>
-              <th className="px-3 py-2 text-right font-medium">Devis sans relance</th>
-              <th className="px-3 py-2 text-right font-medium">Client attend</th>
-              <th className="px-3 py-2 text-right font-medium">Sans mouvement</th>
-              <th className="px-3 py-2 text-right font-medium">GMV concerné</th>
-              <th className="px-4 md:px-6 py-2 font-medium">État</th>
-            </tr>
-          </thead>
-          <tbody>
-            {active
-              .sort((a, b) => b.newExceptions - a.newExceptions || b.gmv - a.gmv)
-              .map((o) => (
-                <tr key={o.owner} className="border-b border-line last:border-0">
-                  <td className="px-4 md:px-6 py-2.5 font-medium">{o.owner}</td>
-                  <td className="tabular px-3 py-2.5 text-right">{o.active}</td>
-                  <td className="tabular px-3 py-2.5 text-right">{formatEurShort(o.gmv)}</td>
-                  <td className="tabular px-3 py-2.5 text-right">
-                    {o.estimationWithoutRelance || "—"}
-                  </td>
-                  <td className="tabular px-3 py-2.5 text-right">{o.devisWithoutRelance || "—"}</td>
-                  <td
-                    className={`tabular px-3 py-2.5 text-right ${o.clientWaiting > 0 ? "font-semibold text-danger" : "text-ink-faint"}`}
+        {/* Lot de simplification (D) : chaque colonne se trie d'un clic. */}
+        <SortableTable
+          className="w-full min-w-[880px] text-sm"
+          columns={[
+            { label: "Commercial", type: "text", className: "px-4 md:px-6" },
+            { label: "Opps", type: "number", align: "right" },
+            { label: "GMV", type: "number", align: "right" },
+            { label: "Estim. sans relance", type: "number", align: "right" },
+            { label: "Devis sans relance", type: "number", align: "right" },
+            { label: "Client attend", type: "number", align: "right" },
+            { label: "Sans mouvement", type: "number", align: "right" },
+            { label: "GMV concerné", type: "number", align: "right" },
+            { label: "État", type: "text", className: "px-4 md:px-6" },
+          ]}
+          rows={active
+            .sort((a, b) => b.newExceptions - a.newExceptions || b.gmv - a.gmv)
+            .map((o) => ({
+              key: o.owner,
+              sort: [o.owner, o.active, o.gmv, o.estimationWithoutRelance, o.devisWithoutRelance, o.clientWaiting, o.dormantCandidates, o.anomalyGmv, o.state],
+              cells: [
+                <td key="owner" className="px-4 md:px-6 py-2.5 font-medium">{o.owner}</td>,
+                <td key="active" className="tabular px-3 py-2.5 text-right">{o.active}</td>,
+                <td key="gmv" className="tabular px-3 py-2.5 text-right">{formatEurShort(o.gmv)}</td>,
+                <td key="estim" className="tabular px-3 py-2.5 text-right">
+                  {o.estimationWithoutRelance || "—"}
+                </td>,
+                <td key="devis" className="tabular px-3 py-2.5 text-right">{o.devisWithoutRelance || "—"}</td>,
+                <td
+                  key="attend"
+                  className={`tabular px-3 py-2.5 text-right ${o.clientWaiting > 0 ? "font-semibold text-danger" : "text-ink-faint"}`}
+                >
+                  {o.clientWaiting || "—"}
+                </td>,
+                <td key="dormant" className="tabular px-3 py-2.5 text-right text-ink-faint">
+                  {o.dormantCandidates || "—"}
+                </td>,
+                <td key="anomaly" className="tabular px-3 py-2.5 text-right">{formatEurShort(o.anomalyGmv)}</td>,
+                <td key="state" className="px-4 md:px-6 py-2.5">
+                  <Badge
+                    tone={
+                      o.state === "action requise"
+                        ? "danger"
+                        : o.state === "à surveiller"
+                          ? "warning"
+                          : "positive"
+                    }
                   >
-                    {o.clientWaiting || "—"}
-                  </td>
-                  <td className="tabular px-3 py-2.5 text-right text-ink-faint">
-                    {o.dormantCandidates || "—"}
-                  </td>
-                  <td className="tabular px-3 py-2.5 text-right">{formatEurShort(o.anomalyGmv)}</td>
-                  <td className="px-4 md:px-6 py-2.5">
-                    <Badge
-                      tone={
-                        o.state === "action requise"
-                          ? "danger"
-                          : o.state === "à surveiller"
-                            ? "warning"
-                            : "positive"
-                      }
-                    >
-                      {o.state}
-                    </Badge>
-                    <p className="mt-1 text-xs text-ink-faint">{o.stateReason}</p>
-                  </td>
-                </tr>
-              ))}
-          </tbody>
-        </table>
+                    {o.state}
+                  </Badge>
+                  <p className="mt-1 text-xs text-ink-faint">{o.stateReason}</p>
+                </td>,
+              ],
+            }))}
+        />
       </div>
       <p className="border-t border-line px-4 md:px-6 py-3 text-xs leading-relaxed text-ink-faint">
         « Client attend » n&apos;est renseigné que lorsqu&apos;un signal Gmail fiable le démontre :

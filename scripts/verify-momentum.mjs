@@ -24,6 +24,7 @@ import { pathToFileURL } from "node:url";
 const lib = (n) => pathToFileURL(path.resolve(process.cwd(), `src/lib/${n}.ts`)).href;
 const {
   aggregateOwnerMomentum,
+  momentumScore,
   buildMomentum,
   formatMomentumWindow,
 } = await import(lib("since-last-snapshot"));
@@ -255,6 +256,31 @@ section("INTÉGRATION — replay en lecture seule sur la vraie base");
       );
     }
   }
+}
+
+// ────────────────────────────────────────────────────────────────────────
+section("NOTE DE MOMENTUM /20 (lot de simplification C)");
+
+{
+  const agg = (list) => aggregateOwnerMomentum("Test Commercial", list);
+  const neutral = momentumScore(agg([]));
+  check("aucun mouvement -> 10/20 (semaine neutre)", neutral.score === 10 && neutral.impact === 0);
+  const signed = momentumScore(agg([delta({ signed: { gmv: 50_000, signatureDate: "2026-09-20" } })]));
+  check("50 k€ signés -> 15/20 (signé pèse plein)", signed.score === 15, String(signed.score));
+  const up = momentumScore(agg([delta({ gmvChange: { from: 100_000, to: 150_000, delta: 50_000, suspicious: false } })]));
+  check("+50 k€ de GMV déclarée -> 12,5/20 (déclaratif pèse moitié)", up.score === 12.5, String(up.score));
+  const exit = momentumScore(agg([delta({ gmv: 80_000, kanbanChange: { fromLabel: "Sept.", toLabel: "Oct.", enteredM: false, exitedM: true } })]));
+  check("sortie de M de 80 k€ -> 6/20", exit.score === 6, String(exit.score));
+  const sb = momentumScore(agg([delta({ gmv: 100_000, standbyChange: { enteredStandby: true } })]));
+  check("passage en stand-by de 100 k€ -> 7,5/20 (stand-by pèse un quart)", sb.score === 7.5, String(sb.score));
+  const stage = momentumScore(agg([delta({ stageChange: { from: "Examen estimation", to: "Examen devis" } })]));
+  check("un changement de stade seul ne bouge pas la note", stage.score === 10);
+  const huge = momentumScore(agg([delta({ signed: { gmv: 900_000, signatureDate: "2026-09-20" } })]));
+  const crash = momentumScore(agg([delta({ gmvChange: { from: 900_000, to: 0, delta: -900_000, suspicious: true } })]));
+  check("bornée à 20 et à 0", huge.score === 20 && crash.score === 0);
+  const odd = momentumScore(agg([delta({ signed: { gmv: 12_345, signatureDate: "2026-09-20" } })]));
+  check("au demi-point, jamais de pseudo-précision", Number.isInteger(odd.score * 2), String(odd.score));
+  check("l'explication somme exactement l'impact", Math.abs(odd.parts.reduce((t, p) => t + p.value, 0) - odd.impact) < 1e-6);
 }
 
 console.log(`\n  ${failures === 0 ? "Tous les contrôles passent." : `${failures} contrôle(s) en échec.`}\n`);

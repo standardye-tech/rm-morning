@@ -58,7 +58,7 @@
  */
 
 import { businessMonth } from "./business-time";
-import { ATTENTION, FORECAST_THRESHOLDS, SINCE_LAST_SNAPSHOT } from "./config";
+import { ATTENTION, MOMENTUM_SCORE, FORECAST_THRESHOLDS, SINCE_LAST_SNAPSHOT } from "./config";
 import { addDays, daysBetween, kanbanPeriodLabel } from "./normalize";
 import {
   officialSignedBetween,
@@ -347,7 +347,7 @@ type RawChanges = {
  * frais qu'elle (voir `isRefreshedSinceBaseline`) — les deux appelants le
  * garantissent avant d'appeler cette fonction.
  */
-function computeRawChanges(
+export function computeRawChanges(
   today: string,
   baselineDate: string,
   current: Opportunity[],
@@ -537,6 +537,9 @@ export type OwnerMomentum = {
   stageChangedCount: number;
   standbyEntered: number;
   standbyReturned: number;
+  /** GMV des affaires passées en stand-by / revenues actives sur la fenêtre. */
+  standbyEnteredGmv: number;
+  standbyReturnedGmv: number;
   /** Au plus 3, triées par ampleur de mouvement — jamais un classement de commercial. */
   topMoves: SelectedChange[];
   /**
@@ -563,6 +566,7 @@ export function aggregateOwnerMomentum(owner: string, changes: OpportunityDelta[
   let downCount = 0, downSum = 0;
   let stageChangedCount = 0;
   let standbyEntered = 0, standbyReturned = 0;
+  let standbyEnteredGmv = 0, standbyReturnedGmv = 0;
 
   for (const c of changes) {
     if (c.signed) { signedCount += 1; signedGmv += c.signed.gmv; }
@@ -574,8 +578,8 @@ export function aggregateOwnerMomentum(owner: string, changes: OpportunityDelta[
     }
     if (c.stageChange) stageChangedCount += 1;
     if (c.standbyChange) {
-      if (c.standbyChange.enteredStandby) standbyEntered += 1;
-      else standbyReturned += 1;
+      if (c.standbyChange.enteredStandby) { standbyEntered += 1; standbyEnteredGmv += c.gmv ?? 0; }
+      else { standbyReturned += 1; standbyReturnedGmv += c.gmv ?? 0; }
     }
   }
 
@@ -593,9 +597,60 @@ export function aggregateOwnerMomentum(owner: string, changes: OpportunityDelta[
     stageChangedCount,
     standbyEntered,
     standbyReturned,
+    standbyEnteredGmv,
+    standbyReturnedGmv,
     topMoves,
     changes,
   };
+}
+
+// --- Note de Momentum /20 (lot de simplification, C) ------------------------
+
+export type MomentumScore = {
+  /** Note sur 20, au demi-point. 10 = semaine neutre. */
+  score: number;
+  /** Impact pondéré en euros, avant mise à l'échelle. */
+  impact: number;
+  /** Les termes de la somme, pour l'explication affichée. */
+  parts: { label: string; value: number }[];
+};
+
+/**
+ * Note de momentum /20 — synthèse de la dynamique business OBSERVABLE des 7
+ * derniers jours. Ce n'est ni une note de compétence, ni une note RH, ni une
+ * performance annuelle.
+ *
+ *   impact = signé
+ *          + ½ × entrées dans M − ½ × sorties de M
+ *          + ½ × hausses GMV    − ½ × baisses GMV
+ *          + ¼ × (retours actifs − passages en stand-by)      (GMV, en euros)
+ *
+ *   note   = 10 + 10 × borne(impact / 100 k€, −1, +1), au demi-point.
+ *
+ * Le signé (réalisé, Travaux) pèse plein ; les mouvements déclaratifs (Kanban,
+ * montant) pèsent moitié ; le stand-by, signal plus faible, un quart. Les
+ * changements de stade n'entrent pas (on ne sait pas qualifier progression et
+ * régression), ni le volume d'e-mails ou de tâches.
+ *
+ * Pondération choisie après simulation sur 297 fenêtres de 7 jours de la copie
+ * production (27 dates × 11 ET, août-septembre 2026) : quatre variantes testées,
+ * classements très proches (Spearman ≥ 0,94) ; l'échelle absolue de 100 k€ est
+ * au niveau du 90e centile observé de |impact| (90 k€) et ne sature qu'aux
+ * extrêmes (6 % à 20/20, 2 % à 0/20). Réglages : `MOMENTUM_SCORE`.
+ */
+export function momentumScore(o: OwnerMomentum, rules = MOMENTUM_SCORE): MomentumScore {
+  const w = rules.weights;
+  const parts = [
+    { label: "signé", value: w.signed * o.signed.gmv },
+    { label: "entrées dans M", value: w.declared * o.enteredM.gmv },
+    { label: "sorties de M", value: -w.declared * o.exitedM.gmv },
+    { label: "hausses GMV", value: w.declared * o.gmvUp.gmv },
+    { label: "baisses GMV", value: w.declared * o.gmvDown.gmv },
+    { label: "stand-by", value: w.standby * (o.standbyReturnedGmv - o.standbyEnteredGmv) },
+  ];
+  const impact = parts.reduce((t, p) => t + p.value, 0);
+  const raw = 10 + 10 * Math.max(-1, Math.min(1, impact / rules.scale));
+  return { score: Math.round(raw * 2) / 2, impact, parts };
 }
 
 export type MomentumWindow =

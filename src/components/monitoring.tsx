@@ -2,6 +2,7 @@ import { SalesforceRecordLink } from "@/components/salesforce-link";
 import { OPERATIONAL_LABEL, type LeadOperationalStatus } from "@/lib/lead-rules";
 import type { OwnerLeadMetrics, TeamLeadMetrics } from "@/lib/lead-metrics";
 import type { LeadMonitoringView } from "@/lib/monitoring-view";
+import { SortableTable } from "@/components/sortable-table";
 import { AllHandled, ChangeLine, LireButton, ToutLireButton } from "./monitoring-read";
 import { Badge, Card, EmptyState, SectionTitle, Stat } from "./ui";
 
@@ -94,65 +95,67 @@ export function OwnerTable({ owners }: { owners: OwnerLeadMetrics[] }) {
         <EmptyState>Aucune piste sur la période.</EmptyState>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1000px] text-sm md:min-w-[880px]">
-            <thead>
-              <tr className="border-b border-line text-left text-[11px] uppercase tracking-wide text-ink-faint">
-                <th className="px-4 md:px-6 py-2 font-medium">Commercial</th>
-                <th className="px-3 py-2 text-right font-medium">Reçues</th>
-                <th className="px-3 py-2 text-right font-medium">Nouvelle</th>
-                <th className="px-3 py-2 text-right font-medium">À confirmer</th>
-                <th className="px-3 py-2 text-right font-medium">Converties</th>
-                <th className="px-3 py-2 text-right font-medium">Conv.</th>
-                <th className="px-3 py-2 text-right font-medium">FC manqués</th>
-                <th className="px-3 py-2 text-right font-medium">En retard</th>
-                <th className="px-3 py-2 text-right font-medium">Critiques</th>
-                <th className="px-3 py-2 text-right font-medium">Dette</th>
-                <th className="px-4 md:px-6 py-2 font-medium">État</th>
-              </tr>
-            </thead>
-            <tbody>
-              {active
-                .sort((a, b) => b.newExceptions - a.newExceptions || b.received - a.received)
-                .map((o) => (
-                  <tr key={o.owner} className="border-b border-line last:border-0">
-                    <td className="px-4 md:px-6 py-2.5 font-medium">{o.owner}</td>
-                    <td className="tabular px-3 py-2.5 text-right">{o.received}</td>
-                    <td className="tabular px-3 py-2.5 text-right">{o.nouvelles}</td>
-                    <td className="tabular px-3 py-2.5 text-right">{o.aConfirmer}</td>
-                    <td className="tabular px-3 py-2.5 text-right">{o.converted}</td>
-                    <td className="tabular px-3 py-2.5 text-right">{pct(o.conversionRate)}</td>
-                    <td
-                      className={`tabular px-3 py-2.5 text-right ${o.firstCallsMissed > 0 ? "font-semibold text-danger" : "text-ink-faint"}`}
+          {/* Lot de simplification (D) : chaque colonne se trie d'un clic. */}
+          <SortableTable
+            className="w-full min-w-[1000px] text-sm md:min-w-[880px]"
+            columns={[
+              { label: "Commercial", type: "text", className: "px-4 md:px-6" },
+              { label: "Reçues", type: "number", align: "right" },
+              { label: "Nouvelle", type: "number", align: "right" },
+              { label: "À confirmer", type: "number", align: "right" },
+              { label: "Converties", type: "number", align: "right" },
+              { label: "Conv.", type: "number", align: "right" },
+              { label: "FC manqués", type: "number", align: "right" },
+              { label: "En retard", type: "number", align: "right" },
+              { label: "Critiques", type: "number", align: "right" },
+              { label: "Dette", type: "number", align: "right" },
+              { label: "État", type: "text", className: "px-4 md:px-6" },
+            ]}
+            rows={active
+              .sort((a, b) => b.newExceptions - a.newExceptions || b.received - a.received)
+              .map((o) => ({
+                key: o.owner,
+                sort: [o.owner, o.received, o.nouvelles, o.aConfirmer, o.converted, o.conversionRate, o.firstCallsMissed, o.dueOverdueLate, o.dueOverdueCritical, o.legacyBacklog, o.state],
+                cells: [
+                  <td key="owner" className="px-4 md:px-6 py-2.5 font-medium">{o.owner}</td>,
+                  <td key="received" className="tabular px-3 py-2.5 text-right">{o.received}</td>,
+                  <td key="nouvelles" className="tabular px-3 py-2.5 text-right">{o.nouvelles}</td>,
+                  <td key="aconfirmer" className="tabular px-3 py-2.5 text-right">{o.aConfirmer}</td>,
+                  <td key="converted" className="tabular px-3 py-2.5 text-right">{o.converted}</td>,
+                  <td key="conv" className="tabular px-3 py-2.5 text-right">{pct(o.conversionRate)}</td>,
+                  <td
+                    key="fc"
+                    className={`tabular px-3 py-2.5 text-right ${o.firstCallsMissed > 0 ? "font-semibold text-danger" : "text-ink-faint"}`}
+                  >
+                    {o.firstCallsMissed || "—"}
+                  </td>,
+                  <td key="late" className="tabular px-3 py-2.5 text-right">{o.dueOverdueLate || "—"}</td>,
+                  <td
+                    key="critical"
+                    className={`tabular px-3 py-2.5 text-right ${o.dueOverdueCritical > 0 ? "text-warning" : "text-ink-faint"}`}
+                  >
+                    {o.dueOverdueCritical || "—"}
+                  </td>,
+                  <td key="backlog" className="tabular px-3 py-2.5 text-right text-ink-faint">
+                    {o.legacyBacklog || "—"}
+                  </td>,
+                  <td key="state" className="px-4 md:px-6 py-2.5">
+                    <Badge
+                      tone={
+                        o.state === "action requise"
+                          ? "danger"
+                          : o.state === "à surveiller"
+                            ? "warning"
+                            : "positive"
+                      }
                     >
-                      {o.firstCallsMissed || "—"}
-                    </td>
-                    <td className="tabular px-3 py-2.5 text-right">{o.dueOverdueLate || "—"}</td>
-                    <td
-                      className={`tabular px-3 py-2.5 text-right ${o.dueOverdueCritical > 0 ? "text-warning" : "text-ink-faint"}`}
-                    >
-                      {o.dueOverdueCritical || "—"}
-                    </td>
-                    <td className="tabular px-3 py-2.5 text-right text-ink-faint">
-                      {o.legacyBacklog || "—"}
-                    </td>
-                    <td className="px-4 md:px-6 py-2.5">
-                      <Badge
-                        tone={
-                          o.state === "action requise"
-                            ? "danger"
-                            : o.state === "à surveiller"
-                              ? "warning"
-                              : "positive"
-                        }
-                      >
-                        {o.state}
-                      </Badge>
-                      <p className="mt-1 text-xs text-ink-faint">{o.stateReason}</p>
-                    </td>
-                  </tr>
-                ))}
-            </tbody>
-          </table>
+                      {o.state}
+                    </Badge>
+                    <p className="mt-1 text-xs text-ink-faint">{o.stateReason}</p>
+                  </td>,
+                ],
+              }))}
+          />
         </div>
       )}
       <p className="border-t border-line px-4 md:px-6 py-3 text-xs leading-relaxed text-ink-faint">

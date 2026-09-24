@@ -292,6 +292,16 @@ export const WEEK_SLOTS: WeekSlot[] = [
 ];
 
 /**
+ * Note de momentum /20 (Performance, lot de simplification C). Formule et
+ * justification : `momentumScore` (since-last-snapshot.ts).
+ */
+export const MOMENTUM_SCORE = {
+  weights: { signed: 1, declared: 0.5, standby: 0.25 },
+  /** Impact pondéré (en euros) qui porte la note à 0 ou à 20. */
+  scale: 100_000,
+} as const;
+
+/**
  * « Ma semaine » — planning recommandé (lot de simplification, B). Seuils du
  * moteur `week-agenda.ts`, jamais dans le moteur lui-même.
  */

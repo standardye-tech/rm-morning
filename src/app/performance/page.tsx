@@ -1,4 +1,4 @@
-import { MomentumBlock } from "@/components/momentum";
+import { MomentumBlock, type MomentumSort } from "@/components/momentum";
 import {
   Movers,
   PerformanceDetail,
@@ -51,6 +51,14 @@ export default async function PerformancePage({
 }) {
   const query = await searchParams;
   const selected = typeof query.commercial === "string" ? query.commercial : null;
+  const momentumSort: MomentumSort =
+    query.momentum === "note-desc" || query.momentum === "note-asc" ? query.momentum : "alpha";
+  const momentumHref = (sort: MomentumSort) => {
+    const sp = new URLSearchParams();
+    if (selected) sp.set("commercial", selected);
+    if (sort !== "alpha") sp.set("momentum", sort);
+    return `/performance${sp.toString() ? `?${sp}` : ""}#momentum`;
+  };
 
   const now = new Date();
   const previousDate = previousSnapshotDate(parisDate(now));
@@ -122,7 +130,9 @@ export default async function PerformancePage({
         seuil={PERFORMANCE.dynamicSignificantDelta}
       />
       {detail ? <PerformanceDetail row={detail} /> : null}
-      <MomentumBlock momentum={momentum} />
+      <div id="momentum" className="scroll-mt-6">
+        <MomentumBlock momentum={momentum} sort={momentumSort} sortHref={momentumHref} />
+      </div>
       <PerformanceNotes notes={board.notes} />
     </div>
   );
