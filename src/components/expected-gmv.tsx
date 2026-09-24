@@ -330,7 +330,6 @@ function ExpectedM1Card({
       </Card>
     );
   }
-  const gap = declarative.kanbanGmv == null ? null : declarative.kanbanGmv - m1.projection;
   return (
     <Card>
       <SectionTitle
@@ -344,26 +343,17 @@ function ExpectedM1Card({
           label={LABEL.indicativeRange}
           value={`${kEur(m1.rangeLo)} – ${kEur(m1.rangeHi)}`}
         />
-        <Line
-          label={LABEL.kanban}
-          value={kEur(declarative.kanbanGmv)}
-          hint={
-            declarative.kanbanCount == null
-              ? undefined
-              : `sur ${declarative.kanbanCount} affaire(s) prévue(s)`
-          }
-        />
-        <Line label={LABEL.perspective} value={kEur(declarative.perspectiveGmv)} />
-        {/*
-          Formulation volontairement factuelle. « Forecast irréaliste » serait un
-          jugement que la mesure ne permet pas : la projection porte elle-même une
-          fourchette de plusieurs centaines de milliers d'euros.
-        */}
-        <Line
-          label="Écart avec ce que l'équipe prévoit"
-          value={gap == null ? "—" : `${gap >= 0 ? "+" : "−"}${kEur(Math.abs(gap))}`}
-        />
       </dl>
+      {/*
+        Lot de simplification (G) : le déclaratif, la Perspective et l'écart ne
+        sont plus répétés ici — ils vivent dans l'onglet « Mois prochain », qui
+        explique l'écart affaire par affaire.
+      */}
+      <p className="border-t border-line px-4 py-2.5 text-xs md:px-6">
+        <a href="/expected-gmv?vue=m1" className="underline decoration-dotted underline-offset-2 hover:text-ink">
+          Déclaratif, écart et affaires : voir l&apos;onglet « Mois prochain »
+        </a>
+      </p>
       {!m1.strengthInRange ? (
         <p className="border-t border-line px-4 md:px-6 py-2 text-xs text-warning">
           Le pipe actuel sort de ce qui a servi à calibrer la projection. À lire avec prudence.

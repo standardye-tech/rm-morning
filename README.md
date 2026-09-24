@@ -117,52 +117,44 @@ Une affaire présente au forecast mais absente de Salesforce est signalée comme
 node scripts/verify-forecast.mjs
 ```
 
-## Ma semaine (moteur de recommandation managériale)
+## Ma semaine (planning recommandé de management des ET)
 
-Page `/semaine`. Répond à une seule question : cette semaine, où le directeur
-régional doit-il investir son temps ? Ce n'est pas un agenda : Google Calendar
-garde les blocs, RM Morning dit lesquels remplir, avec qui et pour obtenir quoi.
+Page `/semaine`. Une seule lecture : **le planning recommandé**, une carte par
+Expert Travaux — pourquoi le voir (Momentum 7 jours), 2 à 4 sujets à traiter,
+les affaires clés (liens Salesforce), et deux raccourcis (son Forecast, sa
+Performance). Ce n'est pas un agenda : Google Calendar garde les blocs, RM
+Morning dit qui voir et quoi traiter.
 
-Deux lectures par Expert Travaux, jamais confondues :
+Le moteur (`src/lib/week-agenda.ts`, pur) digère les moteurs existants, qui
+continuent de tourner :
 
-- **Performance** — comment il va commercialement. Score de la page Performance,
-  paliers vert / neutre / orange. Jamais de rouge.
-- **Attention managériale** — faut-il intervenir maintenant. Vert (rien de
-  particulier), orange (intervention utile), rouge (intervention prioritaire).
-  Un ET rouge n'est pas un mauvais ET.
+- **Plan du jour** — affaires de M à sécuriser ou à aller chercher ;
+- **Momentum 7 jours** — baisses de GMV, sorties du mois, passages en stand-by ;
+- **Forecast** — affaires à challenger (> 25 %) ;
+- **Attention managériale** (`attention.ts`, seuils `ATTENTION`) — pipe
+  faible, affaires figées, forecast en retard… : sujets structurels, seulement
+  quand le verdict appelle une intervention (orange ou rouge) ;
+- **Gros dossiers** (`big-deals.ts`, seuils `BIG_DEALS`).
 
-Le moteur (`src/lib/attention.ts`) est pur : sept règles nommées, chacune pesée
-« fort » ou « modéré », et un verdict qui découle du nombre et du poids des
-raisons — rouge dès une raison forte accompagnée d'une autre ou deux fortes,
-orange dès une forte ou deux modérées, vert sinon. Une raison modérée isolée est
-affichée, pas planifiée. Tous les seuils sont dans `config.ts` (`ATTENTION`).
-Le directeur (`ATTENTION.excluded`) n'est pas évalué ; ses affaires restent
-éligibles aux gros dossiers.
+Un sujet portant sur une affaire n'existe qu'une fois (la formulation la plus
+prioritaire l'emporte) ; au plus `WEEK_AGENDA.maxTasks` sujets par ET. Les ET
+urgents (rouge, orange, ou enjeu court terme) sont placés dans les créneaux ET de
+la grille `WEEK_SLOTS` à partir d'aujourd'hui ; les autres, ou ceux sans créneau
+libre, vont dans « À placer cette semaine » (créneau libre proposé ou jour à
+caler). Aucune disponibilité n'est inventée.
 
-Les changements d'étape ne sont observables que depuis le premier snapshot
-quotidien : une immobilité est toujours dite « depuis au moins N jours », jamais
-plus (`src/lib/stage-history.ts`).
+Les sujets se cochent : ils quittent la liste active et restent dans « Terminés
+cette semaine ». L'état est **hebdomadaire** (table additive
+`week_agenda_state`) : la semaine suivante repart d'un planning recalculé, rien
+n'est reporté.
 
-- **Gros dossiers** (`big-deals.ts`, seuils `BIG_DEALS`) : ≥ 100 k€ et au moins
-  un critère de maturité ; objectif closer / débloquer / accélérer / arbitrer.
-- **Affaire de la semaine** (`deal-of-week-recommend.ts`, `deal-of-week-store.ts`,
-  table `deal_of_week`) : RM Morning propose une affaire et deux alternatives,
-  Sami arbitre. Présélection lisible (active, ≥ 10 k€, ET du périmètre,
-  activité récente, ni dormante ni gros dossier), points nommés par critère
-  (étape, mouvement, montant, prochaine étape floue, attention de l'ET),
-  pénalités d'historique tirées de la table, diversité d'ET et d'angle. L'angle
-  de challenge est suggéré d'après l'étape et reste modifiable. Ignorer la
-  semaine est un choix enregistré, jamais une affaire imposée. Le choix manuel
-  parmi tout le pipe reste disponible en secours.
-- **Planning recommandé** (`week-plan.ts`, grille `WEEK_SLOTS`) : chaque
-  créneau-type reçoit le meilleur élément de son type ; un créneau vide est
-  réaffecté dans l'ordre `WEEK_FALLBACK_ORDER`, sinon affiché disponible. Rien
-  n'est rempli artificiellement.
-- **Radar** (`radar-store.ts`, table `radar_contact`) : pipeline commun ET /
-  architectes, saisi à la main. Ni HelloWork, ni Google, ni scraping.
+Le directeur (`ATTENTION.excluded`) n'est pas planifié. Le radar des
+candidatures (`radar-store.ts`) reste dans sa propre vue. Les moteurs « affaire
+de la semaine » et `week-plan.ts` sont conservés mais ne sont plus rendus.
 
 ```bash
 npm run semaine:verify
+npm run semaine:agenda-verify
 ```
 
 ## Non branché à ce stade
