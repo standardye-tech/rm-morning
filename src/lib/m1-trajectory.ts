@@ -237,6 +237,8 @@ export type M1Trajectory = {
   today: string;
   objective: number | null;
   forecast: number | null;
+  /** Perspective ajustée d'AUJOURD'HUI : un repère courant, jamais une série (aucun historique). */
+  adjustedCurrent: { gmv: number; count: number; source: "snapshot" | "selection" } | null;
   /** Manque à construire, tel que `coverageOf` le rend ; null si objectif ou prévision absent. */
   missing: number | null;
   /** Vrai quand l'objectif est déjà couvert par la prévision. */
@@ -295,6 +297,9 @@ export function buildM1Trajectory(
   const forecast = data.forecast?.projection ?? null;
   const missing = data.coverage ? data.coverage.missing : null;
   const covered = data.coverage != null && data.coverage.missing === 0;
+  const adjustedCurrent = data.adjusted.ok
+    ? { gmv: data.adjusted.value.gmv, count: data.adjusted.value.count, source: data.adjusted.value.source }
+    : null;
   const daysLeft = daysUntilMonth(today, data.month);
   const pace = requiredPace(missing, daysLeft);
 
@@ -314,6 +319,7 @@ export function buildM1Trajectory(
       today,
       objective,
       forecast,
+      adjustedCurrent,
       missing,
       covered,
       daysLeft,
@@ -422,6 +428,7 @@ export function buildM1Trajectory(
     today,
     objective,
     forecast,
+    adjustedCurrent,
     missing,
     covered,
     daysLeft,

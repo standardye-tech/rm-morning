@@ -173,6 +173,24 @@ section("COHÉRENCE DE LA DERNIÈRE COLONNE AVEC LE HAUT DE LA VUE");
 }
 
 // ────────────────────────────────────────────────────────────────────────
+section("OBJECTIF ET PERSPECTIVE AJUSTÉE = REPÈRES ACTUELS, JAMAIS DES SÉRIES");
+
+{
+  const adj = { ok: true, value: { month: "2026-10", gmv: 724664.68, source: "selection", snapshotDate: null, count: 16, byOwner: {}, snapshots: [] } };
+  const t = buildM1Trajectory(input({ adjusted: adj }), "2026-09-24", history());
+  check("aucune série « objectif » : pas de ligne ni de valeur d'objectif par date", !t.history.series.some((s) => /objectif/i.test(s.label) || s.key === "objective"));
+  check("les 4 séries sont RM Morning, déclaratif, ajustée, pipe identifié", t.history.series.map((s) => s.key).join() === "rmMorning,declared,adjusted,identified");
+  check("Perspective ajustée : valeur actuelle exposée comme repère", t.adjustedCurrent && near(t.adjustedCurrent.gmv, 724664.68) && t.adjustedCurrent.count === 16);
+  const a = t.history.series.find((s) => s.key === "adjusted");
+  check("Perspective ajustée : la valeur actuelle n'est PAS recopiée dans la série", a.values.every((v) => v === null) && a.week === null && a.window === null);
+  check("Perspective ajustée illisible : aucun repère inventé", buildM1Trajectory(input(), "2026-09-24", history()).adjustedCurrent === null);
+  const src = readFileSync(path.resolve(process.cwd(), "src/components/trajectory-m1.tsx"), "utf8");
+  check("UI : « Objectif actuel » (repère courant), plus « Objectif M+1 »", src.includes('label="Objectif actuel"') && !src.includes('label="Objectif M+1"'));
+  check("UI : rappel « Pipe identifié ≠ prévision RM Morning »", src.includes("≠ prévision RM Morning"));
+  check("UI : l'objectif n'est jamais rendu dans le tableau historique", !/t\.objective/.test(src.slice(src.indexOf("<table"))));
+}
+
+// ────────────────────────────────────────────────────────────────────────
 section("TENDANCES — « monte / stagne / recule » sur chiffres réels");
 
 {

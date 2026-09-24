@@ -64,8 +64,21 @@ export function TrajectoryM1Block({ trajectory }: { trajectory: M1Trajectory }) 
         }
       />
       <dl className="divide-y divide-line">
-        <Row label="Objectif M+1" value={t.objective == null ? "Objectif non renseigné" : kEur(t.objective)} />
+        <Row
+          label="Objectif actuel"
+          value={t.objective == null ? "Objectif non renseigné" : kEur(t.objective)}
+          hint={t.objective == null ? null : "repère courant — l'historique de l'objectif n'est pas conservé"}
+        />
         <Row label="Prévision actuelle RM Morning" value={t.forecast == null ? "—" : kEur(t.forecast)} />
+        <Row
+          label="Perspective ajustée actuelle"
+          value={t.adjustedCurrent ? kEur(t.adjustedCurrent.gmv) : "—"}
+          hint={
+            t.adjustedCurrent
+              ? `repère courant, sans historique · ${t.adjustedCurrent.source === "snapshot" ? "dernier snapshot" : "sélection manuelle"} · ${t.adjustedCurrent.count} affaires`
+              : "indisponible"
+          }
+        />
         <Row
           label="Manque à construire"
           value={t.missing == null ? "—" : t.covered ? "Objectif couvert" : kEur(t.missing)}
@@ -134,7 +147,7 @@ export function TrajectoryM1Block({ trajectory }: { trajectory: M1Trajectory }) 
 
       <div className="space-y-1.5 border-t border-line px-4 py-3 text-xs text-ink-faint md:px-6">
         <p>
-          Le pipe identifié <span className="font-medium text-ink-soft">n&apos;est pas la prévision</span> : la prévision RM
+          Pipe identifié <span className="font-medium text-ink-soft">≠ prévision RM Morning</span> : la prévision RM
           Morning M+1 intègre du GMV d&apos;affaires qui n&apos;existent pas encore — {t.futureShare} du GMV d&apos;un mois M+1,
           historiquement.
         </p>
