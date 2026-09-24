@@ -125,6 +125,22 @@ section("HOLDOUT DU 24/09 — modèle indisponible, seule la phrase du client pa
   check("« laissez-moi le temps de l'étudier » : rien n'est cité ni détecté", said(proof("J'ai bien reçu votre devis. Laissez moi le temps de l'étudier et je reviens vers vous.")).category === "ignore");
 }
 
+section("REPLI DU MODÈLE — motif journalisé, jamais avalé, jamais de secret");
+{
+  const { ClassifierUnavailableError, fallbackLabel, AI_MODEL } = await import(lib("mail-classify-ai"));
+  const credit = fallbackLabel(new ClassifierUnavailableError("Your credit balance is too low to access the Anthropic API.", 400, "invalid_request_error"));
+  check("crédit épuisé : fournisseur, modèle, statut et type", credit.includes("anthropic/") && credit.includes(AI_MODEL) && credit.includes("400") && credit.includes("invalid_request_error"), credit);
+  check("délai dépassé : identifié comme timeout", fallbackLabel(new Error("délai de 8000 ms dépassé")).endsWith("timeout"));
+  const sk = fallbackLabel(new TypeError("fetch failed sk-ant-secret"));
+  check("exception réseau : type seul, jamais son message (qui pourrait porter un secret)", !sk.includes("sk-ant") && sk.includes("TypeError"), sk);
+  const { classifyHybrid } = await import(lib("mail-classify-hybrid"));
+  const saved = process.env.ANTHROPIC_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  const r = await classifyHybrid([{ id: "m1", threadId: "t1", date: "2026-09-20T10:00:00Z", direction: "entrant", subject: "Projet", snippet: "Bonjour, voici quelques informations." }]);
+  if (saved !== undefined) process.env.ANTHROPIC_API_KEY = saved;
+  check("modèle indisponible : repli propre sur les règles, motif renseigné", r.source === "rules_fallback" && r.classification.classifier === "rules_fallback" && /cle_absente/.test(r.fallbackReason ?? ""), r.fallbackReason ?? "");
+}
+
 // ────────────────────────────────────────────────────────────────────────
 section("VISIBILITÉ — dernier message du client, réponse RM, un client = une ligne");
 {

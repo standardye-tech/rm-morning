@@ -23,11 +23,33 @@ import type { Classification, ClassifiableMessage, SignalType } from "./mail-cla
 /** Modèle visé : le plus petit qui sache lire une nuance commerciale. */
 export const AI_MODEL = "claude-haiku-4-5-20251001";
 
+/**
+ * Échec du modèle, décrit SANS contenu : fournisseur, modèle, statut HTTP et
+ * type d'erreur. C'est tout ce qui est journalisé (jamais la clé, jamais le
+ * texte d'un email). Panne du 14/09/2026 : 400 `invalid_request_error`, crédit
+ * du compte API épuisé — restée invisible parce que ce motif était avalé.
+ */
 export class ClassifierUnavailableError extends Error {
-  constructor(message: string) {
+  // Champs déclarés puis affectés (harnais sous --experimental-strip-types).
+  readonly status: number | null;
+  readonly errorType: string;
+
+  constructor(message: string, status: number | null = null, errorType = "indisponible") {
     super(message);
     this.name = "ClassifierUnavailableError";
+    this.status = status;
+    this.errorType = errorType;
   }
+}
+
+/** Motif de repli, sûr à journaliser : « anthropic/<modèle> 400 invalid_request_error — … ». */
+export function fallbackLabel(cause: unknown): string {
+  if (cause instanceof ClassifierUnavailableError) {
+    return `anthropic/${AI_MODEL} ${cause.status ?? "—"} ${cause.errorType}${cause.status != null ? ` — ${cause.message.slice(0, 90)}` : ""}`;
+  }
+  const text = cause instanceof Error ? cause.message : String(cause);
+  if (/délai de \d+ ms dépassé/.test(text)) return `anthropic/${AI_MODEL} — timeout`;
+  return `anthropic/${AI_MODEL} — ${cause instanceof Error ? cause.name : "erreur"} (réseau ou exception)`;
 }
 
 // --- Nettoyage et minimisation ---------------------------------------------
@@ -206,6 +228,8 @@ export async function classifyWithModelDetailed(
   if (!apiKey) {
     throw new ClassifierUnavailableError(
       "ANTHROPIC_API_KEY absente. Ajoutez-la à .env.local pour activer la variante modèle.",
+      null,
+      "cle_absente",
     );
   }
 
@@ -231,10 +255,13 @@ export async function classifyWithModelDetailed(
 
   if (!response.ok) {
     const detail = (await response.json().catch(() => null)) as {
-      error?: { message?: string };
+      error?: { type?: string; message?: string };
     } | null;
+    // Le message d'erreur de l'API ne contient ni la clé ni le contenu envoyé.
     throw new ClassifierUnavailableError(
-      `Le modèle a répondu ${response.status} — ${detail?.error?.message ?? "erreur"}`,
+      detail?.error?.message ?? "erreur",
+      response.status,
+      detail?.error?.type ?? "http_error",
     );
   }
 
@@ -250,7 +277,7 @@ export async function classifyWithModelDetailed(
   try {
     parsed = JSON.parse(json) as Record<string, unknown>;
   } catch {
-    throw new ClassifierUnavailableError("Réponse du modèle illisible (JSON invalide).");
+    throw new ClassifierUnavailableError("Réponse du modèle illisible (JSON invalide).", response.status, "reponse_illisible");
   }
 
   const signalType = VALID.includes(parsed.signal_type as SignalType)

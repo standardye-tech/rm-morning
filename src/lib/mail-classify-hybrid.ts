@@ -24,7 +24,7 @@
  */
 
 import { classifyThread, type Classification, type ClassifiableMessage } from "./mail-classify";
-import { classifyWithModelDetailed, type ThreadContext } from "./mail-classify-ai";
+import { classifyWithModelDetailed, fallbackLabel, type ThreadContext } from "./mail-classify-ai";
 
 /** Seuil d'escalade. Au-dessus, le verdict des règles est jugé assez sûr. */
 export const ESCALATION_CONFIDENCE = 0.6;
@@ -115,7 +115,8 @@ export async function classifyHybrid(
       escalated: true,
       clamped: false,
       ...EMPTY,
-      fallbackReason: cause instanceof Error ? cause.message : String(cause),
+      // Motif sûr (fournisseur, modèle, statut, type) : jamais la clé ni le texte.
+      fallbackReason: fallbackLabel(cause),
     };
   }
 }

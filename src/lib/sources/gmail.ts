@@ -264,7 +264,7 @@ async function fetchMessage(
 /** Fils relus par passage pour le rattrapage de la phrase du client. */
 const QUOTE_BACKFILL_LIMIT = 80;
 
-async function fetchThreadMessages(threadId: string): Promise<ClassifiableMessage[]> {
+export async function fetchThreadMessages(threadId: string): Promise<ClassifiableMessage[]> {
   const data = await gmailGet<{ messages?: GmailMessageResponse[] }>(
     `threads/${threadId}?format=metadata` +
       "&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date",
@@ -293,6 +293,40 @@ async function fetchThreadMessages(threadId: string): Promise<ClassifiableMessag
     })
     .sort((a, b) => a.date.localeCompare(b.date))
     .slice(-3);
+}
+
+/**
+ * Classe un fil TEL QUE LA SYNCHRO LE FAIT : relecture Gmail en lecture seule
+ * (métadonnées + extrait), classification hybride bridée, citation du client.
+ * Partagé par la synchronisation et par le retraitement des fils récents
+ * (`scripts/reclassify-mail-threads.mjs`) : une seule définition.
+ *
+ * La citation est « la phrase du CLIENT » : hors verdict du modèle, elle est
+ * extraite du dernier message entrant, jamais d'une réponse de RM qui
+ * clôturerait le fil (holdout du 24/09/2026, même règle que le rattrapage).
+ */
+export async function classifyThreadForStore(threadId: string, stage: string | null) {
+  const thread = await fetchThreadMessages(threadId);
+  const result = await classifyHybrid(thread, { stage });
+  if (!result) return null;
+  const lastInbound = thread.filter((m) => m.direction === "entrant").pop();
+  const quote =
+    result.source === "model"
+      ? (result.classification.quote ?? null)
+      : lastInbound
+        ? extractQuoteFromMessage(lastInbound)
+        : null;
+  return {
+    result,
+    stored: {
+      signalType: result.classification.signalType,
+      confidence: result.classification.confidence,
+      blocker: result.classification.blocker,
+      summary: result.classification.summary,
+      classifier: result.classification.classifier,
+      quote,
+    },
+  };
 }
 
 /** Exécute une fonction sur chaque élément, quelques-uns à la fois. */
@@ -697,33 +731,22 @@ export class GmailSource implements MailSource {
 
     // --- Classification hybride bridée des fils touchés.
     const classifyStart = Date.now();
+    // Motifs de repli du modèle, comptés par fil. Jusqu'au 24/09/2026 ils étaient
+    // calculés puis jetés : un crédit API épuisé a ainsi fait basculer 98 % des
+    // fils en `rules_fallback` pendant dix jours sans aucune trace.
+    const modelFallbacks = new Map<string, number>();
     await mapLimited([...touchedThreads.entries()], GMAIL_SYNC.classifyConcurrency, async ([threadId, stage]) => {
       try {
-        const thread = await fetchThreadMessages(threadId);
-        const result = await classifyHybrid(thread, { stage });
-        if (!result) return;
-        // La citation est « la phrase du CLIENT » : hors verdict du modèle, elle est
-        // extraite du dernier message entrant, jamais d'une réponse de RM qui
-        // clôturerait le fil (holdout du 24/09/2026, même règle que le rattrapage).
-        const lastInbound = thread.filter((m) => m.direction === "entrant").pop();
-        const quote =
-          result.source === "model"
-            ? (result.classification.quote ?? null)
-            : lastInbound
-              ? extractQuoteFromMessage(lastInbound)
-              : null;
-
-        updateThreadClassification(threadId, {
-          signalType: result.classification.signalType,
-          confidence: result.classification.confidence,
-          blocker: result.classification.blocker,
-          summary: result.classification.summary,
-          classifier: result.classification.classifier,
-          quote,
-        });
+        const classified_ = await classifyThreadForStore(threadId, stage);
+        if (!classified_) return;
+        const { result, stored } = classified_;
+        updateThreadClassification(threadId, stored);
 
         classified += 1;
         bySource[result.source] += 1;
+        if (result.fallbackReason) {
+          modelFallbacks.set(result.fallbackReason, (modelFallbacks.get(result.fallbackReason) ?? 0) + 1);
+        }
         if (result.clamped) clamped += 1;
         inputTokens += result.inputTokens;
         outputTokens += result.outputTokens;
@@ -765,8 +788,13 @@ export class GmailSource implements MailSource {
     // Trace technique unique, conservée en base et affichée par l'écran
     // « Données ». Chaque ligne est PRÉFIXÉE de sa nature : c'est ce qui permet
     // de diagnostiquer plus tard sans relire le code.
+    for (const [reason, n] of modelFallbacks) {
+      // Journal sûr : fournisseur, modèle, statut, type d'erreur. Jamais la clé ni un email.
+      console.warn(`[gmail] repli du modèle sur les règles : ${reason} — ${n} fil(s)`);
+    }
     const errors: string[] = [
       ...(failure ? [`lecture : ${failure}`] : []),
+      ...[...modelFallbacks].map(([reason, n]) => `modèle indisponible (${reason}) : ${n} fil(s) classé(s) par les règles`),
       ...unreadMessages.map((f) => `message ${f.id} non lu : ${f.reason}`),
       ...unclassifiedThreads.map((f) => `fil ${f.id} non classé : ${f.reason}`),
     ];
