@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 import { Badge, Card, EmptyState, SectionTitle } from "@/components/ui";
 import type { ConstruireM1 } from "@/lib/build-m1";
 import { SalesforceOpportunityLink } from "@/components/salesforce-link";
@@ -45,7 +47,7 @@ function Row({
 
 const pct = (n: number) => `${Math.round(n * 100)} %`;
 
-export function ConstruireM1Block({ data }: { data: ConstruireM1 }) {
+export function ConstruireM1Block({ data, afterSummary }: { data: ConstruireM1; afterSummary?: ReactNode }) {
   const { objective, coverage, forecast, adjusted } = data;
   const noObjective = objective == null;
   const uncomputable = noObjective
@@ -117,6 +119,8 @@ export function ConstruireM1Block({ data }: { data: ConstruireM1 }) {
           ventilation « pipe identifié / GMV futur » du chiffre du jour : aucune n&apos;est affichée.
         </p>
       </Card>
+
+      {afterSummary}
 
       <Card>
         <SectionTitle

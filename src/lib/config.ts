@@ -632,6 +632,25 @@ export const SINCE_LAST_SNAPSHOT = {
 } as const;
 
 /**
+ * « Trajectoire de construction » de la vue M+1 (Expected GMV) — audit V3.3.
+ *
+ * Lecture FACTUELLE de la série des dernières semaines, jamais une prédiction.
+ * Une variation n'est lue « monte » ou « recule » que si elle dépasse à la fois
+ * un ratio du point de départ ET un plancher en euros — sinon « stagne » : une
+ * petite série ne doit pas faire monter une flèche sur trois mille euros.
+ */
+export const M1_TRAJECTORY = {
+  /** Variation relative (du point de départ) sous laquelle la série « stagne ». */
+  flatRatio: 0.03,
+  /** Variation absolue, en euros, sous laquelle la série « stagne ». */
+  flatMinAmount: 5_000,
+  /** Écart entre deux points de lecture, en jours (une semaine). */
+  checkpointStepDays: 7,
+  /** Nombre maximal de points de lecture (donc de semaines lues + 1). */
+  maxCheckpoints: 6,
+} as const;
+
+/**
  * Qualification de l'écart entre Projection Kanban et Expected (Forecast V2).
  *
  * L'Expected est structurellement bien inférieur au déclaratif : au 17/08/2026

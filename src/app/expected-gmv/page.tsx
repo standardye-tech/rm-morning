@@ -1,4 +1,7 @@
 import { ConstruireM1Block } from "@/components/construire-m1";
+import { TrajectoryM1Block } from "@/components/trajectory-m1";
+import { parisDate } from "@/lib/business-time";
+import { buildM1Trajectory } from "@/lib/m1-trajectory";
 import { ExpectedGmvChallenge } from "@/components/expected-gmv";
 import {
   ExpectedGmvBacktest,
@@ -76,7 +79,10 @@ export default async function ExpectedGmvPage({
             </a>
           </div>
         </div>
-        <ConstruireM1Block data={m1} />
+        <ConstruireM1Block
+          data={m1}
+          afterSummary={<TrajectoryM1Block trajectory={buildM1Trajectory(m1, parisDate())} />}
+        />
       </div>
     );
   }
