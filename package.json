@@ -67,7 +67,8 @@
     "links:verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/verify-salesforce-links.mjs",
     "morning:plan-v2-verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/verify-plan-v2.mjs",
     "morning:proof-audit": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/audit-interest-proof.mjs",
-    "morning:scanner-verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs scripts/verify-mail-scanner.mjs"
+    "morning:scanner-verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs scripts/verify-mail-scanner.mjs",
+    "simplification:verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/verify-simplification.mjs"
   },
   "dependencies": {
     "next": "16.3.1",

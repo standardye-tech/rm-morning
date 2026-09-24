@@ -53,8 +53,6 @@ export type SheetGroup = {
   /** Perspective ajustée du commercial ; null si le classeur manuel est indisponible. */
   adjustedGmv: number | null;
   kanbanGmv: number;
-  /** Part de la Perspective encore ouverte : c'est ce que la colonne totalise. */
-  perspectiveGmv: number;
   /** Total du snapshot du commercial, affiché en en-tête de groupe. */
   perspectiveSnapshotGmv: number;
   expectedGmv: number;
@@ -140,11 +138,16 @@ function Row({
           <span className="text-ink-soft">{row.kanbanRaw ?? "oui"}</span>
         )}
       </td>
+      {/*
+        Lot de simplification (E4) : la confiance que l'ET a DÉCLARÉE dans la
+        Perspective, brute. Aucune pondération ici — le retraitement manuel vit
+        dans la Perspective ajustée.
+      */}
       <td className="tabular whitespace-nowrap px-3 py-[3px] text-center text-xs">
-        {row.perspectiveGmv == null ? (
+        {row.perspectiveConfidence == null ? (
           <span className="text-ink-faint">—</span>
         ) : (
-          <span className="text-ink-soft">{formatEurShort(row.perspectiveGmv)}</span>
+          <span className="text-ink-soft">{Math.round(row.perspectiveConfidence * 100)} %</span>
         )}
       </td>
       {showExpected ? (
@@ -242,7 +245,7 @@ export function ForecastSheet({
 }: {
   groups: SheetGroup[];
   showExpected: boolean;
-  totals: { signed: number; kanban: number; perspective: number; expected: number; count: number };
+  totals: { signed: number; kanban: number; expected: number; count: number };
   probabilityLabel?: string;
   viewMonth?: string | null;
   expectedFooterLabel?: string;
@@ -278,9 +281,9 @@ export function ForecastSheet({
               <th className="px-3 py-1.5 text-center font-medium">Kanban</th>
               <th
                 className="px-3 py-1.5 text-center font-medium"
-                title="Perspective M : GMV × confiance, signé exclu du pipe"
+                title="Taux de confiance déclaré par l'ET dans la dernière Perspective, brut"
               >
-                Persp. M pondérée
+                Confiance déclarée par l&apos;ET
               </th>
               {showExpected ? (
                 <th className="px-3 py-1.5 text-right font-medium">{probabilityLabel}</th>
@@ -306,15 +309,8 @@ export function ForecastSheet({
                 {formatEur(totals.kanban)}
               </td>
               <td className="px-3 py-2" />
-              {/*
-                Ce total est l'intersection avec les lignes affichées, pas la
-                photographie Perspective — la bande au-dessus porte celle-ci.
-                Le pied le nomme pour lever toute ambiguïté.
-              */}
-              <td className="tabular px-3 py-2 text-center text-xs font-medium" title="Part de la Perspective encore présente dans le pipe">
-                {formatEurShort(totals.perspective)}
-                <span className="block text-xs font-normal text-ink-faint">pondérée, encore ouverte</span>
-              </td>
+              {/* Une confiance ne se totalise pas : aucune somme pondérée n'est affichée (E5). */}
+              <td className="px-3 py-2" />
               {showExpected ? (
                 <td className="tabular px-3 py-2 text-right font-semibold">
                   {formatEurShort(totals.expected)}

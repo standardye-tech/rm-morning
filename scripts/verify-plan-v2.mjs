@@ -312,7 +312,9 @@ section("E — Aucune tâche persistante, journal idempotent, migration additive
   src0.close();
   const added = tablesAfter.filter((t) => !sourceTables.includes(t));
   check("le Plan et les gestes ne créent aucune table", tablesAfter.length === tablesBefore.length);
-  check("migration additive : seules morning_plan_log et monthly_objective peuvent s'ajouter à la base source", added.every((t) => ["morning_plan_log", "monthly_objective"].includes(t)), added.join(", ") || "déjà présentes dans la source");
+  // week_agenda_state : état hebdomadaire du planning de « Ma semaine » (lot de
+  // simplification B), table additive — jamais écrite par le Plan du jour.
+  check("migration additive : seules morning_plan_log, monthly_objective et week_agenda_state peuvent s'ajouter à la base source", added.every((t) => ["morning_plan_log", "monthly_objective", "week_agenda_state"].includes(t)), added.join(", ") || "déjà présentes dans la source");
   const cols = db.prepare("PRAGMA table_info(morning_plan_log)").all().map((c) => c.name);
   check("le journal n'a aucune colonne de statut, d'échéance, de report ou de rappel", !cols.some((c) => /status|statut|deadline|due|snooze|remind|rappel|echeance|report|backlog|done|traite/i.test(c)), cols.join(","));
   const walk = (dir, out = []) => {

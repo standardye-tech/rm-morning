@@ -2,6 +2,8 @@
 
 import { useState, type ReactNode } from "react";
 
+import { compare } from "@/lib/sort-compare";
+
 /**
  * Tableau triable par en-tête (lot de simplification, D).
  *
@@ -87,16 +89,4 @@ export function SortableTable({
       </tbody>
     </table>
   );
-}
-
-/** Tri stable : vides en dernier quel que soit le sens. */
-export function compare(a: number | string | null, b: number | string | null, direction: "asc" | "desc"): number {
-  if (a == null && b == null) return 0;
-  if (a == null) return 1;
-  if (b == null) return -1;
-  const d =
-    typeof a === "number" && typeof b === "number"
-      ? a - b
-      : String(a).localeCompare(String(b), "fr", { sensitivity: "base", numeric: true });
-  return direction === "asc" ? d : -d;
 }

@@ -1,24 +1,16 @@
 import Link from "next/link";
 
-import { ForecastCandidates, ForecastExits } from "@/components/forecast-board";
 import { ForecastSheet, type SheetGroup } from "@/components/forecast-sheet";
-import {
-  ForecastV2Divergences,
-  ForecastV2Freshness,
-  ForecastV2Scopes,
-  ForecastV2Totals,
-} from "@/components/forecast-v2";
+import { ForecastV2Freshness, ForecastV2Totals } from "@/components/forecast-v2";
 import { Card, EmptyState } from "@/components/ui";
 import { monthLabel, shiftMonth } from "@/lib/forecast-board";
-import { applyTableMode, buildForecastV2, isVisibleInForecast } from "@/lib/forecast-v2";
+import { applyTableMode, buildForecastV2, forecastChallengers, isVisibleInForecast } from "@/lib/forecast-v2";
 import { loadAdjustedPerspective } from "@/lib/adjusted-perspective";
-import { FORECAST_VISIBILITY } from "@/lib/config";
+import { FORECAST_CHALLENGE, FORECAST_VISIBILITY } from "@/lib/config";
 import { parisDate } from "@/lib/business-time";
 import { chanceInMonth, LABEL } from "@/lib/vocabulary";
 
 export const dynamic = "force-dynamic";
-
-const STAGES = ["Etude dossier", "Examen estimation", "Visite artisan", "Examen devis", "Signature"];
 
 /**
  * Forecast V2 — vue de pilotage consolidée.
@@ -45,8 +37,6 @@ export default async function ForecastPage({
   const query = await searchParams;
   const offset = query.vue === "m1" ? 1 : query.vue === "m2" ? 2 : 0;
   const ownerFilter = typeof query.commercial === "string" ? query.commercial : null;
-  const stageFilter = typeof query.etape === "string" ? query.etape : null;
-  const sort = typeof query.tri === "string" ? query.tri : "commercial";
   // Deux lectures du TABLEAU seulement : le bandeau ne change jamais de définition.
   const remainingOnly = query.affaires === "reste";
 
@@ -88,36 +78,22 @@ export default async function ForecastPage({
   // règle d'elles-mêmes ; les autres restent visibles dans Expected GMV, qui est
   // l'écran d'exploration du pipe.
   const today = parisDate();
-  const challengeById = new Map(board.examine.map((e) => [e.row.opportunityId, e]));
-
-  // La même règle s'applique au bloc « Candidats à examiner », qui liste des
-  // affaires déclarées sur le MOIS SUIVANT et déjà très avancées. Elles ne sont
-  // pas déclarées sur le mois affiché : elles doivent donc, elles aussi, porter
-  // au moins 25 % de chance de signer d'ici la fin du mois pour apparaître.
-  // Sans ce filtre, ce bloc resterait une porte d'entrée vers le pipe faible.
-  const probabilityById = new Map(
-    board.salespeople
-      .flatMap((sp) => sp.opportunities)
-      .map((o) => [o.opportunityId, o.expectedProbability ?? 0]),
-  );
-  const candidatesBoard = {
-    ...board,
-    candidates: board.candidates.filter(
-      (c) => (probabilityById.get(c.opportunityId) ?? 0) >= FORECAST_VISIBILITY.minProbability,
-    ),
-  };
+  // « À challenger » (E1) : une seule définition, partagée avec Ma semaine et
+  // Expected GMV — chance de signer sur le mois STRICTEMENT supérieure à 25 %,
+  // probabilité RM Morning canonique. Les affaires déclarées mais fragiles ne
+  // sont plus signalées ici : Expected GMV les explique dans l'écart.
+  const challengeById = new Map(forecastChallengers(board).map((e) => [e.row.opportunityId, e]));
 
   const groups: SheetGroup[] = board.salespeople
     .filter((sp) => !ownerFilter || sp.salesperson === ownerFilter)
     .map((sp) => {
       const rows = applyTableMode(
-        sp.opportunities.filter(
-          (o) =>
-            (!stageFilter || o.stage === stageFilter) &&
-            isVisibleInForecast(o, board.month, today),
-        ),
+        sp.opportunities.filter((o) => isVisibleInForecast(o, board.month, today)),
         remainingOnly ? "remaining" : "all",
-      ).map((o) => {
+      )
+        // Au sein d'un commercial, un ordre simple et stable : GMV décroissante.
+        .sort((a, b) => (b.gmv ?? 0) - (a.gmv ?? 0) || a.client.localeCompare(b.client, "fr"))
+        .map((o) => {
           const c = challengeById.get(o.opportunityId);
           return { ...o, challenge: c ? { kind: c.kind, reason: c.reason } : null };
         });
@@ -127,7 +103,6 @@ export default async function ForecastPage({
         declaredOpenGmv: sp.declaredOpenGmv,
         adjustedGmv: adjusted.ok ? (adjusted.value.byOwner[sp.salesperson] ?? 0) : null,
         kanbanGmv: rows.reduce((t, o) => t + (o.outsideKanban ? 0 : o.gmv ?? 0), 0),
-        perspectiveGmv: rows.reduce((t, o) => t + (o.perspectiveGmv ?? 0), 0),
         perspectiveSnapshotGmv: sp.perspectiveSnapshotGmv,
         expectedGmv: rows.reduce((t, o) => t + (o.expectedGmv ?? 0), 0),
         rows,
@@ -139,21 +114,19 @@ export default async function ForecastPage({
     ? board.salespeople
         .filter((sp) => !ownerFilter || sp.salesperson === ownerFilter)
         .flatMap((sp) => sp.opportunities)
-        .filter((o) => o.isSignedRow && (!stageFilter || o.stage === stageFilter)).length
+        .filter((o) => o.isSignedRow).length
     : 0;
 
-  if (sort === "expected") groups.sort((a, b) => b.expectedGmv - a.expectedGmv);
-  else if (sort === "gmv") groups.sort((a, b) => b.kanbanGmv - a.kanbanGmv);
-  else groups.sort((a, b) => a.salesperson.localeCompare(b.salesperson, "fr"));
+  // Forecast est définitivement organisé par commercial (E2) : aucun choix de tri.
+  groups.sort((a, b) => a.salesperson.localeCompare(b.salesperson, "fr"));
 
   // Les totaux de la bande sont resommés depuis ces mêmes lignes : un seul
   // chemin de calcul, donc jamais d'écart entre la bande et le pied du tableau.
-  const filtered = ownerFilter !== null || stageFilter !== null;
+  const filtered = ownerFilter !== null;
   const sheetTotals = {
     signed: groups.reduce((t, g) => t + g.signedGmv, 0),
     declaredOpen: groups.reduce((t, g) => t + g.declaredOpenGmv, 0),
     kanban: groups.reduce((t, g) => t + g.kanbanGmv, 0),
-    perspective: groups.reduce((t, g) => t + g.perspectiveGmv, 0),
     perspectiveSnapshot: groups.reduce((t, g) => t + g.perspectiveSnapshotGmv, 0),
     expected: groups.reduce((t, g) => t + g.expectedGmv, 0),
     count: groups.reduce((t, g) => t + g.rows.filter((r) => !r.outsideKanban).length, 0),
@@ -165,7 +138,6 @@ export default async function ForecastPage({
           ...board.region,
           count: sheetTotals.count,
           kanbanGmv: sheetTotals.kanban,
-          perspectiveGmv: sheetTotals.perspective,
           perspectiveSnapshotGmv: sheetTotals.perspectiveSnapshot,
           expectedRemaining: sheetTotals.expected,
           signedGmvActual: sheetTotals.signed,
@@ -188,8 +160,6 @@ export default async function ForecastPage({
     if (offset === 1) sp.set("vue", "m1");
     else if (offset === 2) sp.set("vue", "m2");
     if (ownerFilter) sp.set("commercial", ownerFilter);
-    if (stageFilter) sp.set("etape", stageFilter);
-    if (sort !== "commercial") sp.set("tri", sort);
     if (remainingOnly && !("affaires" in params)) sp.set("affaires", "reste");
     for (const [k, v] of Object.entries(params)) {
       if (v === null) sp.delete(k);
@@ -225,17 +195,6 @@ export default async function ForecastPage({
         ))}
       </div>
 
-      <div className="mt-2 flex flex-wrap items-center gap-1">
-        <span className="mr-1 text-xs text-ink-faint">Étape</span>
-        <Link href={link({ etape: null })} className={chip(!stageFilter)}>
-          toutes
-        </Link>
-        {STAGES.map((stage) => (
-          <Link key={stage} href={link({ etape: stage })} className={chip(stageFilter === stage)}>
-            {stage}
-          </Link>
-        ))}
-      </div>
     </>
   );
 
@@ -246,7 +205,8 @@ export default async function ForecastPage({
           <h1 className="text-2xl font-semibold tracking-tight">Forecast</h1>
           <p className="mt-1 max-w-2xl text-sm text-ink-soft">
             Ce que les commerciaux annoncent, l&apos;analyse régionale, puis la lecture de RM Morning.
-            Vert : déjà signé. Jaune : affaire que RM Morning conseille de challenger.
+            Vert : déjà signé. Jaune : affaire que RM Morning propose d&apos;ajouter au mois — plus de{" "}
+            {Math.round(FORECAST_CHALLENGE.minProbability * 100)} % de chance de signer selon RM Morning.
           </p>
           {/*
             La règle de densité est dite à l'écran : un tableau qui cache des
@@ -294,20 +254,6 @@ export default async function ForecastPage({
             </span>
           ) : null}
         </div>
-        <div className="flex flex-wrap items-center gap-1">
-          <span className="mr-1 text-xs text-ink-faint">Tri</span>
-          <Link href={link({ tri: "commercial" })} className={chip(sort === "commercial")}>
-            commercial
-          </Link>
-          <Link href={link({ tri: "gmv" })} className={chip(sort === "gmv")}>
-            GMV prévu
-          </Link>
-          {board.expectedAvailable ? (
-            <Link href={link({ tri: "expected" })} className={chip(sort === "expected")}>
-              GMV probable
-            </Link>
-          ) : null}
-        </div>
       </div>
 
       {/*
@@ -320,7 +266,7 @@ export default async function ForecastPage({
         <summary className="cursor-pointer list-none px-4 py-3 text-sm">
           Filtres
           <span className="ml-2 text-xs text-ink-faint">
-            {ownerFilter ?? "tous les commerciaux"} · {stageFilter ?? "toutes les étapes"}
+            {ownerFilter ?? "tous les commerciaux"}
           </span>
         </summary>
         <div className="border-t border-line px-4 pb-3 pt-1">{filters}</div>
@@ -353,28 +299,6 @@ export default async function ForecastPage({
                   : undefined
             }
           />
-          {offset === 0 ? (
-            <details className="group rounded-xl border border-line bg-surface">
-              <summary className="cursor-pointer list-none px-4 md:px-6 py-3 text-sm font-medium hover:bg-canvas">
-                Voir le détail de la Région
-                <span className="ml-1 group-open:hidden" aria-hidden>
-                  &#9656;
-                </span>
-                <span className="ml-1 hidden group-open:inline" aria-hidden>
-                  &#9662;
-                </span>
-                <span className="ml-2 text-xs font-normal text-ink-faint">
-                  périmètres comparés, écarts par commercial, mouvements de Perspective
-                </span>
-              </summary>
-              <div className="space-y-4 border-t border-line p-4">
-                <ForecastV2Scopes board={view} />
-                <ForecastV2Divergences board={view} />
-                <ForecastExits board={board} />
-                <ForecastCandidates board={candidatesBoard} />
-              </div>
-            </details>
-          ) : null}
           {board.issues.length > 0 ? (
             <details className="group rounded-xl border border-line bg-surface px-4 py-3 md:px-6">
               <summary className="-my-2 flex min-h-9 cursor-pointer list-none items-center py-2 text-xs text-ink-faint hover:text-ink md:my-0 md:min-h-0 md:py-0">

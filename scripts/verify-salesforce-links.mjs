@@ -108,9 +108,10 @@ const surfaces = [
   // sont plus rendus — leurs moteurs restent, leurs liens disparaissent avec eux.
   ["Morning · Blocs 1 et 2 + Plan du jour", "src/components/morning-v2.tsx", 3],
   ["Morning · Depuis la dernière photo (audit V3.1)", "src/components/since-last-snapshot.tsx", 1],
-  ["Forecast (tableau, à challenger)", "src/components/forecast-v2.tsx", 2],
+  // Lot de simplification (E6) : le détail de la Région (sorties, candidats,
+  // tableau à challenger) n'est plus rendu ; toutes les affaires du Forecast
+  // passent par la feuille, qui porte le lien.
   ["Forecast (feuille par commercial)", "src/components/forecast-sheet.tsx", 1],
-  ["Forecast (sorties, candidats)", "src/components/forecast-board.tsx", 3],
   ["Expected GMV · M (challenge, affaires suivies)", "src/components/expected-gmv.tsx", 2],
   ["Expected GMV · M+1 (Construire M+1)", "src/components/construire-m1.tsx", 1],
   ["Monitoring · Opportunités", "src/components/monitoring-opportunities.tsx", 3],
