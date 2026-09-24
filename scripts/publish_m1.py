@@ -120,6 +120,53 @@ def prepare_today(today: pd.DataFrame) -> pd.DataFrame:
     return d
 
 
+def backtest_rows(ref: pd.DataFrame, truth: pd.Series) -> list[dict]:
+    """Rejoue la formule de PRODUCTION sur chaque instantané hebdomadaire passé.
+
+    Lot de simplification (F6) — fiabilité d'Expected GMV. Pour chaque lundi T
+    dont le mois cible (mois de T + 1) est clos : baseline = moyenne officielle
+    des 12 mois strictement antérieurs au mois de T, force du pipe rapportée à la
+    médiane des 13 instantanés PRÉCÉDENTS — exactement ce que `main` calcule
+    aujourd'hui. Aucune information postérieure à T n'entre dans la projection.
+
+    Ce n'est pas un nouveau modèle : c'est la mesure, a posteriori, de ce que la
+    règle publiée aurait annoncé à chaque date, comparé au GMV final officiel.
+    """
+    ref = ref.sort_values("T").reset_index(drop=True)
+    rows: list[dict] = []
+    for i in range(len(ref)):
+        r = ref.iloc[i]
+        T = str(r["T"])
+        obs_month = T[:7]
+        target = shift_month(obs_month, 1)
+        if target not in truth.index:
+            continue
+        hist = truth[truth.index < obs_month]
+        prev = ref.iloc[:i].tail(13)
+        if len(hist) < 12 or len(prev) < 13:
+            continue
+        ref_total = float(prev["open_gmv_capped"].median())
+        ref_adv = float(prev["advanced_gmv"].median())
+        if ref_total <= 0 or ref_adv <= 0:
+            continue
+        strength = PIPE_WEIGHT * (float(r["open_gmv_capped"]) / ref_total) + (1 - PIPE_WEIGHT) * (
+            float(r["advanced_gmv"]) / ref_adv
+        )
+        multiplier = PIPE_WEIGHT + PIPE_WEIGHT * float(np.clip(strength, CLAMP_LO, CLAMP_HI))
+        projection = float(hist.tail(12).mean()) * multiplier
+        days = (date.fromisoformat(f"{target}-01") - date.fromisoformat(T)).days
+        rows.append(
+            {
+                "date": T,
+                "target": target,
+                "days_to_target": days,
+                "projection": round(projection, 2),
+                "actual": round(float(truth[target]), 2),
+            }
+        )
+    return rows
+
+
 def main() -> None:
     t0 = time.time()
     con = sqlite3.connect(DB)
@@ -236,8 +283,18 @@ def main() -> None:
     print(f"  scoring          : {len(live)} affaires · {over} au-dessus du seuil de {THRESHOLD:.0%}")
     print(f"  probabilité      : médiane {live['p_m1'].median():.1%} · max {live['p_m1'].max():.1%}")
 
+    backtest = backtest_rows(ref, truth)
+    if backtest:
+        err = sum(abs(b["projection"] - b["actual"]) for b in backtest)
+        tot = sum(b["actual"] for b in backtest)
+        print(f"  backtest         : {len(backtest)} instantanés, {len({b['target'] for b in backtest})} mois cibles"
+              f" · erreur agrégée {err / tot:.1%}")
+
     reliability = {
         "source": "C8.1",
+        # Lot de simplification (F6) : la projection de production rejouée sur
+        # chaque lundi passé, mois cible clos. Sert à l'indice de fiabilité.
+        "backtest": backtest,
         "approach": "H4 shrinkage 50 % pipe, index détendancé",
         "region_test": {"mae": 51_000, "median_abs_pct": 0.051, "bias_pct": -0.040, "target_months": 3},
         "region_h0_test": {"mae": 77_000, "median_abs_pct": 0.074, "bias_pct": -0.086},

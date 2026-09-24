@@ -74,6 +74,12 @@ export type M1Deal = {
   expectedGmv: number | null;
   /** Signal de challenge éventuel, en français. */
   challenge: string | null;
+  /** Projection Kanban telle que saisie (« 🟠 Oct. 2026 »). */
+  kanbanRaw: string | null;
+  /** Confiance déclarée par l'ET dans la dernière Perspective, brute (0–1). */
+  perspectiveConfidence: number | null;
+  /** Lecture de suivi existante (jalon en retard, relance attendue…), en français. */
+  reading: string | null;
 };
 
 export type ConstruireM1 = {
@@ -124,6 +130,9 @@ export function m1Deals(board: ForecastV2Board): M1Deal[] {
         probability: r.expectedProbability,
         expectedGmv: r.expectedGmv,
         challenge: c ? `${CHALLENGE_LABEL[c.kind]} — ${c.reason}` : null,
+        kanbanRaw: r.kanbanRaw,
+        perspectiveConfidence: r.perspectiveConfidence,
+        reading: r.reading ?? r.nextExpectedLabel ?? null,
       });
     }
   }
@@ -155,6 +164,22 @@ export async function buildConstruireM1(now: Date = new Date()): Promise<Constru
     futureShare: FUTURE_SHARE_M1,
     issues: board.issues,
   };
+}
+
+/**
+ * Écart commerciaux / RM Morning sur M+1 — lot de simplification (F4).
+ *
+ * Les affaires ANNONCÉES sur le mois (Projection Kanban) que RM Morning juge
+ * moins solides, triées par ENJEU : la part de leur GMV que RM Morning n'attend
+ * pas, GMV × (1 − probabilité M+1). Ce n'est PAS une décomposition de l'écart :
+ * la prévision RM Morning M+1 part du niveau historique de l'équipe et intègre du
+ * GMV d'affaires qui n'existent pas encore — leur somme ne le reconstitue pas.
+ */
+export function m1GapDeals(deals: M1Deal[]): (M1Deal & { stake: number })[] {
+  return deals
+    .filter((d) => d.declaredOnM1 && d.probability != null && d.probability < 0.5)
+    .map((d) => ({ ...d, stake: d.gmv * (1 - (d.probability ?? 0)) }))
+    .sort((a, b) => b.stake - a.stake || a.client.localeCompare(b.client, "fr"));
 }
 
 /** Mois M+1 de l'instant `now` (Paris). */

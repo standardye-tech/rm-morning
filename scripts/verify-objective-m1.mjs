@@ -124,10 +124,12 @@ check("champs demandés : commercial, affaire, GMV, stade, Kanban M+1, probabili
 check("identifié = Σ des affaires listées (et jamais présenté comme la prévision)", m1b.identified.count === deals.length && near(m1b.identified.gmv, deals.reduce((t, d) => t + d.gmv, 0)));
 check("m1Deals reproductible depuis la même planche", JSON.stringify(m1Deals(board).map((d) => d.opportunityId)) === JSON.stringify(deals.map((d) => d.opportunityId)));
 
-const comp = readFileSync(path.resolve(process.cwd(), "src/components/construire-m1.tsx"), "utf8");
-check("le bloc dit que la prévision n'est PAS la somme des affaires", /n&apos;est pas la somme des affaires/.test(comp) && /pas la prévision/.test(comp));
+// Lot de simplification (F1) : « Construire M+1 » et « Trajectoire » sont fondus
+// dans un seul bloc, `m1-overview.tsx`. Les mêmes garanties y sont vérifiées.
+const comp = readFileSync(path.resolve(process.cwd(), "src/components/m1-overview.tsx"), "utf8");
+check("le bloc dit que la prévision n'est PAS la somme des affaires", /ne se construit pas affaire par/.test(comp) && /n&apos;est pas la prévision/.test(comp));
 check("le bloc affiche « Objectif non renseigné » quand l'objectif manque", /Objectif non renseigné/.test(comp));
-check("aucune ventilation « pipe identifié / GMV futur » n'est fabriquée", /aucune n&apos;est affichée/.test(comp));
+check("aucune ventilation « pipe identifié / GMV futur » n'est fabriquée", !/projection\s*-\s*data\.identified|identified\.gmv\s*-\s*/.test(comp));
 check("lien Salesforce par affaire, via le composant partagé", /SalesforceOpportunityLink/.test(comp) && !/SALESFORCE_RECORD_BASE/.test(comp) && /opportunityId/.test(comp));
 
 // ============================================================================
@@ -171,7 +173,7 @@ check("une seule écriture de l'objectif : objective-store.ts", JSON.stringify(w
 const donnees = readFileSync(path.resolve(process.cwd(), "src/app/donnees/page.tsx"), "utf8");
 check("saisie depuis l'écran Données", /ObjectiveForm/.test(donnees) && /Objectif mensuel de la Région/.test(donnees));
 const expectedPage = readFileSync(path.resolve(process.cwd(), "src/app/expected-gmv/page.tsx"), "utf8");
-check("vue M+1 dans /expected-gmv (pas de nouvel onglet)", /vue === "m1"/.test(expectedPage) && /ConstruireM1Block/.test(expectedPage));
+check("vue M+1 dans /expected-gmv (pas de nouvel onglet)", /vue === "m1"/.test(expectedPage) && /M1OverviewBlock/.test(expectedPage));
 
 db.prepare("DELETE FROM monthly_objective").run();
 console.log(failures === 0 ? "\nTous les contrôles passent." : `\n${failures} contrôle(s) en échec.`);

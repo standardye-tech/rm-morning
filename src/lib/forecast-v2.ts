@@ -27,7 +27,7 @@
  *         C8.1 fait moins bien que le hasard (lift 0,9×), il est rejeté.
  */
 
-import { EXPECTED_M1, FORECAST_CHALLENGE, FORECAST_DIVERGENCE, FORECAST_VISIBILITY } from "./config";
+import { EXPECTED_CHALLENGE, EXPECTED_M1, FORECAST_CHALLENGE, FORECAST_DIVERGENCE, FORECAST_VISIBILITY } from "./config";
 import {
   buildForecastBoard,
   type ForecastMonthBoard,
@@ -712,6 +712,31 @@ export function forecastChallengers(board: Pick<ForecastV2Board, "examine">): Fo
       e.kind !== "declaree_fragile" &&
       (e.row.expectedProbability ?? 0) > FORECAST_CHALLENGE.minProbability,
   );
+}
+
+/**
+ * « À challenger » dans Expected GMV, mois en cours — lot de simplification (F9,
+ * F10). Plus large que Forecast : pMonthEnd STRICTEMENT > 15 %, et un impact
+ * crédible sur l'écart (GMV probable ≥ `EXPECTED_CHALLENGE.minExpectedGap`).
+ * Aucune limite de nombre : 3 affaires passent → 3, 11 → 11.
+ *
+ * Celles qui dépassent aussi 25 % sont déjà proposées dans Forecast : elles
+ * restent listées (jamais de disparition silencieuse) mais marquées
+ * `inForecast`, pour que l'écran n'en répète pas l'alerte.
+ */
+export function expectedChallengers(
+  board: Pick<ForecastV2Board, "examine">,
+): (ForecastV2Examine & { inForecast: boolean })[] {
+  const forecast = new Set(forecastChallengers(board).map((e) => e.row.opportunityId));
+  return board.examine
+    .filter(
+      (e) =>
+        e.kind !== "declaree_fragile" &&
+        (e.row.expectedProbability ?? 0) > EXPECTED_CHALLENGE.minProbability &&
+        (e.row.expectedGmv ?? 0) >= EXPECTED_CHALLENGE.minExpectedGap,
+    )
+    .map((e) => ({ ...e, inForecast: forecast.has(e.row.opportunityId) }))
+    .sort((a, b) => (b.row.expectedGmv ?? 0) - (a.row.expectedGmv ?? 0) || a.row.client.localeCompare(b.row.client, "fr"));
 }
 
 /**

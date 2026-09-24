@@ -184,10 +184,12 @@ section("OBJECTIF ET PERSPECTIVE AJUSTÉE = REPÈRES ACTUELS, JAMAIS DES SÉRIES
   const a = t.history.series.find((s) => s.key === "adjusted");
   check("Perspective ajustée : la valeur actuelle n'est PAS recopiée dans la série", a.values.every((v) => v === null) && a.week === null && a.window === null);
   check("Perspective ajustée illisible : aucun repère inventé", buildM1Trajectory(input(), "2026-09-24", history()).adjustedCurrent === null);
-  const src = readFileSync(path.resolve(process.cwd(), "src/components/trajectory-m1.tsx"), "utf8");
-  check("UI : « Objectif actuel » (repère courant), plus « Objectif M+1 »", src.includes('label="Objectif actuel"') && !src.includes('label="Objectif M+1"'));
-  check("UI : rappel « Pipe identifié ≠ prévision RM Morning »", src.includes("≠ prévision RM Morning"));
-  check("UI : l'objectif n'est jamais rendu dans le tableau historique", !/t\.objective/.test(src.slice(src.indexOf("<table"))));
+  // Lot de simplification (F1) : la trajectoire vit dans le bloc unique
+  // `m1-overview.tsx` — l'objectif n'y figure qu'une fois, en repère courant.
+  const src = readFileSync(path.resolve(process.cwd(), "src/components/m1-overview.tsx"), "utf8");
+  check("UI : l'objectif est un repère courant (« Objectif octobre »), jamais « Objectif M+1 »", src.includes("label={`Objectif ${m}`}") && !src.includes('label="Objectif M+1"'));
+  check("UI : rappel « le GMV identifié n'est pas la prévision »", src.includes("n&apos;est pas la prévision"));
+  check("UI : l'objectif n'est jamais rendu dans le tableau historique", !/objective/.test(src.slice(src.indexOf("<table"), src.indexOf("</table>"))));
 }
 
 // ────────────────────────────────────────────────────────────────────────

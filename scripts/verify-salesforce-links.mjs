@@ -112,8 +112,10 @@ const surfaces = [
   // tableau à challenger) n'est plus rendu ; toutes les affaires du Forecast
   // passent par la feuille, qui porte le lien.
   ["Forecast (feuille par commercial)", "src/components/forecast-sheet.tsx", 1],
-  ["Expected GMV · M (challenge, affaires suivies)", "src/components/expected-gmv.tsx", 2],
-  ["Expected GMV · M+1 (Construire M+1)", "src/components/construire-m1.tsx", 1],
+  // Lot de simplification (F11, F1) : « Affaires scorées » n'est plus rendu ;
+  // la vue M+1 est un bloc unique (écart expliqué + affaires suggérées).
+  ["Expected GMV · M (affaires à challenger)", "src/components/expected-gmv.tsx", 1],
+  ["Expected GMV · M+1 (écart et affaires suggérées)", "src/components/m1-overview.tsx", 2],
   ["Monitoring · Opportunités", "src/components/monitoring-opportunities.tsx", 3],
   // Lot de simplification : les blocs de Ma semaine sont fondus dans le
   // planning recommandé — les affaires clés de chaque carte portent le lien.

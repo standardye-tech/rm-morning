@@ -3,8 +3,12 @@
  *
  * Parti pris d'affichage : une prévision statistique n'est jamais présentée
  * comme un chiffre certain. Le finish attendu est toujours accompagné de sa
- * zone probable, et les mesures de fiabilité sont visibles sur la même page,
- * pas reléguées dans une documentation.
+ * zone probable, et sa fiabilité est MESURÉE sur l'historique (bloc « Fiabilité
+ * d'Expected GMV », `expected-reliability.tsx`).
+ *
+ * Lot de simplification (F8, F11) : « Affaires scorées », les cartes techniques
+ * (PR-AUC, Brier, backtest détaillé) et l'explication des facteurs du modèle ne
+ * sont plus rendues. Le scoring reste intact côté moteur.
  *
  * Aucun arrondi n'entre dans un calcul : les totaux arrivent déjà sommés depuis
  * `expected-gmv-live`, et cette couche ne fait que les formater (EC8).
@@ -12,19 +16,11 @@
 
 import { SalesforceOpportunityLink } from "@/components/salesforce-link";
 import { Badge, Card, SectionTitle } from "@/components/ui";
-import type {
-  ExpectedGmvOpportunity,
-  ExpectedGmvReliability,
-  ExpectedGmvSalesperson,
-  ExpectedGmvSnapshot,
-} from "@/lib/expected-gmv-live";
-import { monthLabel } from "@/lib/expected-gmv-live";
+import type { ExpectedGmvSalesperson, ExpectedGmvSnapshot } from "@/lib/expected-gmv-live";
 import type { ExpectedM1Snapshot } from "@/lib/expected-m1";
-import { formatEur, formatEurShort, formatFrenchDate } from "@/lib/normalize";
 import { LABEL, READING_HINT, READING_LABEL, readForecast } from "@/lib/vocabulary";
 import type { HistoricalReference } from "@/lib/official-signed";
 import { CHALLENGE_LABEL, type ForecastV2Examine } from "@/lib/forecast-v2";
-import { ProbabilityWithFactors } from "@/components/expected-factors";
 
 /**
  * Séparateur de milliers en espace insécable classique. `toLocaleString("fr-FR")`
@@ -50,48 +46,30 @@ function pct(value: number, digits = 1): string {
   return `${(value * 100).toFixed(digits).replace(".", ",")} %`;
 }
 
-function signedPct(value: number): string {
-  return `${value >= 0 ? "+" : "−"}${Math.abs(value * 100).toFixed(1).replace(".", ",")} %`;
-}
 
 
 /**
- * Affaires à challenger.
+ * « À challenger » du mois en cours — lot de simplification (F9, F10).
  *
- * EXACTEMENT la même liste que Forecast : `buildForecastV2(...).examine`. Ce
- * composant ne fait que la présenter autrement — cinq colonnes, une phrase par
- * ligne. Aucune seconde règle n'existe dans l'application.
+ * Toutes les affaires à plus de 15 % de chance de signer d'ici la fin du mois,
+ * hors de la prévision commerciale, et qui pèsent sur l'écart (voir
+ * `expectedChallengers`). Aucune limite de nombre. Celles au-delà de 25 % sont
+ * déjà proposées dans Forecast : elles restent listées, en discret, avec la
+ * mention « Déjà proposé dans Forecast » — l'alerte n'est pas répétée.
  */
 export function ExpectedGmvChallenge({
   items,
-  limit = 8,
 }: {
-  items: ForecastV2Examine[];
-  limit?: number;
+  items: (ForecastV2Examine & { inForecast: boolean })[];
 }) {
   if (items.length === 0) return null;
-  const head = items.slice(0, limit);
-  const rest = items.slice(limit);
-  const row = (e: ForecastV2Examine) => (
-    <tr key={e.row.opportunityId} className="border-b border-line bg-warning-soft/60 last:border-0">
-      <td className="px-4 md:px-6 py-2 font-medium"><SalesforceOpportunityLink opportunityId={e.row.opportunityId}>{e.row.client}</SalesforceOpportunityLink></td>
-      <td className="px-3 py-2 text-xs text-ink-soft">{e.row.owner}</td>
-      <td className="tabular px-3 py-2 text-right font-medium">{kEur(e.row.gmv)}</td>
-      <td className="tabular px-3 py-2 text-right">
-        {e.row.expectedProbability == null ? "—" : pct(e.row.expectedProbability)}
-      </td>
-      <td className="px-4 md:px-6 py-2 text-xs text-ink-soft">
-        <Badge tone="warning">{CHALLENGE_LABEL[e.kind]}</Badge>{" "}
-        <span className="text-ink-faint">{e.reason}</span>
-      </td>
-    </tr>
-  );
+  const fresh = items.filter((e) => !e.inForecast).length;
   return (
     <Card>
       <SectionTitle
-        eyebrow="À garder dans le viseur"
+        eyebrow="Upside du mois"
         title={LABEL.challenge}
-        aside={`${items.length} affaire(s)`}
+        aside={`${items.length} affaire(s) à plus de 15 % · ${fresh} absente(s) de Forecast`}
       />
       <div className="overflow-x-auto">
         <table className="w-full min-w-[46rem] text-sm md:min-w-0">
@@ -101,32 +79,124 @@ export function ExpectedGmvChallenge({
               <th className="px-3 py-2 font-medium">Commercial</th>
               <th className="px-3 py-2 text-right font-medium">GMV</th>
               <th className="px-3 py-2 text-right font-medium">{LABEL.chanceThisMonth}</th>
+              <th className="px-3 py-2 text-right font-medium">GMV probable</th>
               <th className="px-4 md:px-6 py-2 font-medium">Pourquoi cette affaire ressort</th>
             </tr>
           </thead>
-          <tbody>{head.map(row)}</tbody>
+          <tbody>
+            {items.map((e) => (
+              <tr
+                key={e.row.opportunityId}
+                className={`border-b border-line last:border-0 ${e.inForecast ? "text-ink-soft" : "bg-warning-soft/60"}`}
+              >
+                <td className="px-4 md:px-6 py-2 font-medium">
+                  <SalesforceOpportunityLink opportunityId={e.row.opportunityId}>{e.row.client}</SalesforceOpportunityLink>
+                </td>
+                <td className="px-3 py-2 text-xs text-ink-soft">{e.row.owner}</td>
+                <td className="tabular px-3 py-2 text-right font-medium">{kEur(e.row.gmv)}</td>
+                <td className="tabular px-3 py-2 text-right">
+                  {e.row.expectedProbability == null ? "—" : pct(e.row.expectedProbability)}
+                </td>
+                <td className="tabular px-3 py-2 text-right">{kEur(e.row.expectedGmv)}</td>
+                <td className="px-4 md:px-6 py-2 text-xs text-ink-soft">
+                  {e.inForecast ? (
+                    <span className="text-ink-faint">Déjà proposé dans Forecast</span>
+                  ) : (
+                    <>
+                      <Badge tone="warning">{CHALLENGE_LABEL[e.kind]}</Badge>{" "}
+                      <span className="text-ink-faint">{e.reason}</span>
+                    </>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
         </table>
       </div>
-      {rest.length > 0 ? (
-        <details className="group border-t border-line">
-          <summary className="cursor-pointer list-none px-4 md:px-6 py-2.5 text-sm text-ink-soft hover:text-ink">
-            <span className="underline decoration-dotted">
-              Voir toutes les affaires à challenger ({items.length})
-            </span>
-            <span className="ml-1 group-open:hidden" aria-hidden>
-              ▸
-            </span>
-            <span className="ml-1 hidden group-open:inline" aria-hidden>
-              ▾
-            </span>
-          </summary>
-          <div className="overflow-x-auto border-t border-line">
-            <table className="w-full min-w-[46rem] text-sm md:min-w-0">
-              <tbody>{rest.map(row)}</tbody>
-            </table>
-          </div>
-        </details>
-      ) : null}
+    </Card>
+  );
+}
+
+// --- Détail de la prévision, en lecture métier (F8) ---------------------------
+
+/**
+ * « Voir le détail de la prévision » — lot de simplification (F8).
+ *
+ * Ce que l'utilisateur doit comprendre, sans vocabulaire de modélisation : la
+ * prévision du mois = ce qui est déjà signé + ce qui a encore des chances de
+ * l'être, avec sa fourchette, et ce qui pourrait tomber dans les sept jours. Ni
+ * nom de modèle, ni P10/P90, ni nombre de simulations.
+ */
+export function ExpectedForecastDetail({ snap }: { snap: ExpectedGmvSnapshot }) {
+  const r = snap.region;
+  return (
+    <Card>
+      <SectionTitle eyebrow="Lecture" title={`Comment se construit la prévision de ${snap.monthLabel}`} aside={`J-${snap.daysLeft}`} />
+      <dl className="space-y-2.5 px-4 py-4 text-sm md:px-6">
+        <Line label="Déjà signé ce mois-ci" value={kEur(r.signedGmv)} hint={`${r.signedCount} affaire(s)`} />
+        <Line
+          label="Encore probable sur les affaires en cours"
+          value={kEur(r.expectedRemaining)}
+          hint={`${r.count} affaires suivies, chacune comptée à hauteur de sa chance de signer`}
+        />
+        <Line label={`Ce que RM Morning prévoit pour ${snap.monthLabel}`} value={kEur(r.expectedFinish)} strong />
+        <Line
+          label="Fourchette probable"
+          value={`${kEur(r.p10)} – ${kEur(r.p90)}`}
+          hint="8 fois sur 10, le mois devrait finir dans cette fourchette"
+        />
+        <Line
+          label="Signatures probables dans les 7 prochains jours"
+          value={kEur(r.expected7d)}
+          hint="une autre lecture, jamais additionnée à la fin de mois"
+        />
+      </dl>
+    </Card>
+  );
+}
+
+// --- Par commercial ------------------------------------------------------------
+
+export function ExpectedGmvBySalesperson({
+  rows,
+  region,
+}: {
+  rows: ExpectedGmvSalesperson[];
+  region: ExpectedGmvSnapshot["region"];
+}) {
+  return (
+    <Card>
+      <SectionTitle eyebrow="Par commercial" title="D'où vient la prévision" aside="Répartition d'une prévision, pas un classement" />
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-line text-left text-[11px] uppercase tracking-wide text-ink-faint">
+              <th className="px-4 md:px-6 py-2 font-medium">Commercial</th>
+              <th className="px-3 py-2 text-right font-medium">Déjà signé</th>
+              <th className="px-3 py-2 text-right font-medium">Encore probable</th>
+              <th className="px-4 md:px-6 py-2 text-right font-medium">Prévision RM Morning</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((s) => (
+              <tr key={s.salesperson} className="border-b border-line last:border-0">
+                <td className="px-4 md:px-6 py-2 font-medium">{s.salesperson}</td>
+                <td className="tabular px-3 py-2 text-right text-ink-soft">{s.signedGmv > 0 ? kEur(s.signedGmv) : "—"}</td>
+                <td className="tabular px-3 py-2 text-right text-ink-soft">{kEur(s.expectedMonthEnd)}</td>
+                <td className="tabular px-4 md:px-6 py-2 text-right font-medium">{kEur(s.expectedFinish)}</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr className="border-t-2 border-line-strong bg-canvas">
+              <td className="px-4 md:px-6 py-3 text-sm font-semibold">TOTAL RÉGION</td>
+              <td className="tabular px-3 py-3 text-right text-sm font-medium text-ink-soft">{kEur(region.signedGmv)}</td>
+              <td className="tabular px-3 py-3 text-right text-sm font-medium text-ink-soft">{kEur(region.expectedRemaining)}</td>
+              <td className="tabular px-4 md:px-6 py-3 text-right text-base font-semibold">{kEur(region.expectedFinish)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
     </Card>
   );
 }
@@ -462,565 +532,6 @@ function Line({
   );
 }
 
-// --- Synthese detaillee -----------------------------------------------------
-
-
-function Figure({
-  label,
-  value,
-  hint,
-  strong = false,
-}: {
-  label: string;
-  value: string;
-  hint?: string;
-  strong?: boolean;
-}) {
-  return (
-    <div>
-      <p className="text-xs font-medium uppercase tracking-[0.06em] text-ink-faint md:text-[11px] md:tracking-[0.1em]">{label}</p>
-      <p className={`tabular mt-0.5 font-semibold tracking-tight ${strong ? "text-2xl" : "text-lg"}`}>
-        {value}
-      </p>
-      {hint ? <p className="mt-0.5 text-xs text-ink-faint">{hint}</p> : null}
-    </div>
-  );
-}
-
-export function ExpectedGmvSummary({ snap }: { snap: ExpectedGmvSnapshot }) {
-  const r = snap.region;
-  return (
-    <div className="grid gap-4 lg:grid-cols-2">
-      <Card>
-        <SectionTitle
-          eyebrow="Horizon court"
-          title="Proches de signer"
-          aside="dans les 7 prochains jours"
-        />
-        <div className="grid grid-cols-3 gap-6 px-4 md:px-6 py-5">
-          <Figure label="GMV ouvert" value={kEur(r.openGmv)} hint={`${r.count} affaires`} />
-          <Figure label={LABEL.gmvSevenDays} value={kEur(r.expected7d)} strong />
-          <Figure
-            label="Affaires scorées"
-            value={String(r.count)}
-            hint={`état du ${formatFrenchDate(snap.sourceObservationDate)}`}
-          />
-        </div>
-        <p className="border-t border-line px-4 md:px-6 py-2.5 text-xs text-ink-faint">
-          {snap.model7d} · probabilité de signature sous 7 jours. Jamais additionnée à l&apos;horizon
-          fin de mois.
-        </p>
-      </Card>
-
-      <Card>
-        <SectionTitle
-          eyebrow={`Fin de ${snap.monthLabel}`}
-          title="Fin du mois"
-          aside={`J-${snap.daysLeft}`}
-        />
-        <div className="grid grid-cols-3 gap-6 px-4 md:px-6 py-5">
-          <Figure
-            label={LABEL.signedToDate}
-            value={kEur(r.signedGmv)}
-            hint={`${r.signedCount} affaire${r.signedCount > 1 ? "s" : ""}`}
-          />
-          <Figure label={LABEL.expectedRemaining} value={kEur(r.expectedRemaining)} />
-          <Figure
-            label={LABEL.expectedFinish}
-            value={kEur(r.expectedFinish)}
-            strong
-            hint={`médiane simulée ${kEur(r.p50)}`}
-          />
-        </div>
-        <div className="border-t border-line px-4 md:px-6 py-3">
-          <p className="text-xs font-medium uppercase tracking-[0.06em] text-ink-faint md:text-[11px] md:tracking-[0.1em]">
-            {LABEL.probableZone}
-          </p>
-          <p className="tabular mt-0.5 text-base font-medium">
-            {kEur(r.p10)} – {kEur(r.p90)}
-          </p>
-          <ProbabilityBar p10={r.p10} p50={r.p50} p90={r.p90} finish={r.expectedFinish} />
-        </div>
-        <p className="border-t border-line px-4 md:px-6 py-2.5 text-xs text-ink-faint">
-          {snap.modelVersion} · estimation statistique. P10 / P90 sur {groupInt(snap.draws)}{" "}
-          simulations du restant à signer.
-        </p>
-      </Card>
-    </div>
-  );
-}
-
-/**
- * Représentation minimale de l'intervalle. Pas un graphique : une règle, dont
- * le seul rôle est d'empêcher de lire le finish attendu comme une certitude.
- */
-function ProbabilityBar({
-  p10,
-  p50,
-  p90,
-  finish,
-}: {
-  p10: number;
-  p50: number;
-  p90: number;
-  finish: number;
-}) {
-  const lo = Math.min(p10, finish) * 0.9;
-  const hi = Math.max(p90, finish) * 1.05;
-  const at = (v: number) => `${((v - lo) / (hi - lo)) * 100}%`;
-  return (
-    <div className="mt-3 mb-1">
-      <div className="relative h-1.5 rounded-full bg-canvas">
-        <div
-          className="absolute h-1.5 rounded-full bg-line-strong"
-          style={{ left: at(p10), right: `calc(100% - ${at(p90)})` }}
-        />
-        <div
-          className="absolute -top-1 h-3.5 w-[2px] rounded bg-ink"
-          style={{ left: at(finish) }}
-          title={`Prévision RM Morning ${formatEur(finish)}`}
-        />
-        <div
-          className="absolute -top-0.5 h-2.5 w-[1px] bg-ink-faint"
-          style={{ left: at(p50) }}
-          title={`Médiane ${formatEur(p50)}`}
-        />
-      </div>
-      <div className="mt-1 flex justify-between text-xs text-ink-faint">
-        <span>P10</span>
-        <span>P90</span>
-      </div>
-    </div>
-  );
-}
-
-// --- Fiabilité --------------------------------------------------------------
-
-/**
- * Fiabilité, en français de manager.
- *
- * La vue principale ne contient aucun terme technique : elle dit ce que le
- * modèle s'est montré capable de faire. PR-AUC, Brier et compagnie existent
- * toujours, mais dans le dépliage, pour qui veut vérifier — pas dans la lecture
- * qu'on envoie en capture d'écran.
- */
-export function ExpectedGmvReliabilityCard({ rel }: { rel: ExpectedGmvReliability }) {
-  const me = rel.month_end;
-  const d7 = rel.seven_days;
-  const signedOf10 = d7 ? Math.round(d7.precision_at_10 * 10) : null;
-  const calibGap = d7
-    ? Math.abs(d7.calibration_top_decile.predicted - d7.calibration_top_decile.observed)
-    : null;
-
-  return (
-    <Card>
-      <SectionTitle
-        eyebrow="Transparence"
-        title="Fiabilité du modèle"
-        aside={
-          <a href="#backtest" className="-my-2 inline-block py-2 underline decoration-dotted hover:text-ink md:my-0 md:py-0">
-            Voir le détail du backtest
-          </a>
-        }
-      />
-      <div className="grid gap-x-10 gap-y-4 px-4 md:px-6 py-4 sm:grid-cols-2">
-        {me ? (
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.06em] text-ink-faint md:text-[11px] md:tracking-[0.1em]">
-              Fin de mois
-            </p>
-            <ul className="mt-1.5 space-y-1 text-sm text-ink-soft">
-              <li>
-                Erreur médiane observée :{" "}
-                <span className="tabular font-medium text-ink">{pct(me.median_abs_error_pct)}</span>
-              </li>
-              <li>
-                {Math.abs(me.bias_pct) < 0.03
-                  ? "Pas de tendance forte à surestimer ni à sous-estimer"
-                  : me.bias_pct > 0
-                    ? "Tendance à surestimer légèrement"
-                    : "Tendance à sous-estimer légèrement"}
-              </li>
-              <li>
-                Zone probable correcte dans{" "}
-                <span className="tabular font-medium text-ink">
-                  {me.interval_covered} cas sur {me.interval_total}
-                </span>
-              </li>
-            </ul>
-          </div>
-        ) : null}
-        {d7 ? (
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.06em] text-ink-faint md:text-[11px] md:tracking-[0.1em]">
-              7 jours
-            </p>
-            <ul className="mt-1.5 space-y-1 text-sm text-ink-soft">
-              <li>
-                <span className="tabular font-medium text-ink">{signedOf10} affaires sur les 10</span>{" "}
-                les mieux classées ont signé sous 7 jours
-              </li>
-              <li>
-                Qualité du classement :{" "}
-                <span className="font-medium text-ink">
-                  {d7.lift_top_decile >= 3 ? "nettement meilleure que le hasard" : "meilleure que le hasard"}
-                </span>
-              </li>
-              <li>
-                {calibGap != null && calibGap < 0.05
-                  ? "Probabilités globalement cohérentes avec les résultats"
-                  : "Probabilités à interpréter avec prudence"}
-              </li>
-            </ul>
-          </div>
-        ) : null}
-      </div>
-
-      <details className="group border-t border-line">
-        <summary className="cursor-pointer list-none px-4 md:px-6 py-2.5 text-xs text-ink-faint hover:text-ink">
-          <span className="underline decoration-dotted">Détail technique</span>
-          <span className="ml-1 group-open:hidden" aria-hidden>
-            ▸
-          </span>
-          <span className="ml-1 hidden group-open:inline" aria-hidden>
-            ▾
-          </span>
-        </summary>
-        <dl className="grid gap-x-10 gap-y-1.5 border-t border-line px-4 md:px-6 py-3 text-xs sm:grid-cols-2">
-          {me ? (
-            <>
-              <Detail
-                label="Erreur moyenne absolue (fin de mois)"
-                value={`${Math.round(me.mae / 1000)} k€ sur ${me.snapshots} dates rejouées`}
-              />
-              <Detail label="Biais global en euros" value={signedPct(me.bias_pct)} />
-              <Detail label="PR-AUC fin de mois" value={me.pr_auc.toFixed(4).replace(".", ",")} />
-              <Detail label="Brier fin de mois" value={me.brier.toFixed(5).replace(".", ",")} />
-              <Detail label="Modèle fin de mois" value={me.model} />
-            </>
-          ) : null}
-          {d7 ? (
-            <>
-              <Detail label="PR-AUC 7 jours" value={d7.pr_auc.toFixed(4).replace(".", ",")} />
-              <Detail label="Brier 7 jours" value={d7.brier.toFixed(5).replace(".", ",")} />
-              <Detail
-                label="Lift du 1er décile"
-                value={`${d7.lift_top_decile.toFixed(2).replace(".", ",")}× le taux moyen`}
-              />
-              <Detail
-                label="Calibration, 10 % d'affaires les mieux classées"
-                value={`${pct(d7.calibration_top_decile.predicted)} annoncés, ${pct(
-                  d7.calibration_top_decile.observed,
-                )} réalisés`}
-              />
-              <Detail label="Modèle 7 jours" value={d7.model} />
-            </>
-          ) : null}
-        </dl>
-      </details>
-
-      <p className="border-t border-line px-4 md:px-6 py-2.5 text-xs text-ink-faint">
-        Mesuré sur {me?.test_window ?? "la période de test"}, hors échantillon : ces trois mois
-        n&apos;ont jamais servi à entraîner les modèles.
-      </p>
-    </Card>
-  );
-}
-
-function Detail({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex justify-between gap-4">
-      <dt className="text-ink-faint">{label}</dt>
-      <dd className="tabular text-right text-ink-soft">{value}</dd>
-    </div>
-  );
-}
-
-// --- Tableau par commercial -------------------------------------------------
-
-export function ExpectedGmvBySalesperson({
-  rows,
-  region,
-  horizon,
-}: {
-  rows: ExpectedGmvSalesperson[];
-  region: ExpectedGmvSnapshot["region"];
-  horizon: "7j" | "mois";
-}) {
-  const hl = (isHorizon: boolean) => (isHorizon ? "font-medium text-ink" : "text-ink-soft");
-  return (
-    <Card>
-      <SectionTitle
-        eyebrow="Niveau commercial"
-        title="Par commercial"
-        aside="Répartition d'une prévision, pas un classement de performance"
-      />
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-line text-left text-[11px] uppercase tracking-wide text-ink-faint">
-              <th className="px-4 md:px-6 py-2 font-medium">Commercial</th>
-              <th className="px-3 py-2 text-right font-medium">GMV ouvert</th>
-              <th className="px-3 py-2 text-right font-medium">GMV probable 7 j</th>
-              <th className="px-3 py-2 text-right font-medium">{LABEL.probableGmv}</th>
-              <th className="px-3 py-2 text-right font-medium">Signé</th>
-              <th className="px-3 py-2 text-right font-medium">Prévision RM Morning</th>
-              <th className="px-4 md:px-6 py-2 text-right font-medium">Opps</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((s) => (
-              <tr key={s.salesperson} className="border-b border-line last:border-0">
-                <td className="px-4 md:px-6 py-2 font-medium">{s.salesperson}</td>
-                <td className="tabular px-3 py-2 text-right text-ink-soft">{kEur(s.openGmv)}</td>
-                <td className={`tabular px-3 py-2 text-right ${hl(horizon === "7j")}`}>
-                  {kEur(s.expected7d)}
-                </td>
-                <td className={`tabular px-3 py-2 text-right ${hl(horizon === "mois")}`}>
-                  {kEur(s.expectedMonthEnd)}
-                </td>
-                <td className="tabular px-3 py-2 text-right text-ink-soft">
-                  {s.signedGmv > 0 ? kEur(s.signedGmv) : "—"}
-                </td>
-                <td className="tabular px-3 py-2 text-right font-medium">{kEur(s.expectedFinish)}</td>
-                <td className="tabular px-4 md:px-6 py-2 text-right text-xs text-ink-faint">{s.count}</td>
-              </tr>
-            ))}
-          </tbody>
-          <tfoot>
-            <tr className="border-t-2 border-line-strong bg-canvas">
-              <td className="px-4 md:px-6 py-3 text-sm font-semibold">TOTAL RÉGION</td>
-              <td className="tabular px-3 py-3 text-right text-sm font-medium text-ink-soft">
-                {kEur(region.openGmv)}
-              </td>
-              <td className="tabular px-3 py-3 text-right text-sm font-semibold">
-                {kEur(region.expected7d)}
-              </td>
-              <td className="tabular px-3 py-3 text-right text-sm font-semibold">
-                {kEur(region.expectedRemaining)}
-              </td>
-              <td className="tabular px-3 py-3 text-right text-sm font-medium text-ink-soft">
-                {kEur(region.signedGmv)}
-              </td>
-              <td className="tabular px-3 py-3 text-right text-base font-semibold">
-                {kEur(region.expectedFinish)}
-              </td>
-              <td className="tabular px-4 md:px-6 py-3 text-right text-xs text-ink-faint">{region.count}</td>
-            </tr>
-          </tfoot>
-        </table>
-      </div>
-      <p className="border-t border-line px-4 md:px-6 py-2.5 text-xs text-ink-faint">
-        Pas d&apos;intervalle par commercial : sur des volumes de cette taille, une fourchette serait
-        plus trompeuse qu&apos;utile.
-      </p>
-    </Card>
-  );
-}
-
-// --- Tableau par opportunité ------------------------------------------------
-
-/**
- * Les mesures secondaires de la ligne, sorties du premier scan.
- *
- * Elles ne disparaissent pas : elles descendent dans le détail de ligne, qui ne
- * se monte qu'à l'ouverture. Le tableau passe ainsi de treize colonnes — dont
- * six purement analytiques — à sept colonnes de décision.
- */
-function rowDetail(
-  o: ExpectedGmvOpportunity,
-  horizon: "7j" | "mois",
-): { label: string; value: string }[] {
-  const other =
-    horizon === "7j"
-      ? { label: LABEL.chanceThisMonth, value: `${pct(o.pMonthEnd)} · ${formatEurShort(o.expectedMonthEnd)}` }
-      : { label: LABEL.chanceSevenDays, value: `${pct(o.p7d)} · ${formatEurShort(o.expected7d)}` };
-  const out: { label: string; value: string }[] = [other];
-  if (o.nextMilestone) {
-    out.push({
-      label: LABEL.nextStep,
-      value: o.nextMilestoneDueAt
-        ? `${o.nextMilestone} — ${formatFrenchDate(o.nextMilestoneDueAt.slice(0, 10))}`
-        : o.nextMilestone,
-    });
-  }
-  out.push({
-    label: LABEL.stageAge,
-    value: o.daysInStage == null ? "non datable" : `${Math.round(o.daysInStage)} jours`,
-  });
-  out.push({ label: "Jours restants dans le mois", value: String(o.daysLeftInMonth) });
-  if (o.amountBin) out.push({ label: "Tranche de GMV", value: o.amountBin });
-  // Contexte déclaratif : n'entre dans aucun des deux modèles.
-  out.push({ label: "Mois annoncé par le commercial", value: o.kanbanMonth ?? "aucun" });
-  return out;
-}
-
-/**
- * La situation de l'affaire, en vocabulaire métier.
- *
- * Reprend exactement les termes déjà employés par Forecast — « À challenger »,
- * l'état de gel — plutôt que d'exposer un motif technique. Aucune règle n'est
- * calculée ici : la liste des affaires à challenger vient de Forecast V2, seule
- * source de cette définition dans l'application.
- */
-function Situation({ o, challenged }: { o: ExpectedGmvOpportunity; challenged: boolean }) {
-  if (challenged) return <Badge tone="warning">{LABEL.challenge}</Badge>;
-  if (o.frozenMonthEnd) {
-    return (
-      <span className="text-ink-faint">
-        Gelée jusqu&apos;au {formatFrenchDate(o.standbyUntil?.slice(0, 10) ?? null)}
-      </span>
-    );
-  }
-  if (o.isStandby) return <span className="text-ink-faint">En stand-by</span>;
-  return <span className="text-ink-faint">—</span>;
-}
-
-
-export function ExpectedGmvOpportunities({
-  rows,
-  horizon,
-  total,
-  challenged,
-}: {
-  /** Identifiants des affaires à challenger, produits par Forecast V2. */
-  challenged?: Set<string>;
-  rows: ExpectedGmvOpportunity[];
-  horizon: "7j" | "mois";
-  total: number;
-}) {
-  return (
-    <Card>
-      <SectionTitle
-        eyebrow="Niveau opportunité"
-        title="Affaires scorées"
-        aside={`${rows.length} affichée${rows.length > 1 ? "s" : ""} sur ${total}`}
-      />
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-line text-left text-[11px] uppercase tracking-wide text-ink-faint">
-              <th className="w-[20%] px-4 md:px-6 py-1.5 font-medium">Client</th>
-              <th className="w-[13%] px-3 py-1.5 font-medium">Commercial</th>
-              <th className="w-[6.5rem] px-3 py-1.5 text-right font-medium">GMV</th>
-              <th className="w-[13%] px-3 py-1.5 font-medium">Étape</th>
-              {/*
-                Une seule colonne de probabilité : le sélecteur d'horizon change
-                la question posée, il n'ajoute pas deux colonnes de plus. La
-                seconde probabilité reste lisible en ouvrant la ligne.
-              */}
-              <th className="w-[8rem] px-3 py-1.5 text-right font-medium">
-                {horizon === "7j" ? LABEL.chanceSevenDays : LABEL.chanceThisMonth}
-              </th>
-              <th className="w-[7rem] px-3 py-1.5 text-right font-medium">{LABEL.probableGmv}</th>
-              <th className="w-[14%] px-4 md:px-6 py-1.5 font-medium">Situation</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((o) => (
-              <tr key={o.opportunityId} className="border-b border-line/70 align-top last:border-0">
-                <td className="px-4 md:px-6 py-1.5">
-                  <span className="font-medium"><SalesforceOpportunityLink opportunityId={o.opportunityId}>{o.client}</SalesforceOpportunityLink></span>
-                  {o.city ? <span className="block text-xs text-ink-faint">{o.city}</span> : null}
-                </td>
-                <td className="truncate px-3 py-1.5 text-xs text-ink-soft">{o.owner}</td>
-                <td className="tabular whitespace-nowrap px-3 py-1.5 text-right font-medium">
-                  {formatEurShort(o.gmv)}
-                </td>
-                <td className="truncate px-3 py-1.5 text-xs text-ink-soft">{o.stage ?? "—"}</td>
-                <td className="px-3 py-1.5 text-right">
-                  <ProbabilityWithFactors
-                    probability={pct(horizon === "7j" ? o.p7d : o.pMonthEnd)}
-                    factors={o.factors}
-                    detail={rowDetail(o, horizon)}
-                  />
-                </td>
-                <td className="tabular whitespace-nowrap px-3 py-1.5 text-right text-xs">
-                  {formatEurShort(horizon === "7j" ? o.expected7d : o.expectedMonthEnd)}
-                </td>
-                <td className="px-4 md:px-6 py-1.5 text-xs">
-                  <Situation o={o} challenged={challenged?.has(o.opportunityId) ?? false} />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <p className="border-t border-line px-4 md:px-6 py-2 text-xs text-ink-faint">
-        Cliquer sur une probabilité montre ce qui la compose, ainsi que l&apos;autre horizon,
-        l&apos;ancienneté dans l&apos;étape et le mois annoncé par le commercial.
-      </p>
-    </Card>
-  );
-}
-
-// --- Backtest et limites ----------------------------------------------------
-
-export function ExpectedGmvBacktest({ rel }: { rel: ExpectedGmvReliability }) {
-  const rows = rel.backtest ?? [];
-  const me = rel.month_end;
-  const months = [...new Set(rows.map((r) => r.month))];
-  return (
-    <Card className="scroll-mt-6">
-      <SectionTitle
-        eyebrow="Contrôle"
-        title="Comment le modèle s'est comporté ?"
-        aside={me?.test_window}
-      />
-      <div className="px-4 md:px-6 py-4">
-        <p className="text-sm text-ink-soft">
-          Chaque ligne rejoue une date passée : on ne garde que ce qui était connu ce jour-là, on
-          score le pipe ouvert, et on compare au mois réellement réalisé. Une affaire ne compte
-          qu&apos;une seule fois par date.
-        </p>
-        <p className="mt-2 text-sm text-ink-soft">
-          L&apos;erreur médiane observée sur le backtest est d&apos;environ{" "}
-          <span className="font-medium text-ink">{me ? pct(me.median_abs_error_pct) : "—"}</span>. La
-          zone probable a contenu le résultat réel sur{" "}
-          <span className="font-medium text-ink">
-            {me?.interval_covered ?? "—"} des {me?.interval_total ?? "—"} dates testées
-          </span>
-          .
-        </p>
-      </div>
-      {/* Le détail reste replié : la page ne doit pas s'allonger de treize
-          lignes de tableau pour dire ce que les deux phrases résument déjà. */}
-      <details className="group border-t border-line">
-        <summary className="cursor-pointer list-none px-4 md:px-6 py-2.5 text-sm text-ink-soft hover:text-ink">
-          <span className="underline decoration-dotted">
-            Voir les {rows.length} dates rejouées, mois par mois
-          </span>
-          <span className="ml-1 group-open:hidden" aria-hidden>
-            ▸
-          </span>
-          <span className="ml-1 hidden group-open:inline" aria-hidden>
-            ▾
-          </span>
-        </summary>
-        <div className="overflow-x-auto border-t border-line">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-line text-left text-[11px] uppercase tracking-wide text-ink-faint">
-                <th className="px-4 md:px-6 py-2 font-medium">Date</th>
-                <th className="px-3 py-2 text-right font-medium">Signé à date</th>
-                <th className="px-3 py-2 text-right font-medium">Prévision RM Morning</th>
-                <th className="px-3 py-2 text-right font-medium">Réalisé</th>
-                <th className="px-3 py-2 text-right font-medium">Écart</th>
-                <th className="px-4 md:px-6 py-2 text-right font-medium">Écart %</th>
-              </tr>
-            </thead>
-            <tbody>
-              {months.map((m) => (
-                <ExpectedGmvBacktestMonth key={m} month={m} rows={rows.filter((r) => r.month === m)} />
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </details>
-    </Card>
-  );
-}
-
 /**
  * Fraîcheur des données. Un écran de prévision qui ne dit pas de quand datent
  * ses données laisse croire qu'il est temps réel ; au-delà de vingt-quatre
@@ -1103,40 +614,6 @@ export function ExpectedGmvFreshness({ snap }: { snap: ExpectedGmvSnapshot }) {
         </details>
       ) : null}
     </div>
-  );
-}
-
-function ExpectedGmvBacktestMonth({
-  month,
-  rows,
-}: {
-  month: string;
-  rows: NonNullable<ExpectedGmvReliability["backtest"]>;
-}) {
-  const actual = rows[0]?.actual_finish ?? 0;
-  return (
-    <>
-      <tr className="border-b border-line bg-canvas">
-        <td colSpan={6} className="px-4 md:px-6 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-ink-faint">
-          {monthLabel(month)} · finish réel {kEur(actual)}
-        </td>
-      </tr>
-      {rows.map((r) => {
-        const bad = Math.abs(r.error_pct) > 0.25;
-        return (
-          <tr key={r.date} className="border-b border-line last:border-0">
-            <td className="tabular px-4 md:px-6 py-2">{formatFrenchDate(r.date)}</td>
-            <td className="tabular px-3 py-2 text-right text-ink-soft">{kEur(r.signed_to_date)}</td>
-            <td className="tabular px-3 py-2 text-right font-medium">{kEur(r.expected_finish)}</td>
-            <td className="tabular px-3 py-2 text-right text-ink-soft">{kEur(r.actual_finish)}</td>
-            <td className="tabular px-3 py-2 text-right text-ink-soft">{kEur(r.error)}</td>
-            <td className={`tabular px-4 md:px-6 py-2 text-right ${bad ? "font-medium text-warning" : "text-ink-soft"}`}>
-              {signedPct(r.error_pct)}
-            </td>
-          </tr>
-        );
-      })}
-    </>
   );
 }
 
