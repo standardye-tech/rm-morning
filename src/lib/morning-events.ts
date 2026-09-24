@@ -195,7 +195,7 @@ const WAITS_ON_US =
 
 /** Le client demande, ou pose une question qui appelle une réponse. */
 const ASKS =
-  /^(?:client )?demande\b|\bdemande (?:si|s'|quels?|quelles?|comment|quand|combien|confirmation)|souhaite savoir|voudrait savoir|(?:souhaite|souhaiterait|voudrait|aimerait|besoin d') (?:un |une |des |le |la |l'|recevoir |obtenir )?(?:devis|estimation|chiffrage|rappel|precision|information|rendez-vous|rdv|visite)|(?:pose|souleve) (?:une|la|des) (?:question|interrogation)|\?\s*$/;
+  /^(?:client )?demande\b|\bdemande (?:si|s'|quels?|quelles?|comment|quand|combien|confirmation)|souhaite savoir|voudrait savoir|(?:souhaite|souhaiterait|voudrait|aimerait|besoin d') (?:un |une |des |le |la |l'|recevoir |obtenir )?(?:devis|estimation|chiffrage|rappel|precision|information|rendez-vous|rdv|visite)|(?:pose|souleve) (?:une|la|des) (?:question|interrogation)|\?\s*$|\b(?:pouvez|pourriez|pourrez)[- ]vous\b|\bmerci de (?:m'|nous |me |bien vouloir )|\bpeut-on\b|\bserait[- ]?t?[-' ]?il possible/;
 
 /**
  * Vraie intention d'avancer, dans les mots du client ou la lecture du modèle :
@@ -212,6 +212,9 @@ const HOT_INTENT = new RegExp(
     "(?:confirme|accepte|confirmation|confirmer) (?:du |de |d'un |la |le |notre |un )?(?:visite|rendez-vous|rdv|creneau)",
     "avancer (?:le|la|notre) (?:rendez-vous|rdv|visite|appel)",
     "(?:reserve|pris|prend|fixe|cale) (?:un |le |une )?(?:rendez-vous|rdv|creneau|visite)",
+    // Créneau proposé ou accepté par le client : « 10h15, cela vous convient ? »,
+    // « OK pour le mardi 22 à 16h30 » (holdout du 24/09/2026).
+    "\\b\\d{1,2} ?h ?\\d{0,2}\\b[^.?!]{0,40}(?:convient|vous va|possible)|(?:ok|d'accord|parfait) pour (?:le |ce )?(?:lundi|mardi|mercredi|jeudi|vendredi|samedi|\\d{1,2}\\b)",
     "(?:nous|je|on) (?:sommes |suis |est )?disponibles? (?:le |lundi|mardi|mercredi|jeudi|vendredi|samedi|demain|cette semaine|la semaine)",
     "j'aimerais (?:faire|organiser|planifier) (?:une )?(?:visite|contre[ -]visite|rendez-vous)|contre[ -]visite",
     "(?:nous avons|j'ai|on a) (?:decide|choisi|retenu)|choisi (?:votre|vos)",
@@ -513,6 +516,11 @@ function classifyLegacyAware(row: TriageRow, eligibility: ReturnType<typeof elig
   if (words.quote && (words.quote.includes("?") || ASKS.test(words.quote) || detectIntent({ subject: null, summary: words.quote }).intent === "action_required")) {
     const label = detectIntent({ subject: null, summary: words.quote }).label;
     return { category: "attente", reason: label ? `Demande ${label}` : "Pose une question", ignoredBecause: null, confidence: "forte" };
+  }
+  // Holdout du 24/09/2026 : sans le modèle, une relance écrite par le client
+  // (« je vous relance concernant les travaux ») n'était lue nulle part.
+  if (words.quote && WAITING.test(words.quote)) {
+    return { category: "attente", reason: "Relance, sans réponse de notre côté", ignoredBecause: null, confidence: "forte" };
   }
   if (words.said && WAITS_ON_US.test(words.said)) {
     return { category: "attente", reason: "Attend notre devis ou notre retour", ignoredBecause: null, confidence: "forte" };

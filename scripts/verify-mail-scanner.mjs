@@ -103,6 +103,28 @@ section("PÉRIMÈTRE — expéditeurs inconnus et non-clients");
   check("réponse automatique d'agenda -> écarté", triage({ ...PIPE, subject: "Accepted: Appel de votre Expert Travaux", summary: "Confirmation de rendez-vous", signal_type: "neutre", classifier: "modele-test" }).category === "ignore");
 }
 
+section("HOLDOUT DU 24/09 — modèle indisponible, seule la phrase du client parle");
+{
+  const { selectInterestProof } = await import(lib("interest-proof"));
+  const proof = (t) => selectInterestProof(t)?.quote ?? null;
+  // Formes anonymisées des cas manqués par le holdout (rappel 0/10 avant correctif).
+  const relance = "Bonjour Paul. Je vous relance concernant les travaux de rénovation de l'appartement. Merci d'avance pour votre retour.";
+  check("extracteur : une relance du client est citée", /je vous relance/i.test(proof(relance) ?? ""), proof(relance));
+  check("triage : relance citée -> attente", said(proof(relance)).category === "attente");
+  const corriger = "Bonjour, Je viens de constater une erreur sur la façade. Pouvez vous s'il vous plait corriger";
+  check("extracteur : « pouvez vous … corriger » (sans trait d'union) est cité", /corriger/.test(proof(corriger) ?? ""), proof(corriger));
+  check("triage : demande de correction citée -> attente", said(proof(corriger)).category === "attente");
+  const rappel = "Excusez moi j'ai eu un rdv. Peut-on se rappeler à 16h30 ?";
+  check("triage : demande de rappel -> attente", said(proof(rappel)).category === "attente", proof(rappel));
+  const modif = "Serait t'il possible de faire quelques dernières modifications avec le conducteur ?";
+  check("extracteur : « serait t'il possible » (variante écrite) est cité", proof(modif) !== null);
+  const creneau = "J'ai bien reçu votre estimation. 10h15, cela vous convient?";
+  check("créneau proposé par le client -> chaud", said(proof(creneau)).category === "chaud", proof(creneau));
+  const ok = "Message reçu OK pour le mardi 22 à 16h30 Merci.";
+  check("créneau accepté par le client -> chaud", said(proof(ok)).category === "chaud", proof(ok));
+  check("« laissez-moi le temps de l'étudier » : rien n'est cité ni détecté", said(proof("J'ai bien reçu votre devis. Laissez moi le temps de l'étudier et je reviens vers vous.")).category === "ignore");
+}
+
 // ────────────────────────────────────────────────────────────────────────
 section("VISIBILITÉ — dernier message du client, réponse RM, un client = une ligne");
 {

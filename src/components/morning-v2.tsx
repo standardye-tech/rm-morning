@@ -392,13 +392,24 @@ export function WaitingClients({ events, board }: { events: MorningEvent[]; boar
         title="Clients qui attendent une réponse"
         aside={
           <span className="flex items-center gap-3">
-            <span>{events.length} client(s)</span>
+            {/*
+              Limite structurelle (holdout du 24/09/2026) : RM Morning ne lit que
+              la boîte synchronisée. Une réponse envoyée depuis la boîte d'un
+              commercial, sans copie, reste invisible — le bloc n'est donc pas
+              exhaustif et ne doit pas le laisser croire.
+            */}
+            <span title="Détection limitée à la boîte synchronisée : une réponse envoyée depuis la boîte d'un commercial, sans copie, n'est pas visible.">
+              {events.length} client(s)
+            </span>
             <MarkAllButton count={remaining} busy={board.busy} onClick={() => board.acknowledgeAll("attente")} />
           </span>
         }
       />
       {events.length === 0 ? (
-        <EmptyState>Aucun client n&apos;attend de réponse de notre côté.</EmptyState>
+        <EmptyState>
+          Aucune attente détectée dans la boîte synchronisée. Les réponses envoyées depuis la boîte d&apos;un
+          commercial sans copie ne sont pas visibles.
+        </EmptyState>
       ) : (
         <EventTable
           events={events}

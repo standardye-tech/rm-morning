@@ -702,6 +702,16 @@ export class GmailSource implements MailSource {
         const thread = await fetchThreadMessages(threadId);
         const result = await classifyHybrid(thread, { stage });
         if (!result) return;
+        // La citation est « la phrase du CLIENT » : hors verdict du modèle, elle est
+        // extraite du dernier message entrant, jamais d'une réponse de RM qui
+        // clôturerait le fil (holdout du 24/09/2026, même règle que le rattrapage).
+        const lastInbound = thread.filter((m) => m.direction === "entrant").pop();
+        const quote =
+          result.source === "model"
+            ? (result.classification.quote ?? null)
+            : lastInbound
+              ? extractQuoteFromMessage(lastInbound)
+              : null;
 
         updateThreadClassification(threadId, {
           signalType: result.classification.signalType,
@@ -709,7 +719,7 @@ export class GmailSource implements MailSource {
           blocker: result.classification.blocker,
           summary: result.classification.summary,
           classifier: result.classification.classifier,
-          quote: result.classification.quote ?? null,
+          quote,
         });
 
         classified += 1;
