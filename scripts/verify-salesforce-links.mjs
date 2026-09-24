@@ -104,9 +104,10 @@ check("SalesforceRecordLink porte la logique ; SalesforceOpportunityLink n'en es
 
 section("5 — Inventaire : chaque surface qui affiche une affaire porte le lien");
 const surfaces = [
-  ["Morning · Blocs 1 et 2 + Plan du jour + silencieuses", "src/components/morning-v2.tsx", 4],
+  // Lot de simplification : « silencieuses » et les blocs V1 (morning.tsx) ne
+  // sont plus rendus — leurs moteurs restent, leurs liens disparaissent avec eux.
+  ["Morning · Blocs 1 et 2 + Plan du jour", "src/components/morning-v2.tsx", 3],
   ["Morning · Depuis la dernière photo (audit V3.1)", "src/components/since-last-snapshot.tsx", 1],
-  ["Morning · blocs V1 (top affaires, à challenger)", "src/components/morning.tsx", 2],
   ["Forecast (tableau, à challenger)", "src/components/forecast-v2.tsx", 2],
   ["Forecast (feuille par commercial)", "src/components/forecast-sheet.tsx", 1],
   ["Forecast (sorties, candidats)", "src/components/forecast-board.tsx", 3],

@@ -117,7 +117,10 @@ check("W7 — transmission sans question ni demande => pas attente", triageWith(
 section("W5-W6 — Bloc 2 : ce qui doit rester une attente");
 
 check("W5 — demande de correction et de renvoi => attente", triageWith("Pouvez-vous modifier le devis et me le renvoyer ?").category === "attente");
-check("W6 — propose un créneau, attend confirmation => attente", triageWith("Je suis disponible mardi ou mercredi, dites-moi ce qui vous convient.").category === "attente");
+// Lot de simplification (A2) : proposer ses disponibilités, c'est « disponibilité
+// pour poursuivre » — une intention d'avancer, donc Bloc 1 (hiérarchie chaud >
+// attente, P1-P3). Avant, ce cas tombait en attente.
+check("W6 — propose un créneau => chaud (disponibilité pour poursuivre, chaud > attente)", triageWith("Je suis disponible mardi ou mercredi, dites-moi ce qui vous convient.").category === "chaud");
 
 // --- Fixtures DB pour la fraîcheur du fil (W1, W2, W8, W9, T4, T5) -----------
 

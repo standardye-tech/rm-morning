@@ -94,7 +94,7 @@ function norm(value: string | null): string {
  * en tête du Morning tous les matins.
  */
 const AUTOMATED =
-  /vous avez un nouveau lead|notification automatique|ne pas repondre|no-?reply|newsletter|se desinscrire|votre mot de passe|creneau de rappel automatique|trustpilot|avis client/;
+  /^(?:accepted|accepte|refuse|declined|tentative)\s*:|vous avez un nouveau lead|notification automatique|ne pas repondre|no-?reply|newsletter|se desinscrire|votre mot de passe|creneau de rappel automatique|trustpilot|avis client/;
 
 /** Le client relance, ou dit explicitement attendre. */
 const WAITING =
@@ -139,12 +139,113 @@ const DELIVERY =
  * signature » reste couvert par `DECISIVE` (morning-intent.ts).
  */
 const ADVANCING =
-  /comment (avancons|on avance|procede|proceder|faire pour)|prochaine etape|on y va|c'est bon pour (moi|nous)|nous souhaitons avancer|je souhaite avancer|valider|validation|\bsign(?:er|ions|iez|ons|ez|erai\w*|eras\w*|era\b|erons|erez|eront)\b|bon pour accord|d'accord pour|(?:ca|le devis|la proposition|l'offre|le budget) (?:me |nous )?convient|ca me va|ca nous va|fixer un rendez-vous|prendre rendez-vous|caler un (rdv|rendez-vous)|disponible pour|reglement|paiement|acompte|contrat|quand[^.?!]{0,20}(?:demarrer|commencer)/;
+  /comment (avancons|on avance|procede|proceder|faire pour)|prochaine etape|on y va|c'est bon pour (moi|nous)|nous souhaitons avancer|je souhaite avancer|valider|validation|\bsign(?:er|ions|iez|ons|ez|erai\w*|eras\w*|era\b|erons|erez|eront)\b|bon pour accord|d'accord pour|(?:ca|le devis|la proposition|l'offre|le budget) (?:me |nous )?convient|ca me va|ca nous va|fixer un rendez-vous|prendre rendez-vous|caler un (rdv|rendez-vous)|disponible pour|acompte|quand[^.?!]{0,20}(?:demarrer|commencer)/;
+// « reglement », « paiement » et « contrat » nus ont été RETIRÉS (lot de
+// simplification, audit production) : ils faisaient passer un rappel de
+// paiement ou une notification de facture pour une volonté d'avancer.
 
 /** Interlocuteurs qui ne sont pas le client final. */
-const NOT_CLIENT = /artisan|fournisseur|partenaire|comptable|assurance|banque(?!.*client)/;
+const NOT_CLIENT =
+  /artisan|fournisseur|partenaire|comptable|assurance|banque(?!.*client)|architecte d'interieur|collaborer|collaboration|demarchage|prospection|publication|magazine|parution|insertion publicitaire|reponse a votre demande de (?:tarif|prix|devis|cotation)|achat de produits|\border\b|purchase|non commercial|scolaire|etudiant|candidature|recrutement/;
 
-type Triage = { category: MorningCategory; reason: string; ignoredBecause: string | null };
+// --- Lecture de la phrase du client (lot de simplification, audit A2) ---------
+//
+// Le triage ne lisait que l'objet et le RÉSUMÉ. Or le résumé des règles est un
+// gabarit (« Échange sans effet clair sur la signature ») qui ne dit rien du
+// client, et la seule trace littérale de ce qu'il a écrit — la citation
+// `quote`, recopiée mot pour mot de son message — n'était jamais consultée.
+// Sur la copie production du 24/09/2026, six demandes explicites (« pourriez-vous
+// m'envoyer le nouveau chiffrage ? ») tombaient ainsi en « aucune intention ».
+//
+// Trois motifs lisent désormais les MOTS du client (citation) et la lecture du
+// modèle (résumé d'un classifieur non-règles) :
+
+/**
+ * Le client ne s'engage pas MAINTENANT : réflexion, report, attente d'un tiers,
+ * reprise après un événement extérieur. « On réfléchit », « on reviendra vers
+ * vous », « dès que le prêt est accordé » n'appellent ni Bloc 1 ni Bloc 2.
+ */
+const NOT_NOW = new RegExp(
+  [
+    "reflechi|reflexion|prendre (?:le|du) temps|besoin de temps|demande du temps",
+    "examiner (?:le|la|l'|votre|son)|apres examen|analyse (?:l'|le |la |les )|etudier (?:le|la|votre)",
+    "reviendr(?:a|ai|ons|ont)|revenir vers|reviens vers vous|de revenir|revient (?:des|fin|apres|en |vers|de conges)",
+    "repouss|report|decal|plus tard|a la rentree|dans (?:deux|2|trois|3|quelques) semaines",
+    "fin (?:septembre|octobre|novembre|decembre|janvier|fevrier|mars|avril|mai|juin|juillet|aout|du mois|d'annee)",
+    "stand-?by|en pause|mettre (?:le projet )?en attente|met le projet",
+    "pas encore (?:decide|pret|sur)|des (?:que|l'obtention|obtention|reception)",
+    "avant de (?:poursuivre|progresser|continuer|avancer|se decider|decider|donner suite)",
+    "en cours de demande de pret|demarches? de pret",
+    "(?:attend|attente|retour|validation|accord|decision|avis)[^.]{0,40}\\b(?:banque|mairie|agent|agence|architecte|syndic|copro\\w*|bureau d'etudes|notaire|sa cliente|son client|leur client|famille|conjoint|mari|epouse|associe|urbanisme|assureur|courtier|immobili\\w*)",
+  ].join("|"),
+);
+
+/**
+ * Message administratif ou de simple transmission, tel que le modèle l'a lu :
+ * accusé de réception, pièce envoyée, notification. Ne s'applique qu'au RÉSUMÉ du
+ * modèle, jamais à l'objet : « Documents » en objet ne dit pas si l'on demande
+ * ou si l'on transmet.
+ */
+const ADMIN_ONLY =
+  /sans demande|accuse(?:r)? (?:de )?reception|transmet|envoi(?:e)? (?:de |des |du |le |la |les |son |sa |ses )?(?:document|plan|diagnostic|liste|dossier|attestation|piece|photo)|partage d'un document|notification|message automatique|signature (?:automatique|email|de messagerie)|confirmation automatique|rappel de paiement/;
+
+/** Le client attend quelque chose DE NOUS : devis, chiffrage, retour, avancement. */
+const WAITS_ON_US =
+  /(?:en )?attente (?:du |de notre |de votre |d'un )(?:devis|estimation|chiffrage|retour|reponse|proposition)|attend (?:le |notre |votre |un )(?:devis|estimation|chiffrage|retour|reponse|proposition)|demande (?:l'avancement|des nouvelles|un retour|des retours|la transmission|l'envoi)|devis non recus?|pour (?:l'|une |un )?(?:evaluation|estimation|chiffrage|devis)\b/;
+
+/** Le client demande, ou pose une question qui appelle une réponse. */
+const ASKS =
+  /^(?:client )?demande\b|\bdemande (?:si|s'|quels?|quelles?|comment|quand|combien|confirmation)|souhaite savoir|voudrait savoir|(?:souhaite|souhaiterait|voudrait|aimerait|besoin d') (?:un |une |des |le |la |l'|recevoir |obtenir )?(?:devis|estimation|chiffrage|rappel|precision|information|rendez-vous|rdv|visite)|(?:pose|souleve) (?:une|la|des) (?:question|interrogation)|\?\s*$/;
+
+/**
+ * Vraie intention d'avancer, dans les mots du client ou la lecture du modèle :
+ * accord, validation, prochaine étape, volonté de signer, rendez-vous ou visite
+ * demandés ou confirmés, disponibilité pour poursuivre, choix arrêté, devis final.
+ */
+const HOT_INTENT = new RegExp(
+  [
+    "\\bvalide|validation de (?:l'|notre |la |votre )(?:devis|estimation|proposition)|donne (?:son|notre|mon) accord|d'accord (?:pour|sur)|bon pour accord",
+    "\\bon y va\\b|allons-y|feu vert|prochaine etape|comment (?:on )?(?:avance|avancons|procede)|lancer les travaux",
+    "souhait(?:e|ons|erait|erions) (?:avancer|poursuivre|continuer|signer|lancer|demarrer|commencer|valider|discuter des (?:corrections|modifications))",
+    "prets? a (?:signer|demarrer|lancer)|\\bsign(?:er|ons|erons|erai)\\b",
+    "demande (?:d'un |un |de |le |la |une )?(?:rendez-vous|rdv|visite|contre-visite|creneau|rencontre)",
+    "(?:confirme|accepte|confirmation|confirmer) (?:du |de |d'un |la |le |notre |un )?(?:visite|rendez-vous|rdv|creneau)",
+    "avancer (?:le|la|notre) (?:rendez-vous|rdv|visite|appel)",
+    "(?:reserve|pris|prend|fixe|cale) (?:un |le |une )?(?:rendez-vous|rdv|creneau|visite)",
+    "(?:nous|je|on) (?:sommes |suis |est )?disponibles? (?:le |lundi|mardi|mercredi|jeudi|vendredi|samedi|demain|cette semaine|la semaine)",
+    "j'aimerais (?:faire|organiser|planifier) (?:une )?(?:visite|contre[ -]visite|rendez-vous)|contre[ -]visite",
+    "(?:nous avons|j'ai|on a) (?:decide|choisi|retenu)|choisi (?:votre|vos)",
+    "devis (?:final|definitif)|demande (?:l'ajout|d'ajouter)",
+  ].join("|"),
+);
+
+/** Négation proche d'un signal : « je ne suis pas disponible », « pas encore validé ». */
+const NEGATED = /\bn(?:e |')[^.?!]{0,25}\b(?:pas|plus|jamais)\b|\bpas encore\b|\baucun(?:e)? (?:envie|intention)/;
+
+/** Résumé écrit du point de vue de RM : le dernier message lu est le nôtre. */
+const RM_SIDE = /^(?:le )?(?:commercial|expert travaux|conseiller|renovation man)\b|commercial (?:relance|tente|propose|envoie)/;
+
+/** Lecture prudente du modèle : il dit lui-même ne pas être sûr. */
+const HEDGED = /tronque|semble|probablement|incomplet/;
+
+/** Gabarits des classifieurs à règles : ils ne décrivent pas CE client. */
+const RULES_ONLY = /^rules/;
+
+/**
+ * `confidence` est INTERNE (lot de simplification) : d'où vient la preuve qui a
+ * classé le message. Jamais affichée — elle sert à écarter une attente fondée sur
+ * le seul objet quand l'expéditeur est inconnu de Salesforce.
+ *
+ *   forte   — la phrase du client, ou la lecture explicite du modèle ;
+ *   moyenne — un motif des règles sur l'extrait du message ;
+ *   faible  — l'objet seul, ou un résumé-gabarit.
+ */
+type Triage = {
+  category: MorningCategory;
+  reason: string;
+  ignoredBecause: string | null;
+  confidence?: "forte" | "moyenne" | "faible";
+};
 
 /**
  * Le blocage, rendu lisible.
@@ -195,6 +296,13 @@ type TriageRow = {
   /** Destinataires RM (D), JSON brut tel que persisté dans `mail_signal`. */
   rm_to?: string | null;
   rm_cc?: string | null;
+  /**
+   * Phrase du client recopiée mot pour mot (160 caractères au plus). `""` = relu,
+   * rien de probant ; `null` / absent = pas encore relu.
+   */
+  quote?: string | null;
+  /** Classifieur qui a produit `summary` : un modèle, ou les règles (gabarit). */
+  classifier?: string | null;
 };
 
 /**
@@ -207,11 +315,31 @@ type TriageRow = {
 export function triage(row: TriageRow): Triage {
   const verdict = eligibilityOf(row);
   const result = classify(row, verdict);
+  // Expéditeur inconnu de Salesforce et aucune phrase du client : l'objet seul
+  // (« Modification devis », « Demande de prix ») ne suffit pas à affirmer qu'un
+  // CLIENT attend. Sur la copie production du 24/09/2026, tous les cas de ce
+  // type étaient des fournisseurs, des médias ou du démarchage.
+  if (
+    verdict.verdict === "incertain" &&
+    (result.category === "chaud" || result.category === "attente") &&
+    result.confidence === "faible"
+  ) {
+    return { category: "ignore", reason: "", ignoredBecause: "expéditeur inconnu de Salesforce, objet seul", confidence: "faible" };
+  }
   // Un interlocuteur non qualifié ne peut jamais être annoncé comme « client
   // chaud » : ce serait affirmer une motivation commerciale chez quelqu'un dont
   // on ignore s'il est client. Il reste visible comme client qui attend — un
   // fait vérifiable : il a écrit, nous n'avons pas répondu.
+  //
+  // Exception (lot de simplification) : une intention lue dans ses mots ou par le
+  // modèle, SANS aucune demande (« confirme le rendez-vous du 6 »), n'attend rien
+  // de nous. L'annoncer « en attente » serait faux : le message est écarté.
   if (verdict.verdict === "incertain" && result.category === "chaud") {
+    const w = client(row);
+    const asks = w.quote.includes("?") || ASKS.test(w.quote) || ASKS.test(w.summary);
+    if (result.confidence === "forte" && !asks) {
+      return { category: "ignore", reason: "", ignoredBecause: "expéditeur inconnu de Salesforce, intention sans demande", confidence: "forte" };
+    }
     return { ...result, category: "attente" };
   }
   return result;
@@ -264,7 +392,52 @@ function eligibilityOf(row: TriageRow) {
   );
 }
 
+/**
+ * Ce que le client a dit, tel qu'on peut le lire sans le corps du message :
+ * sa phrase littérale (`quote`) et, quand un modèle l'a lu, son résumé. Le
+ * résumé des règles est un gabarit : il n'en fait pas partie.
+ */
+function client(row: TriageRow): { quote: string; summary: string; said: string; fromModel: boolean } {
+  const quote = norm(row.quote ?? null);
+  // Seul un résumé produit par les RÈGLES est un gabarit. Sans classifieur
+  // renseigné (appel historique, contrôle), le résumé est lu comme un texte.
+  const fromModel = !RULES_ONLY.test(row.classifier ?? "") && !!norm(row.summary);
+  const summary = fromModel ? norm(row.summary) : "";
+  return { quote, summary, said: `${summary} ${quote}`.trim(), fromModel };
+}
+
+/**
+ * Intention d'avancer, ni niée, ni conditionnée à plus tard. Les motifs
+ * historiques d'engagement (`ADVANCING` : « le devis nous convient », « pour que
+ * nous signions ») comptent aussi — mais seulement sur les MOTS du client ou la
+ * lecture du modèle, jamais sur un objet ou un gabarit.
+ */
+function hot(text: string): boolean {
+  return (
+    !!text &&
+    (HOT_INTENT.test(text) || ADVANCING.test(text)) &&
+    !NEGATED.test(text) &&
+    !HEDGED.test(text) &&
+    !NOT_NOW.test(text)
+  );
+}
+
+/** Confiance d'un verdict produit par les motifs historiques (objet + résumé). */
+function legacyConfidence(row: TriageRow): "forte" | "moyenne" | "faible" {
+  const w = client(row);
+  if (w.fromModel) return HEDGED.test(w.summary) ? "faible" : "forte";
+  return row.signal_type === "signature" || row.signal_type === "positif_bloque" || row.signal_type === "risque"
+    ? "moyenne"
+    : "faible";
+}
+
 function classify(row: TriageRow, eligibility: ReturnType<typeof eligibilityOf>): Triage {
+  const verdict = classifyLegacyAware(row, eligibility);
+  if (verdict.category !== "chaud" && verdict.category !== "attente") return verdict;
+  return { ...verdict, confidence: verdict.confidence ?? legacyConfidence(row) };
+}
+
+function classifyLegacyAware(row: TriageRow, eligibility: ReturnType<typeof eligibilityOf>): Triage {
   const text = `${norm(row.subject)} ${norm(row.summary)}`;
 
   if (row.direction !== "entrant") {
@@ -317,9 +490,56 @@ function classify(row: TriageRow, eligibility: ReturnType<typeof eligibilityOf>)
   // relance qui ne porte AUCUN signal d'engagement continue de primer sur une
   // demande formulée platement, exactement comme avant F.
   if (row.signal_type === "signature") {
-    return { category: "chaud", reason: "Prêt à signer ou dernière étape avant signature", ignoredBecause: null };
+    return { category: "chaud", reason: "Prêt à signer ou dernière étape avant signature", ignoredBecause: null, confidence: "moyenne" };
   }
-  if (row.signal_type === "positif_bloque") {
+
+  // --- ÉTAGE A2 (lot de simplification). Les MOTS du client, puis la lecture du
+  // modèle, avant les motifs historiques sur l'objet et le résumé-gabarit.
+  const words = client(row);
+  if (words.summary && RM_SIDE.test(words.summary)) {
+    return { category: "ignore", reason: "", ignoredBecause: "le dernier message lu est celui de RM" };
+  }
+  const hotQuote = hot(words.quote);
+  if (hotQuote) {
+    return { category: "chaud", reason: "Souhaite avancer", ignoredBecause: null, confidence: "forte" };
+  }
+  if (words.said && NOT_NOW.test(words.said)) {
+    return {
+      category: "ignore",
+      reason: "",
+      ignoredBecause: "le client ne s'engage pas maintenant (réflexion, report ou attente d'un tiers)",
+    };
+  }
+  if (words.quote && (words.quote.includes("?") || ASKS.test(words.quote) || detectIntent({ subject: null, summary: words.quote }).intent === "action_required")) {
+    const label = detectIntent({ subject: null, summary: words.quote }).label;
+    return { category: "attente", reason: label ? `Demande ${label}` : "Pose une question", ignoredBecause: null, confidence: "forte" };
+  }
+  if (words.said && WAITS_ON_US.test(words.said)) {
+    return { category: "attente", reason: "Attend notre devis ou notre retour", ignoredBecause: null, confidence: "forte" };
+  }
+  if (words.summary && ADMIN_ONLY.test(words.summary) && !ASKS.test(words.summary)) {
+    return { category: "ignore", reason: "", ignoredBecause: "transmission ou accusé de réception, sans demande" };
+  }
+  if (hot(words.summary)) {
+    return { category: "chaud", reason: "Souhaite avancer", ignoredBecause: null, confidence: "forte" };
+  }
+  if (words.summary && ASKS.test(words.summary) && !HEDGED.test(words.summary)) {
+    const label = detectIntent({ subject: null, summary: words.summary }).label;
+    return { category: "attente", reason: label ? `Demande ${label}` : "Demande une action de notre part", ignoredBecause: null, confidence: "forte" };
+  }
+  // Un « positif bloqué » n'est pas, à lui seul, une intention d'avancer :
+  //   — lu par le MODÈLE, il n'a passé aucun des motifs ci-dessus (ni accord, ni
+  //     rendez-vous, ni demande) : c'est un client favorable qui attend autre
+  //     chose que nous ;
+  //   — produit par les RÈGLES sur un seul obstacle (« financement », « sous
+  //     réserve ») sans marqueur d'engagement, le gabarit est « Client engagé, en
+  //     attente : … » — un mot-clé, pas une volonté.
+  // Seuls restent chauds les positifs des règles qui portent un engagement
+  // (« Accord exprimé, conditionné à … ») ou une demande d'ajustement du devis.
+  const weakPositive =
+    row.signal_type === "positif_bloque" &&
+    (words.fromModel || /^client engage, en attente/.test(norm(row.summary)));
+  if (row.signal_type === "positif_bloque" && !weakPositive) {
     const blocker = readableBlocker(row.blocker);
     if (NEEDS.test(text)) {
       return {
@@ -508,7 +728,7 @@ export function syncMorningEvents(now = new Date()): { seen: number; created: nu
       // heuristiques de domaine.
       `SELECT m.gmail_message_id, m.thread_id, m.sent_at, m.direction, m.subject, m.summary,
               m.blocker, m.signal_type, m.from_email, m.match_kind, m.opportunity_id,
-              m.rm_to, m.rm_cc,
+              m.rm_to, m.rm_cc, m.quote, m.classifier,
               d.opportunity_stage, d.lead_status, d.opportunity_owner AS ext_owner, d.lead_owner,
               o.stage, o.is_terminal, o.owner
          FROM mail_signal m
@@ -680,8 +900,10 @@ export function loadMorningEvents(): { events: MorningEvent[] } {
     )
     .all() as SignalRow[];
 
-  const activeWaiting = activeWaitingMessageIds();
-  const latestHot = latestHotMessageIds();
+  // Une seule lecture pour les deux blocs : ils ne peuvent pas diverger.
+  const visible = visibleMorningMessageIds();
+  const activeWaiting = visible.waiting;
+  const latestHot = visible.hot;
 
   const events = rows.map((r): MorningEvent => {
     const level = r.match_level ?? "C";
@@ -785,75 +1007,97 @@ export function isThreadStillWaiting(
 }
 
 /**
- * Parmi des messages d'UNE MÊME catégorie, ceux qui sont la plus récente
- * occurrence de leur fil. Brique commune à la déduplication du Bloc 2
- * (attente) et du Bloc 1 (chaud, G) : plusieurs signaux successifs sur le
- * même sujet, dans le même fil, ne sont pas des situations distinctes — seule
- * la plus récente décrit la situation commerciale actuelle.
- */
-function latestByThread(rows: { id: string; thread_id: string; sent_at: string | null }[]): Set<string> {
-  const latest = new Map<string, string>();
-  for (const r of rows) {
-    const current = latest.get(r.thread_id);
-    const at = r.sent_at ?? "";
-    if (current === undefined || at > current) latest.set(r.thread_id, at);
-  }
-  const result = new Set<string>();
-  for (const r of rows) {
-    if ((r.sent_at ?? "") >= (latest.get(r.thread_id) ?? "")) result.add(r.id);
-  }
-  return result;
-}
-
-function eventRowsOfCategory(category: "chaud" | "attente"): { id: string; thread_id: string; sent_at: string | null }[] {
-  return getDb()
-    .prepare(
-      `SELECT e.gmail_message_id AS id, m.thread_id AS thread_id, m.sent_at AS sent_at
-         FROM morning_event e
-         JOIN mail_signal m ON m.gmail_message_id = e.gmail_message_id
-        WHERE e.category = ?`,
-    )
-    .all(category) as { id: string; thread_id: string; sent_at: string | null }[];
-}
-
-/**
- * Messages « chaud » qui sont la plus récente occurrence de leur fil (G,
- * audit F-bis : 2 threads sur 21 portaient plusieurs événements chauds
- * simultanés). Déduplication AU NIVEAU DU THREAD seulement — jamais par
- * affaire : une même opportunité peut porter plusieurs fils réellement
- * distincts, et chacun garde sa propre plus récente occurrence.
- */
-export function latestHotMessageIds(): Set<string> {
-  return latestByThread(eventRowsOfCategory("chaud"));
-}
-
-/**
- * Messages « attente » réellement actifs — UNE SEULE définition (F, audit des
- * 43 attentes affichées), consommée par le Bloc 2 du Morning
- * (`loadMorningEvents`) et par `canonicalClientAttend()` (Monitoring) : elles
- * ne peuvent plus diverger.
+ * Ce que Morning montre réellement — lot de simplification, audit A2.
  *
- * Un message `attente` est actif quand :
- *   — aucune réponse RM plus récente n'existe dans son fil
- *     (`isThreadStillWaiting`) ;
- *   — ET il est la PLUS RÉCENTE relance « attente » de ce fil. Plusieurs
- *     relances non répondues sur le même sujet ne sont pas trois attentes
- *     distinctes : c'est une seule conversation qui n'a toujours pas de
- *     réponse, et une seule ligne suffit à le dire. Les précédentes ne sont
- *     ni supprimées ni réinterprétées — seule la LECTURE ne les affiche plus.
+ * Avant, chaque bloc dédupliquait sa propre catégorie dans un fil : un message
+ * « attente » restait visible alors que le client avait écrit ensuite « merci,
+ * c'est noté », et un même client occupait deux lignes s'il avait ouvert deux
+ * fils. La règle est désormais UNIQUE pour les deux blocs :
+ *
+ *   1. seul compte le DERNIER message pertinent du client dans son fil (les
+ *      notifications et les messages hors périmètre ne comptent pas). Si ce
+ *      dernier message n'est ni chaud ni en attente — un remerciement, un « on
+ *      réfléchit » —, le fil ne remonte plus : c'est le client qui a tourné la
+ *      page ;
+ *   2. aucune réponse RM (message sortant) ne lui est postérieure ;
+ *   3. UNE ligne par client : l'affaire (rattachement A ou B) ou, à défaut,
+ *      l'adresse de l'expéditeur. Son message le plus récent l'emporte.
+ *
+ * Limite assumée : RM ne voit que la boîte synchronisée. Une réponse envoyée
+ * depuis la boîte d'un commercial sans copie reste invisible — c'est pourquoi
+ * le point 1 compte aussi : un client qui remercie a, de fait, reçu sa réponse.
+ */
+type VisibilityRow = {
+  id: string;
+  thread_id: string;
+  sent_at: string | null;
+  direction: string | null;
+  category: string | null;
+  reason: string | null;
+  opportunity_id: string | null;
+  match_level: string | null;
+  from_email: string | null;
+};
+
+export function visibleMorningMessageIds(): { hot: Set<string>; waiting: Set<string> } {
+  const rows = getDb()
+    .prepare(
+      `SELECT m.gmail_message_id AS id, m.thread_id, m.sent_at, m.direction,
+              e.category, e.reason, m.opportunity_id, m.match_level, lower(m.from_email) AS from_email
+         FROM mail_signal m
+         LEFT JOIN morning_event e ON e.gmail_message_id = m.gmail_message_id`,
+    )
+    .all() as VisibilityRow[];
+  return selectVisible(rows);
+}
+
+/** Cœur pur de `visibleMorningMessageIds`, contrôlable sans base. */
+export function selectVisible(rows: VisibilityRow[]): { hot: Set<string>; waiting: Set<string> } {
+  const at = (r: VisibilityRow) => r.sent_at ?? "";
+  const lastInbound = new Map<string, VisibilityRow>();
+  const lastOutbound = new Map<string, string>();
+  for (const r of rows) {
+    if (r.direction === "sortant") {
+      if (r.sent_at && (lastOutbound.get(r.thread_id) ?? "") < r.sent_at) lastOutbound.set(r.thread_id, r.sent_at);
+      continue;
+    }
+    if (r.direction !== "entrant") continue;
+    // Un message hors périmètre ou automatique n'est pas la parole du client.
+    if (r.category === "hors_perimetre" || r.reason === "message automatique") continue;
+    const cur = lastInbound.get(r.thread_id);
+    if (!cur || at(r) > at(cur) || (at(r) === at(cur) && r.id > cur.id)) lastInbound.set(r.thread_id, r);
+  }
+
+  const byClient = new Map<string, VisibilityRow>();
+  for (const r of lastInbound.values()) {
+    if (r.category !== "chaud" && r.category !== "attente") continue;
+    if (!isThreadStillWaiting(r.thread_id, r.sent_at, lastOutbound)) continue;
+    const key =
+      r.opportunity_id && (r.match_level === "A" || r.match_level === "B")
+        ? `opp:${r.opportunity_id}`
+        : `mail:${r.from_email ?? r.thread_id}`;
+    const cur = byClient.get(key);
+    if (!cur || at(r) > at(cur)) byClient.set(key, r);
+  }
+
+  const hot = new Set<string>();
+  const waiting = new Set<string>();
+  for (const r of byClient.values()) (r.category === "chaud" ? hot : waiting).add(r.id);
+  return { hot, waiting };
+}
+
+/** Bloc 1 : messages « chaud » visibles (voir `visibleMorningMessageIds`). */
+export function latestHotMessageIds(): Set<string> {
+  return visibleMorningMessageIds().hot;
+}
+
+/**
+ * Bloc 2 : messages « attente » réellement actifs — UNE SEULE définition,
+ * consommée par le Morning (`loadMorningEvents`) et par `canonicalClientAttend()`
+ * (Monitoring) : elles ne peuvent pas diverger.
  */
 export function activeWaitingMessageIds(): Set<string> {
-  const rows = eventRowsOfCategory("attente");
-  const latestOutbound = latestOutboundByThread();
-  const latestInThread = latestByThread(rows);
-
-  const active = new Set<string>();
-  for (const r of rows) {
-    if (!isThreadStillWaiting(r.thread_id, r.sent_at, latestOutbound)) continue;
-    if (!latestInThread.has(r.id)) continue;
-    active.add(r.id);
-  }
-  return active;
+  return visibleMorningMessageIds().waiting;
 }
 
 // --- Vérité canonique « client attend » (C) --------------------------------

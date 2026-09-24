@@ -69,7 +69,13 @@ export type MorningPlan = {
   };
   hot: MorningEvent[];
   waiting: MorningEvent[];
-  /** Affaires écartées du haut de Morning faute de signe de vie. */
+  /**
+   * Affaires à fort Expected, sans signe de vie, hors du Plan. N'est PLUS rendu
+   * (lot de simplification, A3) : chacune a déjà été jugée par `evaluateAffaire`
+   * — si elle appelait une action sur M, elle serait dans le Plan ; le motif de
+   * son écart est dans `pool.excluded`. Conservé pour l'observation et les
+   * contrôles.
+   */
   silentButStrong: { opportunityId: string; client: string; salesperson: string; gmv: number | null; expected: number }[];
 };
 
