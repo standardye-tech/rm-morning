@@ -24,7 +24,13 @@
  */
 
 import { classifyThread, type Classification, type ClassifiableMessage } from "./mail-classify";
-import { classifyWithModelDetailed, fallbackLabel, type ThreadContext } from "./mail-classify-ai";
+import {
+  classifyWithModelDetailed,
+  fallbackLabel,
+  isPermanentProviderError,
+  type ThreadContext,
+} from "./mail-classify-ai";
+import { isAutomaticNotification } from "./mail-rules";
 
 /** Seuil d'escalade. Au-dessus, le verdict des règles est jugé assez sûr. */
 export const ESCALATION_CONFIDENCE = 0.6;
@@ -58,12 +64,33 @@ const EMPTY = { inputTokens: 0, outputTokens: 0, latencyMs: 0 };
 /** Motif de repli quand le budget d'appels d'un passage est épuisé. */
 export const AI_BUDGET_REACHED = "budget IA de la synchronisation atteint";
 
+/** Motif de repli quand le coupe-circuit du passage est ouvert. */
+export const AI_PROVIDER_HALTED = "appels IA suspendus pour cette synchronisation";
+
 /**
  * Budget d'appels au modèle, partagé par tous les fils d'un même passage.
  * Décrémenté AVANT l'appel (tentative comptée, même si elle échoue) ; la
  * lecture et l'écriture sont synchrones, donc sûres malgré la concurrence.
+ *
+ * Coupe-circuit : une erreur PERMANENTE du fournisseur (crédit épuisé, clé
+ * invalide ou sans droits) ouvre `halted` — plus aucun appel pour le reste du
+ * passage, les fils restants prennent le repli des règles (provisoire, donc
+ * repris au passage suivant). Tant qu'aucune réponse n'a confirmé que le
+ * fournisseur accepte nos requêtes (`verified`), les appels passent UN PAR UN
+ * (`gate`) : sans cela, les fils classés en parallèle enverraient plusieurs
+ * requêtes vouées au même refus avant que le premier ne revienne. Une erreur
+ * transitoire (délai, 5xx, réseau) n'ouvre pas le coupe-circuit.
  */
-export type ModelBudget = { remaining: number };
+export type ModelBudget = {
+  remaining: number;
+  halted?: string | null;
+  verified?: boolean;
+  gate?: Promise<void>;
+};
+
+export function newModelBudget(remaining: number): ModelBudget {
+  return { remaining, halted: null, verified: false };
+}
 
 /**
  * Classe l'état courant d'un fil. Ne lève jamais : en cas de problème, le
@@ -91,21 +118,73 @@ export async function classifyHybrid(
     };
   }
 
-  // Garde-fou de coût : budget épuisé → verdict des règles, aucun appel.
-  if (budget) {
-    if (budget.remaining <= 0) {
-      return {
-        classification: { ...rules, classifier: "rules_fallback" },
-        source: "rules_fallback",
-        escalated: false,
-        clamped: false,
-        ...EMPTY,
-        fallbackReason: AI_BUDGET_REACHED,
-      };
-    }
-    budget.remaining -= 1;
+  // Notification automatique certaine (gabarit Salesforce) : les règles
+  // suffisent, le modèle n'a rien à y lire.
+  const last = [...messages].sort((a, b) => a.date.localeCompare(b.date)).pop();
+  if (last && isAutomaticNotification(last)) {
+    return {
+      classification: { ...rules, classifier: "rules" },
+      source: "rules",
+      escalated: false,
+      clamped: false,
+      ...EMPTY,
+      fallbackReason: null,
+    };
   }
 
+  if (!budget) return callModel(messages, context, rules);
+  if (budget.verified) return guardedCall(messages, context, rules, budget);
+
+  // Fournisseur pas encore confirmé dans ce passage : un appel à la fois.
+  const previous = budget.gate ?? Promise.resolve();
+  let release: () => void = () => {};
+  budget.gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  if (budget.verified) {
+    // Confirmé pendant l'attente : inutile de faire patienter les suivants.
+    release();
+    return guardedCall(messages, context, rules, budget);
+  }
+  try {
+    return await guardedCall(messages, context, rules, budget);
+  } finally {
+    release();
+  }
+}
+
+function rulesFallback(rules: Classification, reason: string): HybridResult {
+  return {
+    classification: { ...rules, classifier: "rules_fallback" },
+    source: "rules_fallback",
+    escalated: false,
+    clamped: false,
+    ...EMPTY,
+    fallbackReason: reason,
+  };
+}
+
+/** Appel soumis au coupe-circuit et au budget du passage. */
+async function guardedCall(
+  messages: ClassifiableMessage[],
+  context: ThreadContext,
+  rules: Classification,
+  budget: ModelBudget,
+): Promise<HybridResult> {
+  if (budget.halted) return rulesFallback(rules, AI_PROVIDER_HALTED);
+  // Garde-fou de coût : budget épuisé → verdict des règles, aucun appel.
+  if (budget.remaining <= 0) return rulesFallback(rules, AI_BUDGET_REACHED);
+  budget.remaining -= 1;
+  return callModel(messages, context, rules, budget);
+}
+
+async function callModel(
+  messages: ClassifiableMessage[],
+  context: ThreadContext,
+  rules: Classification,
+  budget?: ModelBudget,
+): Promise<HybridResult> {
   const controller = new AbortController();
   try {
     const call = await withTimeout(
@@ -113,6 +192,7 @@ export async function classifyHybrid(
       MODEL_TIMEOUT_MS,
       () => controller.abort(),
     );
+    if (budget) budget.verified = true;
 
     // Bridage : le modèle n'a pas autorité pour prononcer une signature ni
     // une perte. Sa proposition est écartée, le verdict des règles reprend.
@@ -140,6 +220,17 @@ export async function classifyHybrid(
       fallbackReason: null,
     };
   } catch (cause) {
+    if (budget) {
+      if (isPermanentProviderError(cause)) {
+        // Crédit épuisé, clé refusée : inutile d'insister dans ce passage.
+        budget.halted = fallbackLabel(cause);
+      } else {
+        // Délai, 5xx, réponse illisible, coupure réseau : rien de permanent.
+        // Le parallélisme reprend (sérialiser un fournisseur lent coûterait
+        // 8 s par fil sans rien protéger).
+        budget.verified = true;
+      }
+    }
     // Toute défaillance rend la main aux règles, sans interrompre l'appelant.
     return {
       classification: { ...rules, classifier: "rules_fallback" },

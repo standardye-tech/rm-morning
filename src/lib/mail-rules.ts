@@ -203,6 +203,20 @@ const matches = (message: MailMessage, pattern: RegExp) =>
  * Notifications internes réellement commerciales : elles doivent survivre au
  * filtre « échanges internes », qui les écarterait sinon.
  */
+/**
+ * Notification AUTOMATIQUE identifiable avec certitude : les deux gabarits
+ * Salesforce envoyés au nom d'un ET (« Notification piste abandonnée »,
+ * « Notification opportunité perdue ») — les 330 messages internes de la
+ * production au 26/09/2026, hors un seul échange humain. Objet exact en tête,
+ * sans « Re: », « TR: » ni « Fwd: » : un ET qui transfère ou répond écrit un
+ * vrai message, qui reste analysé normalement.
+ */
+const AUTOMATIC_NOTIFICATION_SUBJECT = /^notification (piste abandonn[ée]e|opportunit[ée] perdue)\b/i;
+
+export function isAutomaticNotification(message: { direction: string; subject?: string | null }): boolean {
+  return message.direction === "interne" && AUTOMATIC_NOTIFICATION_SUBJECT.test((message.subject ?? "").trim());
+}
+
 const COMMERCIAL_NOTIFICATION =
   /nouvelle piste|statut de la piste|piste abandonn|opportunit[ée] (perdue|gagn)|nouveau lead|promesse sign|bon pour accord/i;
 

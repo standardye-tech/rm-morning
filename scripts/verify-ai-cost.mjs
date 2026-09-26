@@ -34,6 +34,9 @@ globalThis.fetch = async (url, init) => {
       });
     });
   }
+  if (mode === "server") {
+    return new Response(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }), { status: 529 });
+  }
   if (mode === "credit") {
     return new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "Your credit balance is too low" } }), { status: 400 });
   }
@@ -50,7 +53,8 @@ const lib = (n) => pathToFileURL(path.resolve(process.cwd(), `src/lib/${n}.ts`))
 const { getDb } = await import(lib("db"));
 const { aiCostUsd, aiUsageSummary, AI_PRICING_USD_PER_MTOK } = await import(lib("ai-usage"));
 const { AI_MODEL } = await import(lib("mail-classify-ai"));
-const { classifyHybrid, AI_BUDGET_REACHED, MODEL_TIMEOUT_MS } = await import(lib("mail-classify-hybrid"));
+const { classifyHybrid, AI_BUDGET_REACHED, AI_PROVIDER_HALTED, MODEL_TIMEOUT_MS, newModelBudget } = await import(lib("mail-classify-hybrid"));
+const { isAutomaticNotification } = await import(lib("mail-rules"));
 const store = await import(lib("mail-store"));
 const { GMAIL_SYNC } = await import(lib("config"));
 
@@ -150,6 +154,62 @@ section("ÉTAT DE CLASSIFICATION — relu ≠ à classifier");
   check("nouveau message du client après la réponse RM : fil de nouveau en attente", pendingIds() === "fa", pendingIds());
   store.markThreadAnalyzed("fa");
   check("fil sans verdict possible : marqué analysé, non relu indéfiniment", pendingIds() === "");
+}
+
+// Classe des fils comme la synchro : `concurrency` à la fois, même budget.
+const classifyAll = async (threads, budget, concurrency = 4) => {
+  const out = [];
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: concurrency }, async () => {
+      while (next < threads.length) {
+        const i = next++;
+        out[i] = await classifyHybrid(threads[i], { origin: "synchro" }, budget);
+      }
+    }),
+  );
+  return out;
+};
+const pendingThreads = Array.from({ length: 50 }, (_, i) => [{ ...thread[0], id: `p${i}`, threadId: `tp${i}` }]);
+
+section("COUPE-CIRCUIT — erreur permanente du fournisseur");
+{
+  mode = "credit";
+  const before = calls;
+  const budget = newModelBudget(GMAIL_SYNC.maxModelCallsPerRun);
+  const out = await classifyAll(pendingThreads, budget);
+  mode = "ok";
+  const halted = out.filter((r) => r.fallbackReason === AI_PROVIDER_HALTED).length;
+  check("crédit insuffisant au 1er fil, 50 fils en attente : 1 seul appel Anthropic", calls - before === 1, String(calls - before));
+  check("49 fils en repli sans appel, motif « appels IA suspendus »", halted === 49 && out.every((r) => r.source === "rules_fallback"), String(halted));
+  check("motif permanent retenu une fois : crédit, 400 invalid_request_error", /400 invalid_request_error/.test(budget.halted ?? ""), budget.halted ?? "");
+  check("le plafond n'est pas consommé par des requêtes vouées à l'échec", budget.remaining === GMAIL_SYNC.maxModelCallsPerRun - 1, String(budget.remaining));
+  check("verdicts provisoires : aucun ne pose `analyzed_at` (source rules_fallback)", out.every((r) => r.source === "rules_fallback"));
+
+  const b2 = calls;
+  const restored = await classifyAll(pendingThreads, newModelBudget(GMAIL_SYNC.maxModelCallsPerRun));
+  check("synchro suivante, fournisseur rétabli : les 50 fils provisoires sont retraités par le modèle", calls - b2 === 50 && restored.every((r) => r.source === "model"), String(calls - b2));
+
+  mode = "server";
+  const b3 = calls;
+  const transient = await classifyAll(pendingThreads.slice(0, 10), newModelBudget(GMAIL_SYNC.maxModelCallsPerRun));
+  mode = "ok";
+  check("erreur transitoire (5xx) : pas de coupe-circuit, chaque fil garde sa tentative", calls - b3 === 10 && transient.every((r) => r.fallbackReason !== AI_PROVIDER_HALTED), String(calls - b3));
+}
+
+section("NOTIFICATIONS INTERNES — automatique certain vs message humain");
+{
+  const interne = (subject, snippet) => [{ id: "i1", threadId: "ti", date: "2026-09-20T10:00:00Z", direction: "interne", subject, snippet }];
+  check("gabarit Salesforce « Notification piste abandonnée » : automatique", isAutomaticNotification({ direction: "interne", subject: "Notification piste abandonnée" }));
+  check("gabarit Salesforce « Notification opportunité perdue » : automatique", isAutomaticNotification({ direction: "interne", subject: "Notification opportunité perdue" }));
+  check("« TR: Notification … » transférée par un ET : message humain", !isAutomaticNotification({ direction: "interne", subject: "TR: Notification piste abandonnée" }));
+  check("même objet venant d'un client : pas une notification interne", !isAutomaticNotification({ direction: "entrant", subject: "Notification piste abandonnée" }));
+  const before = calls;
+  const n = await classifyHybrid(interne("Notification opportunité perdue", "Bonjour."), { origin: "synchro" }, newModelBudget(10));
+  check("notification automatique : 0 appel, verdict des règles", calls - before === 0 && n.source === "rules" && n.classification.signalType === "negatif", `${calls - before} · ${n.source}`);
+  const b2 = calls;
+  const h = await classifyHybrid(interne("Re: Rdv téléphonique ce jour", "Bonjour, je te confirme le rendez-vous de cet après-midi."), { origin: "synchro" }, newModelBudget(10));
+  check("vrai message interne d'un ET : comportement actuel (escalade vers le modèle)", calls - b2 === 1 && h.source === "model", `${calls - b2} · ${h.source}`);
 }
 
 getDb().close();

@@ -34,6 +34,8 @@ import { extractQuoteFromMessage, messageBody } from "../mail-classify";
 import { selectInterestProof } from "../interest-proof";
 import {
   AI_BUDGET_REACHED,
+  AI_PROVIDER_HALTED,
+  newModelBudget,
   classifyHybrid,
   type ClassificationSource,
   type ModelBudget,
@@ -461,6 +463,8 @@ export type SyncReport = {
   aiCalls: number;
   /** Fils classés par les règles faute de budget IA restant. */
   aiBudgetSkipped: number;
+  /** Fils classés par les règles après ouverture du coupe-circuit (erreur permanente). */
+  aiHaltedSkipped: number;
   classifyMs: number;
 };
 
@@ -771,8 +775,11 @@ export class GmailSource implements MailSource {
     // fils en `rules_fallback` pendant dix jours sans aucune trace.
     const modelFallbacks = new Map<string, number>();
     // Garde-fou de coût : au plus `maxModelCallsPerRun` appels par passage.
-    const budget: ModelBudget = { remaining: GMAIL_SYNC.maxModelCallsPerRun };
+    // Coupe-circuit : une erreur permanente (crédit, clé) suspend les appels
+    // pour le reste du passage — voir `ModelBudget`.
+    const budget: ModelBudget = newModelBudget(GMAIL_SYNC.maxModelCallsPerRun);
     let aiBudgetSkipped = 0;
+    let aiHaltedSkipped = 0;
     await mapLimited(pending, GMAIL_SYNC.classifyConcurrency, async ({ threadId, stage }) => {
       try {
         const classified_ = await classifyThreadForStore(threadId, stage, "synchro", budget);
@@ -787,6 +794,8 @@ export class GmailSource implements MailSource {
         bySource[result.source] += 1;
         if (result.fallbackReason === AI_BUDGET_REACHED) {
           aiBudgetSkipped += 1;
+        } else if (result.fallbackReason === AI_PROVIDER_HALTED) {
+          aiHaltedSkipped += 1;
         } else if (result.fallbackReason) {
           modelFallbacks.set(result.fallbackReason, (modelFallbacks.get(result.fallbackReason) ?? 0) + 1);
         }
@@ -836,9 +845,18 @@ export class GmailSource implements MailSource {
     // Trace technique unique, conservée en base et affichée par l'écran
     // « Données ». Chaque ligne est PRÉFIXÉE de sa nature : c'est ce qui permet
     // de diagnostiquer plus tard sans relire le code.
+    // Le motif qui a ouvert le coupe-circuit est dit UNE fois, avec tous les
+    // fils qu'il a renvoyés aux règles (le fil fautif compris).
+    const haltedThreads = budget.halted ? (modelFallbacks.get(budget.halted) ?? 0) + aiHaltedSkipped : 0;
+    if (budget.halted) modelFallbacks.delete(budget.halted);
     for (const [reason, n] of modelFallbacks) {
       // Journal sûr : fournisseur, modèle, statut, type d'erreur. Jamais la clé ni un email.
       console.warn(`[gmail] repli du modèle sur les règles : ${reason} — ${n} fil(s)`);
+    }
+    if (budget.halted) {
+      console.warn(
+        `[gmail] ${AI_PROVIDER_HALTED} : ${budget.halted} — ${haltedThreads} fil(s) classé(s) par les règles, repris au prochain passage`,
+      );
     }
     if (aiBudgetSkipped > 0) {
       console.warn(
@@ -847,6 +865,9 @@ export class GmailSource implements MailSource {
     }
     const errors: string[] = [
       ...(failure ? [`lecture : ${failure}`] : []),
+      ...(budget.halted
+        ? [`${AI_PROVIDER_HALTED} (${budget.halted}) : ${haltedThreads} fil(s) classé(s) par les règles`]
+        : []),
       ...(aiBudgetSkipped > 0
         ? [`${AI_BUDGET_REACHED} (${GMAIL_SYNC.maxModelCallsPerRun} appels) : ${aiBudgetSkipped} fil(s) classé(s) par les règles`]
         : []),
@@ -894,6 +915,7 @@ export class GmailSource implements MailSource {
       outputTokens,
       aiCalls,
       aiBudgetSkipped,
+      aiHaltedSkipped,
       classifyMs,
     };
   }

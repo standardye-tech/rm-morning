@@ -42,6 +42,21 @@ export class ClassifierUnavailableError extends Error {
   }
 }
 
+/**
+ * Erreur PERMANENTE du fournisseur : insister ne servirait à rien avant une
+ * intervention humaine (recharge du crédit, nouvelle clé). Crédit épuisé :
+ * 400 `invalid_request_error` « credit balance is too low » (panne du
+ * 14/09/2026), ou 402 / `billing_error` ; clé refusée : 401 / 403 ; clé
+ * absente. Un délai dépassé, une 429 ou une 5xx sont transitoires.
+ */
+export function isPermanentProviderError(cause: unknown): boolean {
+  if (!(cause instanceof ClassifierUnavailableError)) return false;
+  if (cause.errorType === "cle_absente") return true;
+  if (cause.status === 401 || cause.status === 402 || cause.status === 403) return true;
+  if (["authentication_error", "permission_error", "billing_error"].includes(cause.errorType)) return true;
+  return cause.status === 400 && /credit balance/i.test(cause.message);
+}
+
 /** Motif de repli, sûr à journaliser : « anthropic/<modèle> 400 invalid_request_error — … ». */
 export function fallbackLabel(cause: unknown): string {
   if (cause instanceof ClassifierUnavailableError) {
