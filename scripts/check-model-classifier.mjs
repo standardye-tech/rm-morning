@@ -8,7 +8,8 @@
  * (métadonnées + extrait, `fetchThreadMessages`), puis `classifyHybrid` — le
  * même appel que la synchronisation. Aucune classification n'est écrite, ni en base ni dans
  * Gmail. Aucun contenu d'email n'est affiché : seulement les compteurs et les
- * motifs de repli (fournisseur, modèle, statut, type d'erreur).
+ * motifs de repli (fournisseur, modèle, statut, type d'erreur). Comptage et
+ * affichage : `model-check-report.mjs` (appels = requêtes réellement envoyées).
  *
  * COÛT : au plus N appels réels au modèle (un par fil escaladé), consignés
  * dans le registre de consommation IA avec l'origine « controle ».
@@ -20,6 +21,7 @@
 
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { countAnthropicRequests, formatModelCheckReport, newModelCheckTally, tallyReadError, tallyResult } from "./model-check-report.mjs";
 
 const limit = Number(process.argv[2] ?? 20);
 const lib = (n) => pathToFileURL(path.resolve(process.cwd(), `src/lib/${n}.ts`)).href;
@@ -36,24 +38,15 @@ const threads = getDb()
   )
   .all(limit);
 
-const counts = { tested: 0, model: 0, rules: 0, rules_fallback: 0, errors: 0 };
-const reasons = new Map();
+const anthropic = countAnthropicRequests();
+const tally = newModelCheckTally();
 for (const t of threads) {
   try {
     const thread = await fetchThreadMessages(t.thread_id);
-    const result = await classifyHybrid(thread, { stage: t.stage ?? null, origin: "controle" });
-    if (!result) continue;
-    counts.tested += 1;
-    counts[result.source] += 1;
-    if (result.fallbackReason) reasons.set(result.fallbackReason, (reasons.get(result.fallbackReason) ?? 0) + 1);
+    tallyResult(tally, await classifyHybrid(thread, { stage: t.stage ?? null, origin: "controle" }));
   } catch (e) {
-    counts.errors += 1;
-    const r = `lecture Gmail : ${e instanceof Error ? e.name : "erreur"}`;
-    reasons.set(r, (reasons.get(r) ?? 0) + 1);
+    tallyReadError(tally, e);
   }
 }
 
-const escalated = counts.model + counts.rules_fallback;
-console.log(`\nfils testés ${counts.tested} | modèle ${counts.model} | repli ${counts.rules_fallback} | règles sûres (sans appel) ${counts.rules} | erreurs ${counts.errors}`);
-if (escalated > 0) console.log(`taux de succès du modèle sur les fils escaladés : ${Math.round((counts.model / escalated) * 100)} %`);
-for (const [r, n] of reasons) console.log(`  motif : ${r} — ${n}`);
+console.log(`\n${formatModelCheckReport(tally, anthropic.requests).join("\n")}`);

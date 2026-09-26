@@ -46,6 +46,7 @@
     "mail:sources": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/audit-mail-sources.mjs",
     "mail:verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/verify-mail-match.mjs",
     "mail:model-check": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/check-model-classifier.mjs",
+    "mail:model-check-verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs scripts/verify-model-check-report.mjs",
     "mail:reclassify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/reclassify-mail-threads.mjs",
     "morning:triage-audit": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/audit-morning-triage.mjs",
     "morning:triage-verify": "node --experimental-strip-types --experimental-loader ./scripts/ts-resolver.mjs --env-file=.env.local scripts/verify-morning-triage.mjs",
