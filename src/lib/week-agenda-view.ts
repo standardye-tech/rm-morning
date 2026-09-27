@@ -19,12 +19,13 @@ import {
   agendaCounts,
   composeCards,
   etSlots,
+  hideTreated,
   scheduleCards,
   type AgendaSlot,
   type OwnerAgendaInput,
   type ScheduledCard,
 } from "./week-agenda";
-import { loadAgendaState, type AgendaDone } from "./week-agenda-store";
+import { loadAgendaState, slotValue, type AgendaDone } from "./week-agenda-store";
 
 export type WeekAgendaView = {
   weekStart: string;
@@ -36,7 +37,7 @@ export type WeekAgendaView = {
   counts: { total: number; done: number; remaining: number };
   timeline: ScheduledCard[];
   toPlace: ScheduledCard[];
-  /** Créneaux proposables pour placer un ET : grille libre, puis jours restants. */
+  /** Créneaux proposables pour placer un ET : créneaux libres de la grille, jour + heure. */
   placeOptions: { value: string; label: string }[];
   done: AgendaDone[];
   doneKeys: string[];
@@ -120,14 +121,15 @@ export function buildWeekAgenda(now = new Date()): WeekAgendaView {
   const slots = etSlots(WEEK_SLOTS, fromDay);
   // Un placement manuel antérieur à aujourd'hui reste affiché à sa place : il a
   // été choisi, on ne le déplace pas en silence.
-  const { timeline, toPlace, freeSlots } = scheduleCards(cards, slots, state.placements);
+  // Les ET entièrement traités sont retirés après placement : leur créneau reste
+  // réservé, prêt à les accueillir de nouveau si un sujet est rétabli.
+  const { timeline, toPlace, freeSlots } = hideTreated(scheduleCards(cards, slots, state.placements), doneKeys);
 
-  const placeOptions = [
-    ...freeSlots.map((s) => ({ value: `${s.day}-${s.time ?? ""}`, label: slotLabel(s) })),
-    ...[1, 2, 3, 4, 5]
-      .filter((d) => d >= fromDay)
-      .map((d) => ({ value: `${d}-`, label: slotLabel({ day: d, time: null }) })),
-  ];
+  // Seuls des créneaux réels (jour + heure) sont proposés : placer un ET, c'est
+  // lui donner une place dans la timeline, jamais un « horaire à caler ».
+  const placeOptions = freeSlots
+    .filter((s) => s.time)
+    .map((s) => ({ value: slotValue(s.day, s.time), label: slotLabel(s) }));
 
   const notes: string[] = [];
   if (!momentum.window.available) notes.push("Momentum 7 jours indisponible : pas assez de recul entre deux photos.");

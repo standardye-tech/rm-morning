@@ -73,10 +73,13 @@ export function WeekAgendaBoard({ view, subtitle }: { view: WeekAgendaView; subt
   };
   const check = (key: string) => act({ action: "traiter", key }, () => setDone((d) => new Set(d).add(key)));
 
+  // Un ET dont le dernier sujet vient d'être coché quitte le planning sans
+  // attendre le serveur ; il y revient si un sujet est rétabli.
+  const hasActive = (c: ScheduledCard) => c.tasks.some((t) => !done.has(t.key));
   const today = view.todayDay;
   const visibleDay = filter === "aujourdhui" ? today : filter === "demain" && today != null ? today + 1 : null;
-  const timeline =
-    filter === "semaine" ? view.timeline : view.timeline.filter((c) => c.slot?.day === visibleDay);
+  const timeline = view.timeline.filter((c) => hasActive(c) && (filter === "semaine" || c.slot?.day === visibleDay));
+  const toPlace = view.toPlace.filter(hasActive);
 
   // Compteurs recalculés avec les coches optimistes, pour réagir sans attendre.
   const optimistic = [...done].filter((k) => !view.doneKeys.includes(k)).length;
@@ -141,13 +144,13 @@ export function WeekAgendaBoard({ view, subtitle }: { view: WeekAgendaView; subt
                   </h2>
                 ) : null}
                 <div className="md:grid md:grid-cols-[5.5rem_minmax(0,1fr)] md:gap-4">
-                  <TimelineSlot time={c.slot!.time} level={c.level} />
+                  <TimelineSlot time={c.slot!.time!} level={c.level} />
                   <PlannedCard
                     card={c}
                     done={done}
                     busy={busy}
                     onCheck={check}
-                    time={c.slot!.time}
+                    time={c.slot!.time!}
                     extra={
                       c.placedBy === "manuel" ? (
                         <button
@@ -169,18 +172,18 @@ export function WeekAgendaBoard({ view, subtitle }: { view: WeekAgendaView; subt
       )}
 
       {/* À placer : cartes compactes, deux par ligne sur desktop. */}
-      {view.toPlace.length > 0 ? (
+      {toPlace.length > 0 ? (
         <section>
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <h2 className="text-xl font-semibold tracking-tight">À placer cette semaine</h2>
-            <span className="text-sm text-ink-faint">{view.toPlace.length} ET</span>
+            <span className="text-sm text-ink-faint">{toPlace.length} ET</span>
           </div>
           <p className="mt-1 text-sm text-ink-faint">
             ET à voir cette semaine, sans créneau libre dans la grille ou sans urgence particulière. Aucun horaire
-            n&apos;est inventé : choisissez un créneau proposé, ou un jour à caler vous-même.
+            n&apos;est inventé : choisissez un créneau libre pour l&apos;ajouter au planning.
           </p>
           <ul className="mt-4 grid gap-4 lg:grid-cols-2">
-            {view.toPlace.map((c) => (
+            {toPlace.map((c) => (
               <li key={c.owner}>
                 <ToPlaceCard
                   card={c}
@@ -259,10 +262,10 @@ export function WeekAgendaBoard({ view, subtitle }: { view: WeekAgendaView; subt
 }
 
 /** Le créneau, à gauche de la carte sur desktop ; au-dessus sur mobile. */
-function TimelineSlot({ time, level }: { time: string | null; level: ScheduledCard["level"] }) {
+function TimelineSlot({ time, level }: { time: string; level: ScheduledCard["level"] }) {
   return (
     <div className="mb-2 flex items-center gap-2 md:relative md:mb-0 md:flex-col md:items-end md:gap-1 md:pt-5">
-      <span className="tabular text-lg font-semibold tracking-tight md:text-xl">{time ?? "à caler"}</span>
+      <span className="tabular text-lg font-semibold tracking-tight md:text-xl">{time}</span>
       <span className="flex items-center gap-1.5 text-xs text-ink-faint">
         <span aria-hidden className={`inline-block h-2.5 w-2.5 rounded-full ${LEVEL_DOT[level]}`} />
         <span className="md:hidden">{LEVEL_LABEL[level]}</span>
@@ -327,7 +330,7 @@ function PlannedCard({
   done: Set<string>;
   busy: boolean;
   onCheck: (key: string) => void;
-  time: string | null;
+  time: string;
   extra: React.ReactNode;
 }) {
   const active = card.tasks.filter((t) => !done.has(t.key));
@@ -336,13 +339,13 @@ function PlannedCard({
       <article>
         <header className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b border-line px-4 py-4 md:px-6">
           <h3 className="text-xl font-semibold tracking-tight">
-            <span className="sr-only">{time ?? "horaire à caler"} — </span>
+            <span className="sr-only">{time} — </span>
             {card.owner.toUpperCase()}
           </h3>
           <span className="flex items-baseline gap-3">
             <span className="hidden text-[13px] text-ink-faint md:inline">{LEVEL_LABEL[card.level]}</span>
             <span className="tabular text-sm font-medium text-ink-soft">
-              {active.length === 0 ? "Tout est traité" : `${plural(active.length, "sujet")} restant${active.length > 1 ? "s" : ""}`}
+              {plural(active.length, "sujet")} restant{active.length > 1 ? "s" : ""}
             </span>
           </span>
         </header>
@@ -357,11 +360,7 @@ function PlannedCard({
           <div>
             <ZoneLabel>À traiter</ZoneLabel>
             <div className="mt-2">
-              {active.length === 0 ? (
-                <p className="text-base text-positive">✓ Tous les sujets de la semaine sont traités</p>
-              ) : (
-                <TaskList tasks={active} busy={busy} onCheck={onCheck} />
-              )}
+              <TaskList tasks={active} busy={busy} onCheck={onCheck} />
             </div>
           </div>
 
@@ -416,15 +415,11 @@ function ToPlaceCard({
           {card.owner.toUpperCase()}
         </h3>
         <span className="tabular text-sm text-ink-soft">
-          {active.length === 0 ? "Tout est traité" : plural(active.length, "sujet")}
+          {plural(active.length, "sujet")}
         </span>
       </header>
       <div className="flex-1 px-4 pb-3 pt-3 md:px-5">
-        {active.length === 0 ? (
-          <p className="text-sm text-positive">✓ Tous les sujets de la semaine sont traités</p>
-        ) : (
-          <TaskList tasks={active} busy={busy} onCheck={onCheck} compact />
-        )}
+        <TaskList tasks={active} busy={busy} onCheck={onCheck} compact />
       </div>
       <div className="flex flex-wrap items-center gap-2 border-t border-line px-4 py-3 md:px-5">
         <PlaceControl owner={card.owner} options={options} busy={busy} onPlace={onPlace} />
@@ -448,7 +443,10 @@ function PlaceControl({
   onPlace: (value: string) => void;
 }) {
   const [value, setValue] = useState(options[0]?.value ?? "");
-  if (options.length === 0) return <span className="text-sm text-ink-faint">Plus de jour ouvré cette semaine</span>;
+  // Après une actualisation, le créneau retenu peut avoir été pris : on ne
+  // soumet qu'un créneau encore proposé, jamais une valeur périmée.
+  const selected = options.some((o) => o.value === value) ? value : (options[0]?.value ?? "");
+  if (options.length === 0) return <span className="text-sm text-ink-faint">Aucun créneau libre cette semaine</span>;
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
       <label className="sr-only" htmlFor={`place-${owner}`}>
@@ -456,7 +454,7 @@ function PlaceControl({
       </label>
       <select
         id={`place-${owner}`}
-        value={value}
+        value={selected}
         onChange={(e) => setValue(e.target.value)}
         className="min-h-9 rounded-md border border-line bg-surface px-2 text-sm"
       >
@@ -468,8 +466,8 @@ function PlaceControl({
       </select>
       <button
         type="button"
-        disabled={busy || !value}
-        onClick={() => onPlace(value)}
+        disabled={busy || !selected}
+        onClick={() => onPlace(selected)}
         className="inline-flex min-h-9 items-center rounded-md bg-ink px-3 text-sm font-medium text-surface hover:opacity-90 disabled:opacity-50"
       >
         Placer dans l&apos;agenda

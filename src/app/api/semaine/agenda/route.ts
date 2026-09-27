@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { buildWeekAgenda } from "@/lib/week-agenda-view";
 import {
   markAgendaTaskDone,
+  parseSlotValue,
   placeAgendaOwner,
   undoAgendaTask,
   unplaceAgendaOwner,
@@ -17,7 +18,7 @@ export const dynamic = "force-dynamic";
  *   POST /api/semaine/agenda
  *     { action: "traiter",  key }            coche un sujet de la semaine
  *     { action: "retablir", key }            le remet dans la liste active
- *     { action: "placer",   owner, value }   place un ET (« 4-12:00 », « 5- »)
+ *     { action: "placer",   owner, value }   place un ET dans un créneau réel (« 4-12:00 »)
  *     { action: "retirer",  owner }          annule un placement
  *
  * La semaine, le libellé du sujet et les créneaux proposables sont RECALCULÉS
@@ -51,7 +52,9 @@ export async function POST(request: Request) {
     case "placer": {
       const card = cards.find((c) => c.owner === body.owner);
       const option = view.placeOptions.find((o) => o.value === body.value);
-      if (!card || !option) return NextResponse.json({ error: "ET ou créneau non proposé." }, { status: 400 });
+      if (!card || !option || !parseSlotValue(option.value)?.time) {
+        return NextResponse.json({ error: "ET ou créneau non proposé." }, { status: 400 });
+      }
       placeAgendaOwner(view.weekStart, card.owner, option.value);
       break;
     }

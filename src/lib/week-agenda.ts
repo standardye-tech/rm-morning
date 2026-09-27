@@ -299,6 +299,10 @@ export function etSlots(grid: WeekSlot[], fromDay: number): AgendaSlot[] {
  * Place les cartes : d'abord les placements choisis par le directeur, puis les
  * cartes urgentes dans les créneaux restants, par priorité et dans l'ordre
  * chronologique. Le reste va dans « À placer ».
+ *
+ * La timeline ne porte QUE des créneaux réels (jour + heure). Un placement sans
+ * heure — « jour, horaire à caler », encore présent en base pour d'anciennes
+ * semaines — n'est pas un créneau : la carte reste dans « À placer ».
  */
 export function scheduleCards(
   cards: AgendaCard[],
@@ -309,15 +313,17 @@ export function scheduleCards(
   const taken = new Set<string>();
   const timeline: ScheduledCard[] = [];
   const pending: AgendaCard[] = [];
+  const unscheduled: ScheduledCard[] = [];
   for (const c of cards) {
     const slot = manual.get(c.owner);
-    if (slot) {
+    if (slot?.time) {
       timeline.push({ ...c, slot, placedBy: "manuel" });
-      if (slot.time) taken.add(slotKey(slot));
-    } else pending.push(c);
+      taken.add(slotKey(slot));
+    } else if (slot) unscheduled.push({ ...c, slot: null, placedBy: null });
+    else pending.push(c);
   }
   const free = slots.filter((s) => !taken.has(slotKey(s)));
-  const toPlace: ScheduledCard[] = [];
+  const toPlace: ScheduledCard[] = [...unscheduled];
   for (const c of pending) {
     if (c.urgent && free.length > 0) {
       const slot = free.shift()!;
@@ -325,7 +331,29 @@ export function scheduleCards(
     } else toPlace.push({ ...c, slot: null, placedBy: null });
   }
   timeline.sort((a, b) => a.slot!.day - b.slot!.day || (a.slot!.time ?? "99").localeCompare(b.slot!.time ?? "99"));
+  toPlace.sort((a, b) => b.priority - a.priority || a.owner.localeCompare(b.owner, "fr"));
   return { timeline, toPlace, freeSlots: free };
+}
+
+/** Un ET dont tous les sujets de la semaine sont cochés. */
+export const isTreated = (card: AgendaCard, doneKeys: ReadonlySet<string>) =>
+  card.tasks.every((t) => doneKeys.has(t.key));
+
+/**
+ * Retire du planning actif les ET entièrement traités. Appliqué APRÈS
+ * `scheduleCards` : la carte garde son créneau réservé, si bien qu'un sujet
+ * rétabli la fait réapparaître exactement où elle était. Ses sujets restent dans
+ * « Terminés », et les compteurs se calculent sur toutes les cartes.
+ */
+export function hideTreated<T extends { timeline: ScheduledCard[]; toPlace: ScheduledCard[] }>(
+  scheduled: T,
+  doneKeys: ReadonlySet<string>,
+): T {
+  return {
+    ...scheduled,
+    timeline: scheduled.timeline.filter((c) => !isTreated(c, doneKeys)),
+    toPlace: scheduled.toPlace.filter((c) => !isTreated(c, doneKeys)),
+  };
 }
 
 /**

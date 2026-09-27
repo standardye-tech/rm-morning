@@ -24,7 +24,7 @@ for (const suffix of ["", "-wal", "-shm"]) {
 process.env.RM_DB_PATH = path.relative(process.cwd(), WORK).replace(/\\/g, "/");
 
 const lib = (n) => pathToFileURL(path.resolve(process.cwd(), `src/lib/${n}.ts`)).href;
-const { tasksOf, composeCards, scheduleCards, etSlots, agendaCounts, momentumLine } = await import(lib("week-agenda"));
+const { tasksOf, composeCards, scheduleCards, hideTreated, etSlots, agendaCounts, momentumLine } = await import(lib("week-agenda"));
 const store = await import(lib("week-agenda-store"));
 const { buildWeekAgenda } = await import(lib("week-agenda-view"));
 const { ATTENTION, WEEK_AGENDA, WEEK_SLOTS } = await import(lib("config"));
@@ -112,8 +112,36 @@ section("MOTEUR — placement");
   check("non urgent -> À placer, jamais placé d'office", r.toPlace.some((c) => c.owner === "B"));
   const m = scheduleCards([card("A", "rouge", true), card("B", "vert", false)], slots.slice(0, 2), [{ owner: "B", day: slots[0].day, time: slots[0].time }]);
   check("un placement choisi prime et occupe son créneau", m.timeline.find((c) => c.owner === "B")?.placedBy === "manuel" && m.timeline.find((c) => c.owner === "A")?.slot.time === slots[1].time);
-  const d = scheduleCards([card("B", "vert", false)], [], [{ owner: "B", day: 5, time: null }]);
-  check("placement « horaire à caler » accepté", d.timeline[0]?.slot.time === null && d.timeline[0].slot.day === 5);
+  const d = scheduleCards([card("A", "rouge", true), card("B", "vert", false)], slots.slice(0, 1), [{ owner: "B", day: 1, time: null }]);
+  check("placement sans heure : hors timeline, dans À placer", !d.timeline.some((c) => c.owner === "B") && d.toPlace.some((c) => c.owner === "B" && c.slot === null));
+  check("la timeline ne porte que des créneaux réels (jour + heure)", d.timeline.every((c) => c.slot.day >= 1 && c.slot.time));
+  check("… et le créneau réel reste libre pour un autre ET", d.timeline[0]?.owner === "A");
+  const before = scheduleCards([card("B", "vert", false)], slots.slice(0, 2), []);
+  const real = before.freeSlots[1];
+  const after = scheduleCards([card("B", "vert", false)], slots.slice(0, 2), [{ owner: "B", day: real.day, time: real.time }]);
+  check("placement dans un vrai créneau : À placer -> timeline, à ce créneau", before.toPlace[0]?.owner === "B" && after.timeline[0]?.owner === "B" && after.timeline[0].slot.time === real.time && after.toPlace.length === 0);
+  check("… et ce créneau n'est plus proposé", !after.freeSlots.some((x) => x.day === real.day && x.time === real.time));
+}
+
+section("MOTEUR — ET entièrement traité");
+{
+  const card = (owner, keys) => ({ owner, firstName: owner, level: "rouge", why: null, attention: null, tasks: keys.map((key) => ({ key })), keyDeals: [], urgent: true, priority: 3 });
+  const cards = [card("A", ["a1", "a2"]), card("B", ["b1"]), card("C", ["c1"])];
+  const slots = etSlots(WEEK_SLOTS, 1).slice(0, 2);
+  const sched = scheduleCards(cards, slots, []);
+  const slotOfA = sched.timeline.find((c) => c.owner === "A")?.slot;
+  const partial = hideTreated(sched, new Set(["a1"]));
+  check("une tâche cochée sur deux : la carte reste", partial.timeline.some((c) => c.owner === "A"));
+  const all = hideTreated(sched, new Set(["a1", "a2", "c1"]));
+  check("dernière tâche cochée : la carte quitte le planning", !all.timeline.some((c) => c.owner === "A"));
+  check("… y compris dans À placer", !all.toPlace.some((c) => c.owner === "C"));
+  check("… sans décaler les autres ET", all.timeline.find((c) => c.owner === "B")?.slot.time === sched.timeline.find((c) => c.owner === "B")?.slot.time);
+  const counts = agendaCounts(cards, new Set(["a1", "a2", "c1"]));
+  check("compteurs inchangés : les sujets traités restent comptés", counts.total === 4 && counts.done === 3 && counts.remaining === 1, JSON.stringify(counts));
+  const back = hideTreated(sched, new Set(["a1", "c1"]));
+  const a = back.timeline.find((c) => c.owner === "A");
+  check("Rétablir : la carte réapparaît à son créneau précédent", a?.slot.day === slotOfA.day && a?.slot.time === slotOfA.time);
+  check("… avec la tâche rétablie redevenue active", a?.tasks.some((t) => t.key === "a2"));
 }
 
 section("PERSISTANCE — hebdomadaire, sans backlog");
@@ -135,6 +163,48 @@ section("PERSISTANCE — hebdomadaire, sans backlog");
   check("retirer : plus de placement", store.loadAgendaState(W1).placements.length === 0);
 }
 
+section("PARCOURS — sur la copie de la base (traiter, rétablir, placer)");
+{
+  const v0 = buildWeekAgenda(new Date());
+  const target = v0.timeline.find((c) => c.tasks.some((t) => !v0.doneKeys.includes(t.key)));
+  if (!target) console.log("  (info) aucune carte planifiée active : parcours traiter/rétablir non joué");
+  else {
+    const slot = `${target.slot.day}-${target.slot.time}`;
+    const pending = target.tasks.filter((t) => !v0.doneKeys.includes(t.key));
+    for (const t of pending) store.markAgendaTaskDone(v0.weekStart, { key: t.key, owner: t.owner, label: t.label });
+    const v1 = buildWeekAgenda(new Date());
+    check(`dernière tâche traitée : ${target.owner} quitte le planning`, ![...v1.timeline, ...v1.toPlace].some((c) => c.owner === target.owner));
+    check("… ses sujets sont dans Terminés", pending.every((t) => v1.done.some((d) => d.key === t.key)));
+    check("… compteurs : total inchangé, restants −N", v1.counts.total === v0.counts.total && v1.counts.remaining === v0.counts.remaining - pending.length, `${JSON.stringify(v0.counts)} -> ${JSON.stringify(v1.counts)}`);
+    check("… son créneau n'est pas proposé à un autre ET", !v1.placeOptions.some((o) => o.value === slot));
+    store.undoAgendaTask(v0.weekStart, pending[0].key);
+    const v2 = buildWeekAgenda(new Date());
+    const back = v2.timeline.find((c) => c.owner === target.owner);
+    check("Rétablir : la carte réapparaît au même créneau", back && `${back.slot.day}-${back.slot.time}` === slot, back ? `${back.slot.day}-${back.slot.time}` : "absente");
+    check("… avec la tâche rétablie active", back?.tasks.some((t) => t.key === pending[0].key) && !v2.doneKeys.includes(pending[0].key));
+    for (const t of pending.slice(1)) store.undoAgendaTask(v0.weekStart, t.key);
+  }
+
+  const v3 = buildWeekAgenda(new Date());
+  check("placement : seuls des créneaux réels sont proposés", v3.placeOptions.every((o) => store.parseSlotValue(o.value)?.time));
+  const candidate = v3.toPlace[0];
+  if (!candidate) console.log("  (info) aucun ET à placer : placement non joué");
+  else {
+    store.placeAgendaOwner(v3.weekStart, candidate.owner, `${v3.todayDay ?? 1}-`);
+    const v4 = buildWeekAgenda(new Date());
+    check(`placement sans heure (${candidate.owner}) : reste dans À placer`, v4.toPlace.some((c) => c.owner === candidate.owner) && !v4.timeline.some((c) => c.owner === candidate.owner));
+    const option = v4.placeOptions[0];
+    if (!option) console.log("  (info) aucun créneau libre : placement réel non joué");
+    else {
+      store.placeAgendaOwner(v4.weekStart, candidate.owner, option.value);
+      const v5 = buildWeekAgenda(new Date());
+      const placed = v5.timeline.find((c) => c.owner === candidate.owner);
+      check(`placement dans un vrai créneau (${option.label}) : la carte rejoint la timeline`, placed && `${placed.slot.day}-${placed.slot.time}` === option.value && !v5.toPlace.some((c) => c.owner === candidate.owner));
+    }
+    store.unplaceAgendaOwner(v3.weekStart, candidate.owner);
+  }
+}
+
 section("COMPOSITION — état réel (invariants)");
 {
   const v = buildWeekAgenda(new Date());
@@ -151,6 +221,9 @@ section("COMPOSITION — état réel (invariants)");
   const slotKeys = v.timeline.filter((c) => c.slot.time).map((c) => `${c.slot.day}-${c.slot.time}`);
   check("aucun créneau occupé deux fois", new Set(slotKeys).size === slotKeys.length);
   check("compteurs cohérents", v.counts.total === v.counts.done + v.counts.remaining, JSON.stringify(v.counts));
+  check("aucune carte sans horaire dans la timeline", v.timeline.every((c) => c.slot?.time), v.timeline.filter((c) => !c.slot?.time).map((c) => c.owner).join(", "));
+  const doneSet = new Set(v.doneKeys);
+  check("aucune carte entièrement traitée dans le planning", cards.every((c) => c.tasks.some((t) => !doneSet.has(t.key))), cards.filter((c) => c.tasks.every((t) => doneSet.has(t.key))).map((c) => c.owner).join(", "));
   console.log(`  (info) ${v.weekLabel} · ${v.timeline.length} ET placés · ${v.toPlace.length} à placer · ${v.counts.total} sujets`);
 }
 
