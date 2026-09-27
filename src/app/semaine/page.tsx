@@ -27,8 +27,9 @@ function freshness(iso: string): string {
  * Plan du jour, challengers Forecast — mais leur sortie est digérée en UNE
  * carte par ET dans un seul planning (`week-agenda.ts`).
  *
- * Le radar des candidatures reste consultable dans sa propre vue : c'est du
- * recrutement, pas du management des ET.
+ * Le radar des candidatures (recrutement, saisi à la main) n'est plus une
+ * bascule de l'en-tête : la page est centrée sur le planning. Il reste
+ * joignable par un lien discret en bas de page (`?vue=radar`).
  */
 export default async function SemainePage({
   searchParams,
@@ -36,7 +37,6 @@ export default async function SemainePage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const query = await searchParams;
-  const vue = query.vue === "radar" ? "radar" : "semaine";
 
   if (!latestImport()) {
     return (
@@ -52,40 +52,31 @@ export default async function SemainePage({
     );
   }
 
-  const view = vue === "semaine" ? buildWeekAgenda(new Date()) : null;
+  if (query.vue === "radar") {
+    return (
+      <div className="py-8">
+        <Link href="/semaine" className="text-sm text-ink-soft hover:text-ink hover:underline">
+          ← Retour au planning
+        </Link>
+        <h1 className="mt-2 text-2xl font-semibold tracking-tight">Radar recrutement</h1>
+        <RadarPipeline contacts={listRadarContacts()} />
+      </div>
+    );
+  }
+
+  const view = buildWeekAgenda(new Date());
+  const subtitle = `${view.weekLabel} · ${
+    view.dataAt ? `données mises à jour ${freshness(view.dataAt)}` : "aucune actualisation enregistrée"
+  }`;
 
   return (
-    <div className="py-8">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Ma semaine</h1>
-          {view ? (
-            <p className="mt-1 text-sm text-ink-soft">
-              {view.weekLabel} ·{" "}
-              {view.dataAt ? `données mises à jour ${freshness(view.dataAt)}` : "aucune actualisation enregistrée"}
-            </p>
-          ) : null}
-        </div>
-        <nav className="flex gap-1 text-sm" aria-label="Vue">
-          {[
-            { key: "semaine", label: "Planning", href: "/semaine" },
-            { key: "radar", label: "Radar", href: "/semaine?vue=radar" },
-          ].map((v) => (
-            <Link
-              key={v.key}
-              href={v.href}
-              aria-current={vue === v.key ? "page" : undefined}
-              className={`rounded-md px-2.5 py-1.5 transition-colors ${
-                vue === v.key ? "bg-surface font-medium text-ink shadow-[0_1px_2px_rgba(16,20,24,0.04)]" : "text-ink-soft hover:bg-surface"
-              }`}
-            >
-              {v.label}
-            </Link>
-          ))}
-        </nav>
-      </div>
-
-      {view ? <WeekAgendaBoard view={view} /> : <RadarPipeline contacts={listRadarContacts()} />}
+    <div className="py-8" data-page-wide>
+      <WeekAgendaBoard view={view} subtitle={subtitle} />
+      <p className="mt-8 text-right text-xs text-ink-faint">
+        <Link href="/semaine?vue=radar" className="underline decoration-dotted underline-offset-2 hover:text-ink">
+          Radar recrutement →
+        </Link>
+      </p>
     </div>
   );
 }

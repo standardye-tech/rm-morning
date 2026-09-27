@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 
 import { SalesforceOpportunityLink } from "@/components/salesforce-link";
-import { Card, EmptyState, SectionTitle } from "@/components/ui";
+import { Card, EmptyState } from "@/components/ui";
 import type { ScheduledCard } from "@/lib/week-agenda";
 import type { WeekAgendaView } from "@/lib/week-agenda-view";
 
@@ -15,6 +15,11 @@ import type { WeekAgendaView } from "@/lib/week-agenda-view";
  * Une carte = un ET, lisible en cinq secondes : qui, pourquoi, quoi traiter,
  * sur quelles affaires. Trois gestes seulement : cocher un sujet, placer un ET
  * dans un créneau, rétablir. Tout le reste est calculé côté serveur.
+ *
+ * Mise en page (lot UI du 27/09/2026) : pleine largeur desktop ; chaque carte
+ * planifiée pend à une timeline (jour, heure) et se lit en trois zones —
+ * Pourquoi le voir | À traiter | Affaires clés et liens — empilées sur mobile.
+ * Hiérarchie : nom de l'ET, puis sujets, puis motif, puis affaires, puis le reste.
  */
 
 const DAY = ["", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi"];
@@ -42,7 +47,18 @@ async function post(body: object): Promise<boolean> {
 
 type Filter = "aujourdhui" | "demain" | "semaine";
 
-export function WeekAgendaBoard({ view }: { view: WeekAgendaView }) {
+const plural = (n: number, word: string) => `${n} ${word}${n > 1 ? "s" : ""}`;
+
+/** Petit intitulé de zone, en capitales discrètes. */
+function ZoneLabel({ children }: { children: React.ReactNode }) {
+  return <p className="text-xs font-medium uppercase tracking-[0.08em] text-ink-faint">{children}</p>;
+}
+
+/** Lien secondaire, cliquable confortablement sans dominer les sujets. */
+const secondaryButton =
+  "inline-flex min-h-9 items-center justify-center rounded-md border border-line px-3 text-[13px] text-ink-soft transition-colors hover:bg-canvas hover:text-ink disabled:opacity-50";
+
+export function WeekAgendaBoard({ view, subtitle }: { view: WeekAgendaView; subtitle: string }) {
   const router = useRouter();
   const [busy, startTransition] = useTransition();
   const [done, setDone] = useState<Set<string>>(() => new Set(view.doneKeys));
@@ -71,24 +87,22 @@ export function WeekAgendaBoard({ view }: { view: WeekAgendaView }) {
   };
 
   const chip = (active: boolean) =>
-    `inline-flex min-h-9 items-center rounded-md px-3 py-1.5 text-sm transition-colors md:min-h-0 ${
-      active ? "bg-canvas font-medium text-ink ring-1 ring-line" : "text-ink-soft hover:bg-canvas"
+    `inline-flex min-h-10 items-center rounded-lg px-4 text-sm transition-colors ${
+      active ? "bg-ink font-medium text-surface" : "bg-surface text-ink-soft ring-1 ring-line hover:bg-canvas hover:text-ink"
     }`;
 
   return (
-    <div className="mt-6 space-y-6">
-      <Card>
-        <SectionTitle
-          eyebrow="Ma semaine"
-          title="Planning recommandé"
-          aside={
-            <span className="tabular">
-              {counts.total} sujet{counts.total > 1 ? "s" : ""} à traiter · {counts.done} terminé
-              {counts.done > 1 ? "s" : ""} · {counts.remaining} restant{counts.remaining > 1 ? "s" : ""}
-            </span>
-          }
-        />
-        <div className="flex flex-wrap gap-1 border-b border-line px-4 pb-3 md:px-6" role="group" aria-label="Période">
+    <div className="space-y-8">
+      {/* En-tête : où j'en suis, puis la période. */}
+      <header>
+        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-faint">Ma semaine</p>
+        <h1 className="mt-1 text-3xl font-semibold tracking-tight">Planning recommandé</h1>
+        <p className="tabular mt-2 text-base text-ink">
+          {plural(counts.total, "sujet")} à traiter · {plural(counts.done, "terminé")} ·{" "}
+          <span className="font-semibold">{plural(counts.remaining, "restant")}</span>
+        </p>
+        <p className="mt-1 text-sm text-ink-faint">{subtitle}</p>
+        <div className="mt-5 flex flex-wrap gap-2" role="group" aria-label="Période">
           {today != null ? (
             <>
               <button type="button" aria-pressed={filter === "aujourdhui"} className={chip(filter === "aujourdhui")} onClick={() => setFilter("aujourdhui")}>
@@ -105,76 +119,95 @@ export function WeekAgendaBoard({ view }: { view: WeekAgendaView }) {
             Toute la semaine
           </button>
         </div>
-        {timeline.length === 0 ? (
-          <EmptyState>
-            {filter === "semaine"
-              ? "Aucun ET à placer d'office dans la grille cette semaine."
-              : "Aucun ET planifié ce jour-là."}
-          </EmptyState>
-        ) : (
-          <ol className="divide-y divide-line">
-            {timeline.map((c) => (
-              <li key={c.owner}>
-                <AgendaCardView
-                  card={c}
-                  done={done}
-                  busy={busy}
-                  onCheck={check}
-                  heading={`${c.slot!.time ?? "horaire à caler"} — ${c.owner.toUpperCase()}`}
-                  dayLabel={filter === "semaine" ? DAY[c.slot!.day] : null}
-                  footer={
-                    c.placedBy === "manuel" ? (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => act({ action: "retirer", owner: c.owner })}
-                        className="text-xs text-ink-faint underline decoration-dotted hover:text-ink disabled:opacity-50"
-                      >
-                        Retirer du créneau
-                      </button>
-                    ) : null
-                  }
-                />
-              </li>
-            ))}
-          </ol>
-        )}
-      </Card>
+      </header>
 
-      {view.toPlace.length > 0 ? (
+      {/* Planning : une timeline de créneaux, une carte par ET. */}
+      {timeline.length === 0 ? (
         <Card>
-          <SectionTitle
-            eyebrow="Sans créneau"
-            title="À placer cette semaine"
-            aside={`${view.toPlace.length} ET`}
-          />
-          <p className="px-4 pb-2 text-xs text-ink-faint md:px-6">
+          <EmptyState>
+            {filter === "semaine" ? "Aucun ET à placer d'office dans la grille cette semaine." : "Aucun ET planifié ce jour-là."}
+          </EmptyState>
+        </Card>
+      ) : (
+        <ol className="space-y-4">
+          {timeline.map((c, i) => {
+            const day = c.slot!.day;
+            const firstOfDay = i === 0 || timeline[i - 1].slot!.day !== day;
+            return (
+              <li key={c.owner}>
+                {filter === "semaine" && firstOfDay ? (
+                  <h2 className={`mb-3 text-sm font-semibold uppercase tracking-[0.1em] text-ink-soft ${i > 0 ? "mt-8" : ""}`}>
+                    {DAY[day]}
+                  </h2>
+                ) : null}
+                <div className="md:grid md:grid-cols-[5.5rem_minmax(0,1fr)] md:gap-4">
+                  <TimelineSlot time={c.slot!.time} level={c.level} />
+                  <PlannedCard
+                    card={c}
+                    done={done}
+                    busy={busy}
+                    onCheck={check}
+                    time={c.slot!.time}
+                    extra={
+                      c.placedBy === "manuel" ? (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => act({ action: "retirer", owner: c.owner })}
+                          className="text-[13px] text-ink-faint underline decoration-dotted underline-offset-2 hover:text-ink disabled:opacity-50"
+                        >
+                          Retirer du créneau
+                        </button>
+                      ) : null
+                    }
+                  />
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+
+      {/* À placer : cartes compactes, deux par ligne sur desktop. */}
+      {view.toPlace.length > 0 ? (
+        <section>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-xl font-semibold tracking-tight">À placer cette semaine</h2>
+            <span className="text-sm text-ink-faint">{view.toPlace.length} ET</span>
+          </div>
+          <p className="mt-1 text-sm text-ink-faint">
             ET à voir cette semaine, sans créneau libre dans la grille ou sans urgence particulière. Aucun horaire
             n&apos;est inventé : choisissez un créneau proposé, ou un jour à caler vous-même.
           </p>
-          <ol className="divide-y divide-line border-t border-line">
+          <ul className="mt-4 grid gap-4 lg:grid-cols-2">
             {view.toPlace.map((c) => (
               <li key={c.owner}>
-                <AgendaCardView
+                <ToPlaceCard
                   card={c}
                   done={done}
                   busy={busy}
                   onCheck={check}
-                  heading={c.owner.toUpperCase()}
-                  dayLabel={null}
-                  footer={<PlaceControl owner={c.owner} options={view.placeOptions} busy={busy} onPlace={(value) => act({ action: "placer", owner: c.owner, value })} />}
+                  options={view.placeOptions}
+                  onPlace={(value) => act({ action: "placer", owner: c.owner, value })}
                 />
               </li>
             ))}
-          </ol>
-        </Card>
+          </ul>
+        </section>
       ) : null}
 
+      {/* Terminés : fermé par défaut. */}
       <details className="group rounded-xl border border-line bg-surface">
-        <summary className="cursor-pointer list-none px-4 py-3.5 text-sm font-medium hover:bg-canvas md:px-6 md:py-3">
-          Terminés cette semaine
-          <span className="ml-2 text-xs font-normal text-ink-faint">
-            Voir les sujets traités ({view.done.length})
+        <summary className="flex min-h-12 cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 hover:bg-canvas md:px-6">
+          <span className="text-base font-medium">Terminés cette semaine</span>
+          <span className="text-sm text-ink-soft">
+            Voir les sujets traités
+            <span className="tabular ml-2 inline-flex min-w-6 items-center justify-center rounded-full bg-canvas px-2 py-0.5 text-xs font-medium text-ink ring-1 ring-line">
+              {view.done.length}
+            </span>
+          </span>
+          <span aria-hidden className="ml-auto text-ink-faint transition-transform group-open:rotate-90">
+            ›
           </span>
         </summary>
         {view.done.length === 0 ? (
@@ -184,12 +217,12 @@ export function WeekAgendaBoard({ view }: { view: WeekAgendaView }) {
         ) : (
           <ul className="divide-y divide-line border-t border-line">
             {view.done.map((d) => (
-              <li key={d.key} className="flex flex-wrap items-baseline justify-between gap-2 px-4 py-2.5 text-sm md:px-6">
+              <li key={d.key} className="flex flex-wrap items-baseline justify-between gap-2 px-4 py-3 text-[15px] md:px-6">
                 <span>
                   <span className="text-ink-faint">{d.owner} · </span>
                   <span className="text-ink-soft line-through decoration-ink-faint/60">{d.label}</span>
                 </span>
-                <span className="flex items-center gap-3 text-xs text-ink-faint">
+                <span className="flex items-center gap-3 text-[13px] text-ink-faint">
                   {new Date(d.doneAt).toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short" })}
                   <button
                     type="button"
@@ -215,7 +248,7 @@ export function WeekAgendaBoard({ view }: { view: WeekAgendaView }) {
       </details>
 
       {view.notes.length > 0 ? (
-        <ul className="space-y-1 px-1 text-xs text-ink-faint">
+        <ul className="space-y-1 px-1 text-[13px] text-ink-faint">
           {view.notes.map((n) => (
             <li key={n}>{n}</li>
           ))}
@@ -225,92 +258,181 @@ export function WeekAgendaBoard({ view }: { view: WeekAgendaView }) {
   );
 }
 
-function AgendaCardView({
+/** Le créneau, à gauche de la carte sur desktop ; au-dessus sur mobile. */
+function TimelineSlot({ time, level }: { time: string | null; level: ScheduledCard["level"] }) {
+  return (
+    <div className="mb-2 flex items-center gap-2 md:relative md:mb-0 md:flex-col md:items-end md:gap-1 md:pt-5">
+      <span className="tabular text-lg font-semibold tracking-tight md:text-xl">{time ?? "à caler"}</span>
+      <span className="flex items-center gap-1.5 text-xs text-ink-faint">
+        <span aria-hidden className={`inline-block h-2.5 w-2.5 rounded-full ${LEVEL_DOT[level]}`} />
+        <span className="md:hidden">{LEVEL_LABEL[level]}</span>
+      </span>
+    </div>
+  );
+}
+
+function TaskList({
+  tasks,
+  busy,
+  onCheck,
+  compact = false,
+}: {
+  tasks: ScheduledCard["tasks"];
+  busy: boolean;
+  onCheck: (key: string) => void;
+  compact?: boolean;
+}) {
+  return (
+    <ul className={compact ? "space-y-2" : "space-y-3"}>
+      {tasks.map((t) => (
+        <li key={t.key}>
+          <label className={`flex cursor-pointer items-start gap-3 ${compact ? "text-sm" : "text-base leading-snug"}`}>
+            <input
+              type="checkbox"
+              className={`shrink-0 accent-current ${compact ? "mt-0.5 h-4 w-4" : "mt-0.5 h-5 w-5"}`}
+              disabled={busy}
+              checked={false}
+              onChange={() => onCheck(t.key)}
+            />
+            <span>{t.label}</span>
+          </label>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function OwnerLinks({ owner }: { owner: string }) {
+  return (
+    <>
+      <Link href={`/forecast?commercial=${encodeURIComponent(owner)}`} className={secondaryButton}>
+        Ouvrir son Forecast
+      </Link>
+      <Link href={`/performance?commercial=${encodeURIComponent(owner)}`} className={secondaryButton}>
+        Voir Performance
+      </Link>
+    </>
+  );
+}
+
+function PlannedCard({
   card,
   done,
   busy,
   onCheck,
-  heading,
-  dayLabel,
-  footer,
+  time,
+  extra,
 }: {
   card: ScheduledCard;
   done: Set<string>;
   busy: boolean;
   onCheck: (key: string) => void;
-  heading: string;
-  dayLabel: string | null;
-  footer: React.ReactNode;
+  time: string | null;
+  extra: React.ReactNode;
 }) {
   const active = card.tasks.filter((t) => !done.has(t.key));
   return (
-    <article className="px-4 py-4 md:px-6">
-      <header className="flex flex-wrap items-baseline justify-between gap-2">
-        <h3 className="flex items-center gap-2 text-[15px] font-semibold tracking-tight">
+    <Card>
+      <article>
+        <header className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b border-line px-4 py-4 md:px-6">
+          <h3 className="text-xl font-semibold tracking-tight">
+            <span className="sr-only">{time ?? "horaire à caler"} — </span>
+            {card.owner.toUpperCase()}
+          </h3>
+          <span className="flex items-baseline gap-3">
+            <span className="hidden text-[13px] text-ink-faint md:inline">{LEVEL_LABEL[card.level]}</span>
+            <span className="tabular text-sm font-medium text-ink-soft">
+              {active.length === 0 ? "Tout est traité" : `${plural(active.length, "sujet")} restant${active.length > 1 ? "s" : ""}`}
+            </span>
+          </span>
+        </header>
+
+        <div className="grid gap-6 px-4 py-5 md:px-6 lg:grid-cols-[minmax(0,6fr)_minmax(0,9fr)_minmax(0,5fr)] lg:gap-8">
+          <div>
+            <ZoneLabel>Pourquoi le voir</ZoneLabel>
+            <p className="tabular mt-2 text-[15px]">{card.why ?? "Momentum 7 jours indisponible"}</p>
+            {card.attention ? <p className="mt-1.5 text-sm text-ink-soft">{card.attention}</p> : null}
+          </div>
+
+          <div>
+            <ZoneLabel>À traiter</ZoneLabel>
+            <div className="mt-2">
+              {active.length === 0 ? (
+                <p className="text-base text-positive">✓ Tous les sujets de la semaine sont traités</p>
+              ) : (
+                <TaskList tasks={active} busy={busy} onCheck={onCheck} />
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-4 lg:border-l lg:border-line lg:pl-8">
+            <div>
+              <ZoneLabel>Affaires clés</ZoneLabel>
+              {card.keyDeals.length > 0 ? (
+                <ul className="mt-2 space-y-1.5 text-[15px]">
+                  {card.keyDeals.map((d) => (
+                    <li key={d.opportunityId}>
+                      <SalesforceOpportunityLink opportunityId={d.opportunityId}>{d.client}</SalesforceOpportunityLink>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-2 text-sm text-ink-faint">Aucune affaire à ouvrir</p>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <OwnerLinks owner={card.owner} />
+              {extra}
+            </div>
+          </div>
+        </div>
+      </article>
+    </Card>
+  );
+}
+
+function ToPlaceCard({
+  card,
+  done,
+  busy,
+  onCheck,
+  options,
+  onPlace,
+}: {
+  card: ScheduledCard;
+  done: Set<string>;
+  busy: boolean;
+  onCheck: (key: string) => void;
+  options: { value: string; label: string }[];
+  onPlace: (value: string) => void;
+}) {
+  const active = card.tasks.filter((t) => !done.has(t.key));
+  return (
+    <Card className="flex h-full flex-col">
+      <header className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 px-4 pt-4 md:px-5">
+        <h3 className="flex items-center gap-2 text-lg font-semibold tracking-tight">
           <span aria-hidden className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${LEVEL_DOT[card.level]}`} />
           <span className="sr-only">{LEVEL_LABEL[card.level]}</span>
-          {dayLabel ? <span className="font-normal text-ink-soft">{dayLabel}</span> : null}
-          <span className="tabular">{heading}</span>
+          {card.owner.toUpperCase()}
         </h3>
-        <span className="text-xs text-ink-faint">{LEVEL_LABEL[card.level]}</span>
+        <span className="tabular text-sm text-ink-soft">
+          {active.length === 0 ? "Tout est traité" : plural(active.length, "sujet")}
+        </span>
       </header>
-
-      <div className="mt-2 grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
-        <div>
-          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-ink-faint">Pourquoi le voir</p>
-          <p className="tabular mt-0.5 text-sm">{card.why ?? "Momentum 7 jours indisponible"}</p>
-          {card.attention ? <p className="mt-0.5 text-xs text-ink-soft">{card.attention}</p> : null}
-        </div>
-        <div>
-          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-ink-faint">À traiter</p>
-          {active.length === 0 ? (
-            <p className="mt-0.5 text-sm text-positive">✓ Tous les sujets de la semaine sont traités</p>
-          ) : (
-            <ul className="mt-1 space-y-1.5">
-              {active.map((t) => (
-                <li key={t.key}>
-                  <label className="flex cursor-pointer items-start gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      className="mt-1 h-4 w-4 shrink-0 accent-current"
-                      disabled={busy}
-                      checked={false}
-                      onChange={() => onCheck(t.key)}
-                    />
-                    <span>{t.label}</span>
-                  </label>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </div>
-
-      <div className="mt-3 flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2 text-sm">
-        {card.keyDeals.length > 0 ? (
-          <p className="text-ink-soft">
-            <span className="text-[11px] font-medium uppercase tracking-[0.08em] text-ink-faint">Affaires clés </span>
-            {card.keyDeals.map((d, i) => (
-              <span key={d.opportunityId}>
-                {i > 0 ? " · " : ""}
-                <SalesforceOpportunityLink opportunityId={d.opportunityId}>{d.client}</SalesforceOpportunityLink>
-              </span>
-            ))}
-          </p>
+      <div className="flex-1 px-4 pb-3 pt-3 md:px-5">
+        {active.length === 0 ? (
+          <p className="text-sm text-positive">✓ Tous les sujets de la semaine sont traités</p>
         ) : (
-          <span />
+          <TaskList tasks={active} busy={busy} onCheck={onCheck} compact />
         )}
-        <p className="flex flex-wrap items-center gap-4 text-xs">
-          <Link href={`/forecast?commercial=${encodeURIComponent(card.owner)}`} className="underline decoration-dotted underline-offset-2 hover:text-ink">
-            Ouvrir son Forecast
-          </Link>
-          <Link href={`/performance?commercial=${encodeURIComponent(card.owner)}`} className="underline decoration-dotted underline-offset-2 hover:text-ink">
-            Voir Performance
-          </Link>
-          {footer}
-        </p>
       </div>
-    </article>
+      <div className="flex flex-wrap items-center gap-2 border-t border-line px-4 py-3 md:px-5">
+        <PlaceControl owner={card.owner} options={options} busy={busy} onPlace={onPlace} />
+        <span className="ml-auto flex flex-wrap gap-2">
+          <OwnerLinks owner={card.owner} />
+        </span>
+      </div>
+    </Card>
   );
 }
 
@@ -326,9 +448,9 @@ function PlaceControl({
   onPlace: (value: string) => void;
 }) {
   const [value, setValue] = useState(options[0]?.value ?? "");
-  if (options.length === 0) return <span className="text-ink-faint">Plus de jour ouvré cette semaine</span>;
+  if (options.length === 0) return <span className="text-sm text-ink-faint">Plus de jour ouvré cette semaine</span>;
   return (
-    <span className="inline-flex items-center gap-2">
+    <span className="inline-flex flex-wrap items-center gap-2">
       <label className="sr-only" htmlFor={`place-${owner}`}>
         Créneau pour {owner}
       </label>
@@ -336,7 +458,7 @@ function PlaceControl({
         id={`place-${owner}`}
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        className="rounded-md border border-line bg-surface px-2 py-1 text-xs"
+        className="min-h-9 rounded-md border border-line bg-surface px-2 text-sm"
       >
         {options.map((o) => (
           <option key={o.value} value={o.value}>
@@ -348,7 +470,7 @@ function PlaceControl({
         type="button"
         disabled={busy || !value}
         onClick={() => onPlace(value)}
-        className="rounded-md border border-line px-2.5 py-1 font-medium text-ink hover:bg-canvas disabled:opacity-50"
+        className="inline-flex min-h-9 items-center rounded-md bg-ink px-3 text-sm font-medium text-surface hover:opacity-90 disabled:opacity-50"
       >
         Placer dans l&apos;agenda
       </button>

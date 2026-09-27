@@ -23,9 +23,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
   return (
     <html lang="fr" className="h-full">
-      <body className="min-h-full">
+      {/* Une page peut demander la pleine largeur desktop en portant
+          `data-page-wide` : l'en-tête s'élargit avec elle, pour rester aligné. */}
+      <body className="group/body min-h-full">
         <Nav exceptions={exceptions} sync={sync} />
-        <main className="mx-auto max-w-7xl px-4 pb-16 md:px-6">{children}</main>
+        <main className="mx-auto max-w-7xl px-4 pb-16 md:px-6 group-has-[[data-page-wide]]/body:max-w-[96rem]">
+          {children}
+        </main>
       </body>
     </html>
   );

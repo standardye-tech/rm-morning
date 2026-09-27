@@ -36,7 +36,7 @@ export function Nav({
 
   return (
     <header className="border-b border-line bg-surface">
-      <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-2.5 md:px-6 md:py-4 xl:gap-8">
+      <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-2.5 md:px-6 md:py-4 xl:gap-8 group-has-[[data-page-wide]]/body:max-w-[96rem]">
         <Link
           href="/"
           className="shrink-0 whitespace-nowrap text-[15px] font-semibold tracking-tight"
