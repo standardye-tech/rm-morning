@@ -20,7 +20,7 @@
 
 import { parisDate } from "./business-time";
 import { getDb } from "./db";
-import { actionSource, mailMessageId } from "./action-keys";
+import { actionSource, mailMessageId, planKeyParts, planVersionCovered } from "./action-keys";
 
 /** Où le geste a été fait — traçabilité seulement, jamais un critère. */
 export type ActionSurface =
@@ -85,12 +85,25 @@ export function restoreAction(key: string, now = new Date()): boolean {
     return Number(r.changes) > 0;
   }
   const iso = now.toISOString();
-  const r = db
-    .prepare(
-      "UPDATE action_state SET status = 'ouvert', restored_at = ?, updated_at = ? WHERE action_key = ? AND status = 'traite'",
-    )
-    .run(iso, iso, key);
-  return Number(r.changes) > 0;
+  // Plan : rouvrir la version courante, c'est rouvrir tout traitement de la
+  // même action qui la couvre encore (voir `treatedActions`).
+  const targets = source === "plan" ? coveringPlanRows(key).map((r) => r.action_key) : [key];
+  const update = db.prepare(
+    "UPDATE action_state SET status = 'ouvert', restored_at = ?, updated_at = ? WHERE action_key = ? AND status = 'traite'",
+  );
+  let changed = 0;
+  for (const k of targets) changed += Number(update.run(iso, iso, k).changes);
+  return changed > 0;
+}
+
+/** Traitements du Plan qui couvrent `key` : même action, aucun événement nouveau depuis. */
+function coveringPlanRows(key: string): StateRow[] {
+  const parts = planKeyParts(key);
+  if (!parts) return [];
+  const rows = getDb()
+    .prepare("SELECT action_key, status, treated_at FROM action_state WHERE status = 'traite' AND action_key LIKE ?")
+    .all(`${parts.action}:%`) as StateRow[];
+  return rows.filter((r) => planVersionCovered(key, r.action_key));
 }
 
 /**
@@ -128,6 +141,14 @@ export function treatedActions(keys: Iterable<string>): Map<string, string | nul
       .prepare("SELECT action_key, status, treated_at FROM action_state WHERE status = 'traite'")
       .all() as StateRow[];
     for (const r of rows) if (want.has(r.action_key)) out.set(r.action_key, r.treated_at);
+    // Plan : une version plus récente de la même action reste traitée tant
+    // qu'aucun événement nouveau n'est apparu (un signal disparu n'en est pas un).
+    const planRows = rows.filter((r) => r.action_key.startsWith("plan:"));
+    for (const k of others) {
+      if (out.has(k) || !k.startsWith("plan:")) continue;
+      const hit = planRows.find((r) => planVersionCovered(k, r.action_key));
+      if (hit) out.set(k, hit.treated_at);
+    }
   }
   return out;
 }

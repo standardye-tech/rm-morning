@@ -12,7 +12,7 @@
  *
  *   mail:{gmailMessageId}:waiting_reply             Bloc 2 · Monitoring « client attend »
  *   mail:{gmailMessageId}:hot_client                Bloc 1
- *   plan:{OpportunityId}:{motif}:{semaine}          Plan du jour · Ma semaine
+ *   plan:{OpportunityId}:{motif}:{semaine}:{événements} Plan du jour · Ma semaine
  *   opportunity:{OpportunityId}:{anomalie}:{version} Monitoring opportunités
  *   lead:{LeadId}:{anomalie}:{version}              Monitoring pistes
  *
@@ -34,12 +34,51 @@ export function mailActionKey(messageId: string, category: "chaud" | "attente"):
 }
 
 /**
- * Action du Plan du jour. La version est la SEMAINE (lundi ISO, celle de « Ma
- * semaine ») : une affaire traitée reste traitée jusqu'à la fin de la semaine
- * tant que son motif ne change pas — un nouveau motif est une nouvelle action.
+ * Action du Plan du jour. Versionnée par la SEMAINE (lundi ISO, celle de « Ma
+ * semaine ») et par les ÉVÉNEMENTS MATÉRIELS de l'affaire : une affaire traitée
+ * reste traitée jusqu'à la fin de la semaine tant que ni son motif ni ses
+ * événements ne changent ; un nouveau motif ou un nouvel événement est une
+ * nouvelle action.
  */
-export function planActionKey(opportunityId: string, reason: string, weekStart: string): string {
-  return `plan:${opportunityId}:${reason}:${weekStart}`;
+export function planActionKey(opportunityId: string, reason: string, weekStart: string, eventVersion = NO_EVENT): string {
+  return `plan:${opportunityId}:${reason}:${weekStart}:${eventVersion}`;
+}
+
+const NO_EVENT = "0";
+
+/**
+ * Version d'événement d'une action du Plan : ses SIGNAUX DURS canoniques
+ * (`hardSignals`, `morning-plan-select.ts`) — le dernier message client
+ * significatif (chaud ou attente) désigné par son identifiant Gmail, et la
+ * visite / le RDV planifié désigné par sa date. Aucune date du jour : sans
+ * nouvel événement, la version ne bouge pas. L'« événement contractuel » n'a
+ * pas de source sur une affaire ouverte (voir `hardSignals`) : il n'y figure pas.
+ */
+export function planEventVersion(e: { lastInboundMessageId: string | null; nextVisitAt: string | null }): string {
+  const tokens: string[] = [];
+  if (e.lastInboundMessageId) tokens.push(`m-${e.lastInboundMessageId}`);
+  if (e.nextVisitAt) tokens.push(`v-${e.nextVisitAt.slice(0, 10)}`);
+  return tokens.length > 0 ? tokens.join("+") : NO_EVENT;
+}
+
+/**
+ * Une clé du Plan découpée : l'action (affaire, motif, semaine) et l'ensemble
+ * de ses événements. Deux versions de la même action se comparent par
+ * INCLUSION : l'action reste traitée tant qu'aucun événement NOUVEAU n'est
+ * apparu — la disparition d'un signal (visite annulée) n'en est pas un.
+ */
+export function planKeyParts(key: string): { action: string; events: Set<string> } | null {
+  const m = /^(plan:[^:]+:[^:]+:[^:]+):(.+)$/.exec(key);
+  if (!m) return null;
+  return { action: m[1], events: new Set(m[2] === NO_EVENT ? [] : m[2].split("+")) };
+}
+
+/** `current` est-elle couverte par le traitement de `treated` (même action, aucun événement nouveau) ? */
+export function planVersionCovered(current: string, treated: string): boolean {
+  const c = planKeyParts(current);
+  const t = planKeyParts(treated);
+  if (!c || !t || c.action !== t.action) return false;
+  return [...c.events].every((e) => t.events.has(e));
 }
 
 /**

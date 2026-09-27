@@ -22,7 +22,7 @@
  * jamais modifiée par un signal mail.
  */
 
-import { actionWeekStart, planActionKey } from "./action-keys";
+import { actionWeekStart, planActionKey, planEventVersion } from "./action-keys";
 import { treatedActions } from "./action-state";
 import { ATTENTION, MORNING_PLAN, MORNING_PRIORITY } from "./config";
 import { parisDate } from "./business-time";
@@ -117,10 +117,15 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
   // Dernier message entrant du client par affaire, acquitté ou non : c'est une
   // preuve de vie du client, pas une tâche.
   const lastInbound = new Map<string, string>();
+  // Le message lui-même : il versionne l'action du Plan (nouvel événement).
+  const lastInboundId = new Map<string, string>();
   for (const e of events) {
     if (!e.opportunityId || !e.sentAt) continue;
     const prev = lastInbound.get(e.opportunityId);
-    if (!prev || new Date(e.sentAt) > new Date(prev)) lastInbound.set(e.opportunityId, e.sentAt);
+    if (!prev || new Date(e.sentAt) > new Date(prev)) {
+      lastInbound.set(e.opportunityId, e.sentAt);
+      lastInboundId.set(e.opportunityId, e.messageId);
+    }
   }
 
   const pending = events.filter((e) => !e.acknowledged);
@@ -165,7 +170,14 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
     const first = firstNameOf.get(row.owner) ?? row.owner.split(" ")[0];
     const reason = verdict.family;
     candidates.push({
-      key: planActionKey(id, reason, week),
+      // Même motif, mêmes signaux durs = même action toute la semaine ; un
+      // nouveau message client ou une nouvelle visite = une nouvelle action.
+      key: planActionKey(
+        id,
+        reason,
+        week,
+        planEventVersion({ lastInboundMessageId: lastInboundId.get(id) ?? null, nextVisitAt: visitById.get(id) ?? null }),
+      ),
       reason,
       category: reason,
       source: reason === "bloque" ? "salesforce" : "forecast",

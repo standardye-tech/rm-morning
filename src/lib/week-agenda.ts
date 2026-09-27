@@ -14,9 +14,11 @@
  *   Gros dossiers                                  → tier 3 si urgent, 5 sinon
  *   Changements de stade nombreux                  → tier 5
  *
- * DÉDUPLICATION : un sujet portant sur une affaire n'existe qu'une fois — la
- * formulation la plus prioritaire l'emporte (le Plan avant le Momentum avant le
- * challenger avant le gros dossier). Au plus `WEEK_AGENDA.maxTasks` sujets par
+ * DÉDUPLICATION PAR ACTION : une ActionKey = une case à cocher. Deux moteurs qui
+ * décrivent EXACTEMENT la même action (même ActionKey) ne produisent qu'un
+ * sujet — la formulation la plus prioritaire l'emporte ; deux actions
+ * différentes d'une même affaire restent deux cases, jamais une case qui en
+ * fermerait deux. Au plus `WEEK_AGENDA.maxTasks` sujets par
  * carte, choisis sur TOUS les sujets de la semaine, traités compris : cocher un
  * sujet fait baisser le compteur, il ne fait pas remonter un cinquième.
  *
@@ -64,7 +66,18 @@ export type OwnerAgendaInput = {
     /** ActionKey du Plan du jour (`plan:…`) : la tâche EST cette action, partagée. */
     actionKey?: string;
   }[];
-  challengers: { opportunityId: string; client: string; gmv: number; probability: number; expectedGmv: number }[];
+  challengers: {
+    opportunityId: string;
+    client: string;
+    gmv: number;
+    probability: number;
+    expectedGmv: number;
+    /**
+     * ActionKey du Plan quand le Plan pose la MÊME action sur l'affaire
+     * (« upside » : challenger son absence de la prévision) : un seul sujet.
+     */
+    actionKey?: string;
+  }[];
   bigDeals: { opportunityId: string; client: string; gmv: number; objective: string; urgent: boolean }[];
 };
 
@@ -145,15 +158,12 @@ const PLAN_TASK: Record<MorningReason, (client: string) => string> = {
 /** Tous les sujets d'un ET, dédupliqués par affaire. */
 export function tasksOf(input: OwnerAgendaInput, rules = WEEK_AGENDA): AgendaTask[] {
   const o = input.owner;
-  const byDeal = new Map<string, AgendaTask>();
-  const other: AgendaTask[] = [];
+  // Identité d'un sujet : son ActionKey partagée, sinon sa clé propre.
+  const byAction = new Map<string, AgendaTask>();
   const add = (t: AgendaTask) => {
-    if (!t.opportunityId) {
-      other.push(t);
-      return;
-    }
-    const cur = byDeal.get(t.opportunityId);
-    if (!cur || t.tier < cur.tier || (t.tier === cur.tier && t.stake > cur.stake)) byDeal.set(t.opportunityId, t);
+    const id = t.actionKey ?? t.key;
+    const cur = byAction.get(id);
+    if (!cur || t.tier < cur.tier || (t.tier === cur.tier && t.stake > cur.stake)) byAction.set(id, t);
   };
 
   for (const p of input.plan) {
@@ -219,7 +229,7 @@ export function tasksOf(input: OwnerAgendaInput, rules = WEEK_AGENDA): AgendaTas
       stake: c.expectedGmv,
       opportunityId: c.opportunityId,
       client: c.client,
-      actionKey: null,
+      actionKey: c.actionKey ?? null,
     });
   }
   for (const d of input.bigDeals) {
@@ -243,7 +253,7 @@ export function tasksOf(input: OwnerAgendaInput, rules = WEEK_AGENDA): AgendaTas
       // « Gros dossier proche de signature » EST le sujet de l'affaire elle-même,
       // déjà posé par affaire : on ne le répète pas en sujet agrégé.
       if (r.key === "gros_dossier_signature" && input.bigDeals.length > 0) continue;
-      other.push({
+      add({
         key: `${o}|attention|${r.key}`,
         owner: o,
         label: `${ATTENTION_TASK[r.key]} (${r.detail})`,
@@ -257,7 +267,7 @@ export function tasksOf(input: OwnerAgendaInput, rules = WEEK_AGENDA): AgendaTas
     }
   }
   if (input.momentum?.available && input.momentum.stageChanges >= rules.minStageChanges) {
-    other.push({
+    add({
       key: `${o}|stades`,
       owner: o,
       label: `Faire le point sur les ${input.momentum.stageChanges} changements de stade de la semaine`,
@@ -269,7 +279,7 @@ export function tasksOf(input: OwnerAgendaInput, rules = WEEK_AGENDA): AgendaTas
       actionKey: null,
     });
   }
-  return [...byDeal.values(), ...other].sort((a, b) => a.tier - b.tier || b.stake - a.stake || a.key.localeCompare(b.key));
+  return [...byAction.values()].sort((a, b) => a.tier - b.tier || b.stake - a.stake || a.key.localeCompare(b.key));
 }
 
 /** Une carte par ET qui a au moins un sujet ; jamais de carte vide. */

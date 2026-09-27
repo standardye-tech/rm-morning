@@ -59,8 +59,15 @@ section("MOTEUR — sujets, déduplication, plafond");
     bigDeals: [{ opportunityId: "006A", client: "Client A", gmv: 200_000, objective: "Accélérer", urgent: false }],
   });
   const t = tasksOf(input);
-  check("une affaire vue par trois moteurs -> UN seul sujet", t.filter((x) => x.opportunityId === "006A").length === 1);
-  check("… et c'est la formulation la plus prioritaire (baisse GMV)", t[0].label.includes("baisse de 166 k€"), t[0].label);
+  // Une ActionKey = une case : trois actions DIFFÉRENTES d'une même affaire
+  // (comprendre la baisse, challenger, préparer) restent trois cases.
+  check("une affaire, trois actions différentes -> trois sujets distincts", t.filter((x) => x.opportunityId === "006A").length === 3);
+  check("… par ordre de priorité (la baisse GMV d'abord)", t[0].label.includes("baisse de 166 k€"), t[0].label);
+  const same = tasksOf(base({
+    plan: [{ opportunityId: "006B", client: "Client B", gmv: 300_000, reason: "upside", impact: 90_000, pMonthEnd: null, actionKey: "plan:006B:upside:2026-09-28:0" }],
+    challengers: [{ opportunityId: "006B", client: "Client B", gmv: 300_000, probability: 0.4, expectedGmv: 120_000, actionKey: "plan:006B:upside:2026-09-28:0" }],
+  }));
+  check("deux moteurs, MÊME ActionKey (Plan upside = Forecast à challenger) -> UN seul sujet", same.filter((x) => x.opportunityId === "006B").length === 1 && same.find((x) => x.opportunityId === "006B")?.actionKey === "plan:006B:upside:2026-09-28:0");
   check("« Pourquoi le voir » = momentum brut", momentumLine(input.momentum) === "Momentum 7 j : +73 k€ GMV / −166 k€ GMV · 0 € signé", momentumLine(input.momentum));
 
   const many = base({
@@ -212,8 +219,8 @@ section("COMPOSITION — état réel (invariants)");
   check("aucun directeur exclu dans le planning", !cards.some((c) => ATTENTION.excluded.includes(c.owner)));
   check("une carte par ET", new Set(cards.map((c) => c.owner)).size === cards.length);
   check(`au plus ${WEEK_AGENDA.maxTasks} sujets par carte`, cards.every((c) => c.tasks.length <= WEEK_AGENDA.maxTasks));
-  check("aucune affaire en double dans une carte", cards.every((c) => {
-    const ids = c.tasks.map((t) => t.opportunityId).filter(Boolean);
+  check("aucune action en double dans une carte (une ActionKey = une case)", cards.every((c) => {
+    const ids = c.tasks.map((t) => t.actionKey ?? t.key);
     return new Set(ids).size === ids.length;
   }));
   const keys = cards.flatMap((c) => c.tasks.map((t) => t.key));

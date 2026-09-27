@@ -90,6 +90,13 @@ export function buildWeekAgenda(now = new Date()): WeekAgendaView {
   const board = buildForecastV2(0, null, now);
   const challengers = forecastChallengers(board);
 
+  // Forecast « À challenger » (hors prévision, > 25 %) et Plan « upside » (hors
+  // prévision, crédible) décrivent la MÊME action sur une affaire : challenger
+  // son absence de la prévision. Quand le Plan la pose, les deux partagent sa clé.
+  const upsideKey = new Map(
+    plan.pool.all.filter((a) => a.reason === "upside" && a.opportunityId).map((a) => [a.opportunityId as string, a.key]),
+  );
+
   const inputs: OwnerAgendaInput[] = week.verdicts
     .filter((v) => !excluded.has(v.salesperson))
     .map((v) => {
@@ -130,6 +137,7 @@ export function buildWeekAgenda(now = new Date()): WeekAgendaView {
             gmv: c.row.gmv ?? 0,
             probability: c.row.expectedProbability ?? 0,
             expectedGmv: c.row.expectedGmv ?? 0,
+            actionKey: upsideKey.get(c.row.opportunityId),
           })),
         bigDeals: week.bigDeals
           .filter((d) => d.owner === v.salesperson)

@@ -47,7 +47,7 @@ const { leadMonitoringView, opportunityMonitoringView, markItemRead, markScopeRe
 const { loadMilestoneOpportunities } = await import(lib("opportunity-metrics"));
 const { loadTeam } = await import(lib("team-store"));
 const { buildWeekAgenda, withSharedState } = await import(lib("week-agenda-view"));
-const { composeCards, hideTreated, scheduleCards } = await import(lib("week-agenda"));
+const { composeCards, hideTreated, scheduleCards, tasksOf } = await import(lib("week-agenda"));
 const { checkAgendaTask, restoreAgendaTask, loadAgendaState } = await import(lib("week-agenda-store"));
 
 let failures = 0;
@@ -206,6 +206,50 @@ check("C. aucune écriture hebdomadaire locale pour un sujet partagé", !loadAge
 check("E. l'autre action reste : Bloc 2 et Monitoring", inBloc2(MSG1) && inMonitoring(OPP));
 restoreAgendaTask(wtC.weekStart, weekTask(planKey).done);
 check("K. rétablie : de retour dans le Plan et Ma semaine", inPlan(planKey) && weekTask(planKey).active);
+
+section("V — Plan : même motif, nouvel événement = nouvelle version");
+{
+  const planKeyOf = (at = now) => buildMorningPlan(at).pool.all.find((a) => a.opportunityId === OPP)?.key;
+  check("la version porte le dernier message client significatif", planKey.endsWith(`:m-${MSG1}`), planKey);
+  markActionDone(planKey, now);
+  const sameWeek = [1, -1].map((d) => new Date(nowMs + d * DAY)).find((d) => keys.actionWeekStart(d) === keys.actionWeekStart(now));
+  const keyNext = planKeyOf(sameWeek);
+  check("V-A. lendemain, aucun nouveau signal : même ActionKey…", keyNext === planKey, keyNext);
+  check("V-A. … toujours traitée : absente du Plan", !buildMorningPlan(sameWeek).actions.some((a) => a.opportunityId === OPP));
+  const visit = new Date(nowMs + 2 * DAY).toISOString();
+  db.prepare("UPDATE opportunity SET next_visit_at = ? WHERE opportunity_id = ?").run(visit, OPP);
+  const keyVisit = planKeyOf();
+  check("V-B. nouvelle visite planifiée, même motif : nouvelle version d'ActionKey", keyVisit && keyVisit !== planKey && keyVisit.includes(`:m-${MSG1}+v-${visit.slice(0, 10)}`), keyVisit);
+  check("V-B. … ouverte : de retour dans le Plan", inPlan(keyVisit));
+  check("V-B. … et dans Ma semaine", weekTask(keyVisit).active);
+  check("V-B. l'ancienne version reste traitée", treatedActions([planKey]).size === 1);
+  restoreAction(planKey, now);
+  markActionDone(keyVisit, now);
+  db.prepare("UPDATE opportunity SET next_visit_at = NULL WHERE opportunity_id = ?").run(OPP);
+  check("un signal qui DISPARAÎT (visite annulée) ne rouvre rien", planKeyOf() === planKey && !inPlan(planKey) && treatedActions([planKey]).size === 1);
+  restoreAction(planKey, now);
+  check("Rétablir rouvre la version courante", inPlan(planKey) && treatedActions([planKey, keyVisit]).size === 0);
+}
+
+section("W — Ma semaine : une ActionKey = une case");
+{
+  const K = keys.planActionKey("TESTAS_W", "upside", keys.actionWeekStart(now));
+  const tasks = tasksOf({
+    owner: "ET W", firstName: "ET", level: "orange", attentionSummary: null, reasons: [], momentum: null,
+    moves: [{ opportunityId: "TESTAS_W", client: "W", gmv: 300_000, gmvDelta: -120_000, exitedM: false, enteredStandby: false }],
+    plan: [{ opportunityId: "TESTAS_W", client: "W", gmv: 300_000, reason: "upside", impact: 50_000, pMonthEnd: null, actionKey: K }],
+    challengers: [{ opportunityId: "TESTAS_W", client: "W", gmv: 300_000, probability: 0.4, expectedGmv: 120_000, actionKey: K }],
+    bigDeals: [],
+  });
+  const onW = tasks.filter((t) => t.opportunityId === "TESTAS_W");
+  check("W-E. deux moteurs, même ActionKey (Plan upside = Forecast à challenger) : une seule case", onW.filter((t) => t.actionKey === K).length === 1);
+  check("W-C. une autre action de la même affaire (comprendre la baisse) : sa propre case", onW.length === 2 && onW.some((t) => t.actionKey === null && t.source === "momentum"));
+  treatAction({ key: K, surface: "plan" }, now);
+  const done = withSharedState([{ owner: "ET W", tasks }], []);
+  const doneKeys = new Set(done.map((d) => d.key));
+  check("W-D. traiter l'une ne coche pas l'autre", onW.filter((t) => doneKeys.has(t.key)).length === 1 && onW.some((t) => t.source === "momentum" && !doneKeys.has(t.key)));
+  restoreAction(K, now);
+}
 
 section("F / G — Lire n'est jamais traiter");
 {

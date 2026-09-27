@@ -163,7 +163,7 @@ const countsAfter = counts();
 for (const [label, plan] of [["aujourd'hui", planReal], ["date des données (10/09)", planData]]) {
   const ids = plan.actions.map((a) => a.opportunityId);
   check(`${label} — au plus ${MAX} affaires`, plan.actions.length <= MAX, `${plan.actions.length}`);
-  check(`${label} — une ligne = une affaire distincte`, ids.every(Boolean) && new Set(ids).size === ids.length && plan.actions.every((a) => a.opportunityIds.length === 1 && a.key === planActionKey(a.opportunityId, a.reason, actionWeekStart(label === "aujourd'hui" ? now : new Date("2026-09-10T16:00:00Z")))));
+  check(`${label} — une ligne = une affaire distincte`, ids.every(Boolean) && new Set(ids).size === ids.length && plan.actions.every((a) => a.opportunityIds.length === 1 && a.key.startsWith(`${planActionKey(a.opportunityId, a.reason, actionWeekStart(label === "aujourd'hui" ? now : new Date("2026-09-10T16:00:00Z")), "")}`)));
   check(`${label} — GMV réelle ≥ 50 k€ pour chaque ligne`, plan.actions.every((a) => (a.gmv ?? 0) >= MORNING_PLAN.minGmv));
   check(`${label} — impact décroissant`, plan.actions.every((a, i) => i === 0 || plan.actions[i - 1].score >= a.score));
   check(`${label} — aucune situation agrégée ni ligne « pipe insuffisant »`, plan.actions.every((a) => !/affaires figées|pipe insuffisant/.test(a.title)) && !plan.pool.keys.some((k) => !k.startsWith("plan:")));
@@ -280,7 +280,7 @@ const p2 = buildMorningPlan(sameWeek);
 check("8. le lendemain (même semaine) : jour vierge, et l'affaire traitée ne revient pas (même motif)", p2.doneToday === 0 && !p2.actions.some((a) => a.key === top.key) && !p2.actions.some((a) => a.opportunityId === top.opportunityId && a.reason === top.reason));
 const nextWeek = new Date(nowMs + 7 * DAY);
 const p3 = buildMorningPlan(nextWeek);
-const topNext = planActionKey(top.opportunityId, top.reason, actionWeekStart(nextWeek));
+const topNext = top.key.replace(`:${actionWeekStart(now)}:`, `:${actionWeekStart(nextWeek)}:`);
 check("8 bis. la semaine suivante : nouvelle ActionKey, ouverte (le traitement ne tue pas l'affaire)", topNext !== top.key && !treatedActions([topNext]).has(topNext) && p3.doneToday === 0);
 check("… et l'affaire revient si le motif persiste", p3.actions.some((a) => a.key === topNext) || !p3.pool.keys.includes(topNext), p3.pool.keys.includes(topNext) ? "motif persistant" : "motif disparu d'ici là (changement de mois)");
 
