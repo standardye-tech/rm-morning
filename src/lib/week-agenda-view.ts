@@ -6,6 +6,7 @@
  * `week-agenda.ts`.
  */
 
+import { treatedActions } from "./action-state";
 import { ATTENTION, WEEK_SLOTS } from "./config";
 import { parisDate, parisWeekday } from "./business-time";
 import { OBJECTIVE_LABEL } from "./big-deals";
@@ -21,6 +22,7 @@ import {
   etSlots,
   hideTreated,
   scheduleCards,
+  type AgendaCard,
   type AgendaSlot,
   type OwnerAgendaInput,
   type ScheduledCard,
@@ -48,6 +50,25 @@ const DAY_LABEL = ["", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi"];
 
 export function slotLabel(slot: AgendaSlot): string {
   return slot.time ? `${DAY_LABEL[slot.day]} ${slot.time}` : `${DAY_LABEL[slot.day]} · horaire à caler`;
+}
+
+/**
+ * Les sujets terminés : ceux cochés ici (`week_agenda_state`), et ceux dont
+ * l'ActionKey PARTAGÉE est traitée — depuis le Plan du jour comme depuis Ma
+ * semaine. Un sujet purement managérial (sans ActionKey) ne dépend que de
+ * l'état hebdomadaire, comme avant.
+ */
+export function withSharedState(cards: AgendaCard[], local: AgendaDone[]): AgendaDone[] {
+  const tasks = cards.flatMap((c) => c.tasks);
+  const actionOf = new Map(tasks.filter((t) => t.actionKey).map((t) => [t.key, t.actionKey as string]));
+  const shared = treatedActions(actionOf.values());
+  const out: AgendaDone[] = local.map((d) => ({ ...d, actionKey: actionOf.get(d.key) ?? d.actionKey }));
+  const seen = new Set(out.map((d) => d.key));
+  for (const t of tasks) {
+    if (!t.actionKey || seen.has(t.key) || !shared.has(t.actionKey)) continue;
+    out.push({ key: t.key, owner: t.owner, label: t.label, doneAt: shared.get(t.actionKey) ?? "", actionKey: t.actionKey });
+  }
+  return out.sort((a, b) => a.doneAt.localeCompare(b.doneAt));
 }
 
 export function buildWeekAgenda(now = new Date()): WeekAgendaView {
@@ -99,6 +120,7 @@ export function buildWeekAgenda(now = new Date()): WeekAgendaView {
             reason: a.reason,
             impact: a.score,
             pMonthEnd: null,
+            actionKey: a.key,
           })),
         challengers: challengers
           .filter((c) => c.row.owner === v.salesperson)
@@ -117,7 +139,8 @@ export function buildWeekAgenda(now = new Date()): WeekAgendaView {
 
   const cards = composeCards(inputs);
   const state = loadAgendaState(week.weekStart);
-  const doneKeys = new Set(state.done.map((d) => d.key));
+  const done = withSharedState(cards, state.done);
+  const doneKeys = new Set(done.map((d) => d.key));
   const slots = etSlots(WEEK_SLOTS, fromDay);
   // Un placement manuel antérieur à aujourd'hui reste affiché à sa place : il a
   // été choisi, on ne le déplace pas en silence.
@@ -145,7 +168,7 @@ export function buildWeekAgenda(now = new Date()): WeekAgendaView {
     timeline,
     toPlace,
     placeOptions,
-    done: state.done,
+    done,
     doneKeys: [...doneKeys],
     notes,
   };

@@ -18,6 +18,7 @@
  * message du même client revient toujours.
  */
 
+import { actionsTreatedOn, treatAction } from "./action-state";
 import { parisDate } from "./business-time";
 import { getDb } from "./db";
 import { INTERNAL_DOMAIN } from "./mail-rules";
@@ -781,15 +782,21 @@ export function syncMorningEvents(now = new Date()): { seen: number; created: nu
  * navigateur — même règle que le « Tout lire » du Monitoring. Même écriture que
  * l'acquittement unitaire : un message déjà pris en compte n'est pas réécrit,
  * sa date d'acquittement d'origine est conservée.
+ *
+ * `shownIds` : les messages que l'écran affichait. Quand il est fourni, seuls
+ * ceux-là — et parmi eux ceux que RM Morning montre encore — sont acquittés :
+ * « Tout traiter » traite les actions affichées, une par une, jamais un
+ * message qu'aucun œil n'a vu.
  */
 export function acknowledgeAllEvents(
   category: "chaud" | "attente" | null,
   now = new Date(),
+  shownIds: ReadonlySet<string> | null = null,
 ): { changed: number; messageIds: string[] } {
   const db = getDb();
   const categories = category ? [category] : ["chaud", "attente"];
   const marks = categories.map(() => "?").join(", ");
-  const messageIds = (
+  let messageIds = (
     db
       .prepare(
         `SELECT gmail_message_id FROM morning_event
@@ -797,6 +804,13 @@ export function acknowledgeAllEvents(
       )
       .all(...categories) as { gmail_message_id: string }[]
   ).map((r) => r.gmail_message_id);
+  if (shownIds) {
+    const visible = visibleMorningMessageIds();
+    messageIds = messageIds.filter((id) => shownIds.has(id) && (visible.hot.has(id) || visible.waiting.has(id)));
+    let changed = 0;
+    for (const id of messageIds) if (acknowledgeEvent(id, now)) changed += 1;
+    return { changed, messageIds };
+  }
   if (messageIds.length === 0) return { changed: 0, messageIds };
   const r = db
     .prepare(
@@ -819,27 +833,21 @@ export function acknowledgeEvent(messageId: string, now = new Date()): boolean {
 }
 
 /**
- * Le plan du jour, coché.
+ * Le plan du jour, coché — via l'état PARTAGÉ des actions (`action-state`).
  *
- * L'état porte sur une JOURNÉE, et c'est la seule différence avec « Pris en
- * compte » : un message acquitté ne revient jamais, alors qu'une action du plan
- * est reconstruite chaque matin depuis les données du jour. Une affaire décisive
- * traitée aujourd'hui doit pouvoir revenir demain si elle est toujours décisive
- * et toujours en attente — sinon RM Morning cesserait de la signaler pour la
- * seule raison qu'on l'a lue une fois.
+ * La clé est l'ActionKey du Plan (`plan:{OpportunityId}:{motif}:{semaine}`,
+ * voir `buildMorningPlan`) : la même que porte la tâche correspondante de « Ma
+ * semaine ». Traiter ici la ferme donc là-bas, et inversement.
  *
- * La clé est celle produite par `buildMorningPlan` (« decisive:006... »), stable
- * pour une même affaire et un même motif.
+ * Version = SEMAINE : une affaire traitée ne revient pas le lendemain tant que
+ * son motif est le même ; elle revient la semaine suivante si le motif persiste,
+ * ou dès qu'un NOUVEAU motif apparaît (nouvelle clé). Avant l'état partagé,
+ * l'état portait sur une journée (`morning_action_done`, conservée et encore
+ * relue pour le jour de la bascule).
  */
 export function markActionDone(actionKey: string, now = new Date()): boolean {
-  const db = getDb();
-  const r = db
-    .prepare(
-      `INSERT INTO morning_action_done (action_key, done_on, done_at) VALUES (?, ?, ?)
-       ON CONFLICT(action_key, done_on) DO NOTHING`,
-    )
-    .run(actionKey, parisDate(now), now.toISOString());
-  return Number(r.changes) > 0;
+  if (!actionKey.startsWith("plan:")) return false;
+  return treatAction({ key: actionKey, surface: "plan" }, now);
 }
 
 /**
@@ -851,32 +859,36 @@ export function markActionDone(actionKey: string, now = new Date()): boolean {
  * situation qu'aucun œil n'a vue n'est marquée traitée — ni une huitième qui
  * aurait remplacé une situation entre-temps, ni une situation hors du Plan.
  * Sans `shownKeys` (appel ancien), le Plan recalculé est traité tel quel : il
- * est lui-même plafonné.
- *
- * Chaque situation suit le double effet de « action_faite » : traitée pour la
- * journée, message acquitté quand il y en a un.
+ * est lui-même plafonné. Chaque ActionKey est traitée INDIVIDUELLEMENT : jamais
+ * un client ni une affaire entière.
  */
 export function completeShownActions(
-  planned: { key: string; messageId: string | null }[],
+  planned: { key: string; messageId: string | null; owner?: string | null; todo?: string }[],
   shownKeys: ReadonlySet<string> | null,
   now = new Date(),
 ): number {
   let changed = 0;
   for (const a of planned) {
     if (shownKeys && !shownKeys.has(a.key)) continue;
-    if (markActionDone(a.key, now)) changed += 1;
+    if (!a.key.startsWith("plan:")) continue;
+    if (treatAction({ key: a.key, surface: "plan", owner: a.owner ?? null, label: a.todo ?? null }, now)) changed += 1;
     if (a.messageId) acknowledgeEvent(a.messageId);
   }
   return changed;
 }
 
-/** Clés des actions déjà faites aujourd'hui. */
+/**
+ * Actions du Plan traitées AUJOURD'HUI, où que ce soit (Plan ou Ma semaine) :
+ * c'est le budget journalier du Plan — traiter une affaire, même depuis Ma
+ * semaine, ne fait jamais remonter une huitième. Les coches de l'ancien état
+ * journalier (`affaire:…`) du jour même sont encore comptées.
+ */
 export function doneActionKeys(now = new Date()): Set<string> {
   const db = getDb();
-  const rows = db
+  const legacy = db
     .prepare("SELECT action_key FROM morning_action_done WHERE done_on = ?")
     .all(parisDate(now)) as { action_key: string }[];
-  return new Set(rows.map((r) => r.action_key));
+  return new Set([...actionsTreatedOn("plan", now), ...legacy.map((r) => r.action_key)]);
 }
 
 /**
@@ -1114,6 +1126,8 @@ export type CanonicalClientAttend = {
   opportunityId: string;
   /** Date d'envoi du message qui fonde l'attente. */
   sentAt: string | null;
+  /** Le message lui-même : l'action « répondre » est CELLE du Bloc 2 (même ActionKey). */
+  messageId: string;
 };
 
 /**
@@ -1163,7 +1177,7 @@ export function canonicalClientAttend(): Map<string, CanonicalClientAttend> {
   const map = new Map<string, CanonicalClientAttend>();
   for (const r of rows) {
     if (!active.has(r.id)) continue;
-    map.set(r.opportunity_id, { opportunityId: r.opportunity_id, sentAt: r.sent_at });
+    map.set(r.opportunity_id, { opportunityId: r.opportunity_id, sentAt: r.sent_at, messageId: r.id });
   }
   return map;
 }

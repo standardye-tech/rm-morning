@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 
-import { markItemRead, markScopeRead } from "@/lib/monitoring-view";
+import { markItemRead, markScopeRead, treatItem } from "@/lib/monitoring-view";
 
 /**
- * Gestes de lecture du Monitoring.
+ * Gestes du Monitoring : lire, et traiter.
  *
- * Deux actions, toutes deux entièrement locales : rien n'est écrit dans
+ * Toutes entièrement locales : rien n'est écrit dans
  * Salesforce — l'état de lecture appartient à RM Morning, comme la prise en
  * compte des messages du Morning.
  *
@@ -16,6 +16,9 @@ import { markItemRead, markScopeRead } from "@/lib/monitoring-view";
  * — « lire » acquitte UNE SEULE ligne, désignée par son identifiant. Ses
  *   champs de décision sont eux aussi relus en base au moment du geste, jamais
  *   reçus du navigateur.
+ * — « traiter » ferme l'ACTION courante d'une ligne dans l'état partagé
+ *   (`action-state`) : elle disparaît aussi du Morning et de Ma semaine quand
+ *   ils montrent la même action. Lire n'est jamais traiter.
  */
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as {
@@ -36,6 +39,15 @@ export async function POST(request: Request) {
       const owner = typeof body.owner === "string" && body.owner.length > 0 ? body.owner : null;
       const read = markScopeRead(body.scope, owner);
       return NextResponse.json({ ok: true, read });
+    }
+    case "traiter": {
+      // « Traité » ≠ « Lu » : l'action courante de la ligne est gérée, partout
+      // où elle apparaît (Morning, Ma semaine). Aucune lecture n'est écrite.
+      if (!body.itemId) {
+        return NextResponse.json({ error: "itemId manquant" }, { status: 400 });
+      }
+      const changed = treatItem(body.scope, body.itemId);
+      return NextResponse.json({ ok: true, changed });
     }
     case "lire": {
       if (!body.itemId) {

@@ -3,10 +3,10 @@ import { NextResponse } from "next/server";
 
 import { buildWeekAgenda } from "@/lib/week-agenda-view";
 import {
-  markAgendaTaskDone,
+  checkAgendaTask,
   parseSlotValue,
   placeAgendaOwner,
-  undoAgendaTask,
+  restoreAgendaTask,
   unplaceAgendaOwner,
 } from "@/lib/week-agenda-store";
 
@@ -39,14 +39,16 @@ export async function POST(request: Request) {
     case "traiter": {
       const task = cards.flatMap((c) => c.tasks).find((t) => t.key === body.key);
       if (!task) return NextResponse.json({ error: "Sujet inconnu cette semaine." }, { status: 400 });
-      markAgendaTaskDone(view.weekStart, { key: task.key, owner: task.owner, label: task.label });
+      // Sujet repris d'une action existante (Plan du jour) : état PARTAGÉ.
+      checkAgendaTask(view.weekStart, task);
       break;
     }
     case "retablir": {
-      if (typeof body.key !== "string" || !view.doneKeys.includes(body.key)) {
-        return NextResponse.json({ error: "Sujet non traité cette semaine." }, { status: 400 });
-      }
-      undoAgendaTask(view.weekStart, body.key);
+      const entry = view.done.find((d) => d.key === body.key);
+      if (!entry) return NextResponse.json({ error: "Sujet non traité cette semaine." }, { status: 400 });
+      // Rouvre l'action partout (Plan compris) ; elle ne réapparaît que là où
+      // son signal existe encore.
+      restoreAgendaTask(view.weekStart, entry);
       break;
     }
     case "placer": {

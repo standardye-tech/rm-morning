@@ -11,7 +11,7 @@ import type {
   TeamOpportunityMetrics,
 } from "@/lib/opportunity-metrics";
 import type { ExceptionEntry, OpportunityMonitoringView } from "@/lib/monitoring-view";
-import { AllHandled, ChangeLine, LireButton, ToutLireButton } from "./monitoring-read";
+import { AllHandled, ChangeLine, LireButton, ToutLireButton, TraiteButton } from "./monitoring-read";
 import { Badge, Card, EmptyState, SectionTitle, Stat } from "./ui";
 
 const TONE: Record<MilestoneStatus, "neutral" | "positive" | "warning" | "danger"> = {
@@ -90,8 +90,9 @@ export function ValueBlock({
               {view.visibleCount} opportunité(s) à traiter
               {view.changedCount > 0 ? ` · ${view.changedCount} modifiée(s) depuis la lecture` : ""}
               {view.readCount > 0 ? ` · ${view.readCount} déjà lue(s)` : ""}
+              {view.treatedCount > 0 ? ` · ${view.treatedCount} traitée(s)` : ""}
             </span>
-            <ToutLireButton scope="opportunite" owner={owner} count={view.activeCount - view.readCount} />
+            <ToutLireButton scope="opportunite" owner={owner} count={view.activeCount - view.readCount - view.treatedCount} />
           </div>
         }
       />
@@ -114,6 +115,7 @@ export function ValueBlock({
                 <div className="flex shrink-0 items-center gap-3">
                   <p className="tabular text-[15px] font-semibold">{formatEurShort(o.gmv)}</p>
                   <LireButton scope="opportunite" itemId={o.opportunityId} />
+                  <TraiteButton scope="opportunite" itemId={o.opportunityId} />
                 </div>
               </div>
               <p className="mt-0.5 text-xs text-ink-soft">
@@ -253,6 +255,7 @@ export function ExceptionBlock({
                 <div className="flex shrink-0 items-center gap-3">
                   <p className="tabular text-sm">{formatEurShort(o.gmv)}</p>
                   <LireButton scope="opportunite" itemId={o.opportunityId} />
+                  <TraiteButton scope="opportunite" itemId={o.opportunityId} />
                 </div>
               </div>
               <ChangeLine verdict={verdict} />

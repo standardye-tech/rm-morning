@@ -153,6 +153,43 @@ export function LireButton({ scope, itemId }: { scope: MonitoringScope; itemId: 
 }
 
 /**
+ * « Traité » : l'action de la ligne est gérée — distinct de « Lu ».
+ *
+ * « Lu » acquitte une notification (la ligne revient si un champ bouge) ;
+ * « Traité » ferme l'action elle-même dans l'état partagé de RM Morning : elle
+ * disparaît aussi du Morning et de Ma semaine quand ils montrent la même. Un
+ * nouvel événement (nouveau message, nouvelle échéance) la fera revenir.
+ */
+export function TraiteButton({ scope, itemId }: { scope: MonitoringScope; itemId: string }) {
+  const router = useRouter();
+  const [pending, start] = useTransition();
+  const [sent, setSent] = useState(false);
+
+  return (
+    <button
+      type="button"
+      disabled={pending || sent}
+      title="Action gérée : elle disparaît de toutes les surfaces de RM Morning"
+      onClick={() => {
+        setSent(true);
+        start(async () => {
+          await fetch("/api/monitoring", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "traiter", scope, itemId }),
+          });
+          router.refresh();
+          setSent(false);
+        });
+      }}
+      className="inline-flex h-7 shrink-0 items-center rounded border border-line px-2 text-xs text-ink-soft transition-colors hover:bg-canvas hover:text-ink disabled:opacity-50"
+    >
+      {pending || sent ? "…" : "Traité"}
+    </button>
+  );
+}
+
+/**
  * L'état « rien à traiter ».
  *
  * Le point du Lot A : le travail du Monitoring ne se termine jamais tout seul,

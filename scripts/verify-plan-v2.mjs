@@ -37,6 +37,9 @@ const { evaluateAffaire, hardSignals, selectAffaires } = await import(lib("morni
 const { buildMorningPlan } = await import(lib("morning-priority"));
 const { triage, markActionDone, doneActionKeys, completeShownActions } = await import(lib("morning-events"));
 const { recordPlanLog } = await import(lib("morning-plan-log"));
+const { actionWeekStart, planActionKey } = await import(lib("action-keys"));
+const { treatedActions } = await import(lib("action-state"));
+const inPool = (plan, id) => plan.pool.all.some((a) => a.opportunityId === id);
 const { loadTeam } = await import(lib("team-store"));
 const { buildOwnerSignals } = await import(lib("owner-signals"));
 const { stagnantDeals } = await import(lib("stagnation"));
@@ -160,10 +163,10 @@ const countsAfter = counts();
 for (const [label, plan] of [["aujourd'hui", planReal], ["date des données (10/09)", planData]]) {
   const ids = plan.actions.map((a) => a.opportunityId);
   check(`${label} — au plus ${MAX} affaires`, plan.actions.length <= MAX, `${plan.actions.length}`);
-  check(`${label} — une ligne = une affaire distincte`, ids.every(Boolean) && new Set(ids).size === ids.length && plan.actions.every((a) => a.opportunityIds.length === 1 && a.key === `affaire:${a.opportunityId}`));
+  check(`${label} — une ligne = une affaire distincte`, ids.every(Boolean) && new Set(ids).size === ids.length && plan.actions.every((a) => a.opportunityIds.length === 1 && a.key === planActionKey(a.opportunityId, a.reason, actionWeekStart(label === "aujourd'hui" ? now : new Date("2026-09-10T16:00:00Z")))));
   check(`${label} — GMV réelle ≥ 50 k€ pour chaque ligne`, plan.actions.every((a) => (a.gmv ?? 0) >= MORNING_PLAN.minGmv));
   check(`${label} — impact décroissant`, plan.actions.every((a, i) => i === 0 || plan.actions[i - 1].score >= a.score));
-  check(`${label} — aucune situation agrégée ni ligne « pipe insuffisant »`, plan.actions.every((a) => !/affaires figées|pipe insuffisant/.test(a.title)) && !plan.pool.keys.some((k) => !k.startsWith("affaire:")));
+  check(`${label} — aucune situation agrégée ni ligne « pipe insuffisant »`, plan.actions.every((a) => !/affaires figées|pipe insuffisant/.test(a.title)) && !plan.pool.keys.some((k) => !k.startsWith("plan:")));
   check(`${label} — « Commercial — Client » puis « GMV · stade · raison »`, plan.actions.every((a) => a.title === `${a.ownerFirstName} — ${a.client}` && a.detail.startsWith(`${Math.round((a.gmv ?? 0) / 1000)} k€`) && a.detail.split(" · ").length >= 3));
 }
 check("le calcul du Plan n'écrit rien en base", JSON.stringify(countsBefore) === JSON.stringify(countsAfter));
@@ -228,8 +231,8 @@ const mine = planC.actions.filter((a) => FOUR.includes(a.opportunityId));
 check("4 affaires d'un même commercial : les 4 apparaissent (aucun plafond par commercial)", mine.length === 4, `${mine.length}/4`);
 check("elles portent la famille A (GMV annoncé à sécuriser)", mine.every((a) => a.reason === "securiser"));
 check("GMV réelle affichée (1 M€), score plafonné à 250 k€ × 0,75", mine.every((a) => a.gmv === 1_000_000 && near(a.score, 250_000 * 0.75, 1)), mine.map((a) => Math.round(a.score)).join(","));
-check("une affaire sous 50 k€ n'entre pas, même annoncée et immobile", !planC.pool.keys.includes("affaire:TESTPV_SMALL") && /plancher/.test(planC.pool.excluded.TESTPV_SMALL ?? ""), planC.pool.excluded.TESTPV_SMALL);
-check("une grosse affaire annoncée qui avance normalement n'est pas une situation", !planC.pool.keys.includes("affaire:TESTPV_MOVING"), planC.pool.excluded.TESTPV_MOVING);
+check("une affaire sous 50 k€ n'entre pas, même annoncée et immobile", !inPool(planC, "TESTPV_SMALL") && /plancher/.test(planC.pool.excluded.TESTPV_SMALL ?? ""), planC.pool.excluded.TESTPV_SMALL);
+check("une grosse affaire annoncée qui avance normalement n'est pas une situation", !inPool(planC, "TESTPV_MOVING"), planC.pool.excluded.TESTPV_MOVING);
 check("toujours au plus 7, sans doublon", planC.actions.length <= MAX && new Set(planC.actions.map((a) => a.opportunityId)).size === planC.actions.length);
 
 // Un mail chaud sur une petite affaire n'entre PAS dans le Plan : il reste dans le Bloc 1.
@@ -248,7 +251,7 @@ db.prepare(
 ).run("TESTPV_MSG", "TESTPV_THREAD", hoursAgo(1), tH.category, tH.reason, new Date(nowMs).toISOString());
 cleanup.messages.push("TESTPV_MSG");
 const planMail = buildMorningPlan(now);
-check("un mail chaud sur une affaire sans motif GMV n'entre pas dans le Plan", !planMail.actions.some((a) => a.opportunityId === "TESTPV_HOT") && !planMail.pool.keys.includes("affaire:TESTPV_HOT"));
+check("un mail chaud sur une affaire sans motif GMV n'entre pas dans le Plan", !planMail.actions.some((a) => a.opportunityId === "TESTPV_HOT") && !inPool(planMail, "TESTPV_HOT"));
 check("… il reste intégralement visible dans le Bloc 1", planMail.hot.some((e) => e.messageId === "TESTPV_MSG"));
 check("aucune ligne du Plan n'est un message (messageId nul)", planMail.actions.every((a) => a.messageId === null));
 
@@ -269,11 +272,23 @@ markActionDone(top.key, now);
 const p1 = buildMorningPlan(now);
 check("7. traitée : l'affaire disparaît pour la journée", !p1.actions.some((a) => a.key === top.key) && p1.doneToday >= 1);
 check("budget : traiter 1 affaire ne fait PAS remonter une 8e (au plus 6 restent)", p1.actions.length <= MAX - 1, `${p1.actions.length}`);
-const tomorrow = new Date(nowMs + DAY);
-const p2 = buildMorningPlan(tomorrow);
-check("8. le lendemain : jour vierge, et l'affaire revient si elle persiste", p2.doneToday === 0 && p2.actions.some((a) => a.key === top.key));
+// État PARTAGÉ (ActionKey versionnée par la SEMAINE) : une affaire traitée ne
+// revient pas le lendemain avec le même motif — elle serait aussi revenue dans
+// « Ma semaine ». Le budget, lui, repart à zéro chaque jour.
+const sameWeek = [1, -1].map((d) => new Date(nowMs + d * DAY)).find((d) => actionWeekStart(d) === actionWeekStart(now));
+const p2 = buildMorningPlan(sameWeek);
+check("8. le lendemain (même semaine) : jour vierge, et l'affaire traitée ne revient pas (même motif)", p2.doneToday === 0 && !p2.actions.some((a) => a.key === top.key) && !p2.actions.some((a) => a.opportunityId === top.opportunityId && a.reason === top.reason));
+const nextWeek = new Date(nowMs + 7 * DAY);
+const p3 = buildMorningPlan(nextWeek);
+const topNext = planActionKey(top.opportunityId, top.reason, actionWeekStart(nextWeek));
+check("8 bis. la semaine suivante : nouvelle ActionKey, ouverte (le traitement ne tue pas l'affaire)", topNext !== top.key && !treatedActions([topNext]).has(topNext) && p3.doneToday === 0);
+check("… et l'affaire revient si le motif persiste", p3.actions.some((a) => a.key === topNext) || !p3.pool.keys.includes(topNext), p3.pool.keys.includes(topNext) ? "motif persistant" : "motif disparu d'ici là (changement de mois)");
+
+// Chaque scénario suivant part d'un état partagé vierge (copie de travail).
+const resetShared = () => db.prepare("DELETE FROM action_state").run();
 
 {
+  resetShared();
   const day = new Date(nowMs + 2 * DAY);
   const p = buildMorningPlan(day);
   completeShownActions(p.actions, new Set(p.actions.map((a) => a.key)), day);
@@ -283,21 +298,23 @@ check("8. le lendemain : jour vierge, et l'affaire revient si elle persiste", p2
   insertOpportunity({ id: "TESTPV_URGENT", owner, gmv: 2_000_000, lastActivity: old });
   stall("TESTPV_URGENT", owner);
   const urgent = buildMorningPlan(day);
-  check("budget : une nouvelle urgence en cours de journée ne recrée AUCUNE place (elle est candidate, demain)", urgent.actions.length === 0 && urgent.pool.keys.includes("affaire:TESTPV_URGENT"));
+  check("budget : une nouvelle urgence en cours de journée ne recrée AUCUNE place (elle est candidate, demain)", urgent.actions.length === 0 && inPool(urgent, "TESTPV_URGENT"));
   check("le lendemain, elle peut entrer dans le Plan", buildMorningPlan(new Date(day.getTime() + DAY)).actions.some((a) => a.opportunityId === "TESTPV_URGENT"));
 }
 
 {
+  resetShared();
   const day = new Date(nowMs + 4 * DAY);
   const p = buildMorningPlan(day);
   const shown = p.actions.slice(0, p.actions.length - 1).map((a) => a.key);
   const hidden = p.pool.keys.find((k) => !p.actions.some((a) => a.key === k));
   const lastKey = p.actions[p.actions.length - 1].key;
-  completeShownActions(p.actions, new Set([...shown, hidden, "affaire:FANTOME"].filter(Boolean)), day);
+  completeShownActions(p.actions, new Set([...shown, hidden, "plan:FANTOME:securiser:2026-01-05"].filter(Boolean)), day);
   const done = doneActionKeys(day);
   check("« Tout traiter » : les affaires affichées sont traitées", shown.every((k) => done.has(k)));
   check("… une affaire non affichée ne l'est pas", !done.has(lastKey));
-  check("… ni une candidate hors Plan (8e), ni une clé inconnue", (hidden == null || !done.has(hidden)) && !done.has("affaire:FANTOME"));
+  check("… ni une candidate hors Plan (8e), ni une clé inconnue", (hidden == null || !done.has(hidden)) && !done.has("plan:FANTOME:securiser:2026-01-05"));
+  resetShared();
   const n = completeShownActions(buildMorningPlan(new Date(nowMs + 5 * DAY)).actions, null, new Date(nowMs + 5 * DAY));
   check("sans liste de clés (appel ancien), le Plan plafonné est traité tel quel", n <= MAX, `${n}`);
 }
@@ -314,7 +331,8 @@ section("E — Aucune tâche persistante, journal idempotent, migration additive
   check("le Plan et les gestes ne créent aucune table", tablesAfter.length === tablesBefore.length);
   // week_agenda_state : état hebdomadaire du planning de « Ma semaine » (lot de
   // simplification B), table additive — jamais écrite par le Plan du jour.
-  check("migration additive : seules morning_plan_log, monthly_objective et week_agenda_state peuvent s'ajouter à la base source", added.every((t) => ["morning_plan_log", "monthly_objective", "week_agenda_state"].includes(t)), added.join(", ") || "déjà présentes dans la source");
+  // action_state : état utilisateur PARTAGÉ des actions (ActionKey), table additive.
+  check("migration additive : seules morning_plan_log, monthly_objective, week_agenda_state et action_state peuvent s'ajouter à la base source", added.every((t) => ["morning_plan_log", "monthly_objective", "week_agenda_state", "action_state"].includes(t)), added.join(", ") || "déjà présentes dans la source");
   const cols = db.prepare("PRAGMA table_info(morning_plan_log)").all().map((c) => c.name);
   check("le journal n'a aucune colonne de statut, d'échéance, de report ou de rappel", !cols.some((c) => /status|statut|deadline|due|snooze|remind|rappel|echeance|report|backlog|done|traite/i.test(c)), cols.join(","));
   const walk = (dir, out = []) => {

@@ -54,7 +54,16 @@ export type OwnerAgendaInput = {
   reasons: AttentionReason[];
   momentum: { available: boolean; signed: number; up: number; down: number; stageChanges: number } | null;
   moves: AgendaMove[];
-  plan: { opportunityId: string; client: string; gmv: number; reason: MorningReason; impact: number; pMonthEnd: number | null }[];
+  plan: {
+    opportunityId: string;
+    client: string;
+    gmv: number;
+    reason: MorningReason;
+    impact: number;
+    pMonthEnd: number | null;
+    /** ActionKey du Plan du jour (`plan:…`) : la tâche EST cette action, partagée. */
+    actionKey?: string;
+  }[];
   challengers: { opportunityId: string; client: string; gmv: number; probability: number; expectedGmv: number }[];
   bigDeals: { opportunityId: string; client: string; gmv: number; objective: string; urgent: boolean }[];
 };
@@ -75,6 +84,13 @@ export type AgendaTask = {
   stake: number;
   opportunityId: string | null;
   client: string | null;
+  /**
+   * ActionKey de l'action source quand la tâche en reprend une existante
+   * ailleurs (Plan du jour) : son état traité / ouvert est alors l'état PARTAGÉ
+   * (`action-state`). Null pour un sujet purement managérial de Ma semaine, dont
+   * l'état reste dans `week_agenda_state`.
+   */
+  actionKey: string | null;
 };
 
 export type AgendaCard = {
@@ -151,6 +167,7 @@ export function tasksOf(input: OwnerAgendaInput, rules = WEEK_AGENDA): AgendaTas
       stake: p.impact,
       opportunityId: p.opportunityId,
       client: p.client,
+      actionKey: p.actionKey ?? null,
     });
   }
   for (const m of input.moves) {
@@ -164,6 +181,7 @@ export function tasksOf(input: OwnerAgendaInput, rules = WEEK_AGENDA): AgendaTas
         stake: -m.gmvDelta,
         opportunityId: m.opportunityId,
         client: m.client,
+        actionKey: null,
       });
     } else if (m.exitedM && (m.gmv ?? 0) >= rules.minGmvExit) {
       add({
@@ -175,6 +193,7 @@ export function tasksOf(input: OwnerAgendaInput, rules = WEEK_AGENDA): AgendaTas
         stake: m.gmv ?? 0,
         opportunityId: m.opportunityId,
         client: m.client,
+        actionKey: null,
       });
     } else if (m.enteredStandby && (m.gmv ?? 0) >= rules.minGmvStandby) {
       add({
@@ -186,6 +205,7 @@ export function tasksOf(input: OwnerAgendaInput, rules = WEEK_AGENDA): AgendaTas
         stake: m.gmv ?? 0,
         opportunityId: m.opportunityId,
         client: m.client,
+        actionKey: null,
       });
     }
   }
@@ -199,6 +219,7 @@ export function tasksOf(input: OwnerAgendaInput, rules = WEEK_AGENDA): AgendaTas
       stake: c.expectedGmv,
       opportunityId: c.opportunityId,
       client: c.client,
+      actionKey: null,
     });
   }
   for (const d of input.bigDeals) {
@@ -211,6 +232,7 @@ export function tasksOf(input: OwnerAgendaInput, rules = WEEK_AGENDA): AgendaTas
       stake: d.gmv * 0.3,
       opportunityId: d.opportunityId,
       client: d.client,
+      actionKey: null,
     });
   }
   // Sujets structurels : seulement quand le verdict appelle une intervention.
@@ -230,6 +252,7 @@ export function tasksOf(input: OwnerAgendaInput, rules = WEEK_AGENDA): AgendaTas
         stake: r.weight === "fort" ? 2 : 1,
         opportunityId: null,
         client: null,
+        actionKey: null,
       });
     }
   }
@@ -243,6 +266,7 @@ export function tasksOf(input: OwnerAgendaInput, rules = WEEK_AGENDA): AgendaTas
       stake: 0,
       opportunityId: null,
       client: null,
+      actionKey: null,
     });
   }
   return [...byDeal.values(), ...other].sort((a, b) => a.tier - b.tier || b.stake - a.stake || a.key.localeCompare(b.key));

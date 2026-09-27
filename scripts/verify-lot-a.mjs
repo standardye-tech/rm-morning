@@ -94,17 +94,21 @@ if (plan.actions.length > 0) {
   // Persistance : la clé doit survivre à une relecture complète de la base.
   check("l'état est persisté pour la journée", doneActionKeys().has(target.key));
 
-  // Portée quotidienne : une action cochée hier ne doit pas masquer celle
-  // d'aujourd'hui. On simule en repoussant la date de la ligne.
-  db.prepare("UPDATE morning_action_done SET done_on = '2000-01-01' WHERE action_key = ?").run(
+  // État PARTAGÉ (ActionKey versionnée par la semaine) : cochée un autre jour
+  // de la même semaine, l'action ne revient pas tant que son motif est le même
+  // — elle serait aussi revenue dans « Ma semaine ». Le budget du jour, lui,
+  // ne la compte plus. On simule en repoussant la date du geste.
+  db.prepare("UPDATE action_state SET treated_at = '2000-01-01T08:00:00.000Z' WHERE action_key = ?").run(
     target.key,
   );
   const tomorrow = buildMorningPlan();
   check(
-    "une action cochée un autre jour revient",
-    tomorrow.actions.some((a) => a.key === target.key),
-    "l'état porte bien sur la journée",
+    "une action cochée un autre jour de la semaine ne revient pas (même motif)",
+    !tomorrow.actions.some((a) => a.key === target.key),
+    "l'état porte sur l'action de la semaine",
   );
+  check("… et ne consomme plus le budget du jour", !doneActionKeys().has(target.key));
+  db.prepare("DELETE FROM action_state").run();
   db.prepare("DELETE FROM morning_action_done").run();
 }
 
@@ -315,7 +319,8 @@ for (const [scope, label, buildView] of [
 
   const emptied = buildView(null);
   check("la liste active revient à vide", emptied.items.length === 0, `${emptied.visibleCount} restant(s)`);
-  check("l'écran peut annoncer « Tout est traité »", emptied.readCount === emptied.activeCount);
+  // Lues ou traitées (état partagé, ex. attente acquittée dans le Morning).
+  check("l'écran peut annoncer « Tout est traité »", emptied.readCount + emptied.treatedCount === emptied.activeCount);
   check("la dernière lecture est datée", emptied.lastReadAt != null, emptied.lastReadAt ?? "—");
 
   const snapshots = db

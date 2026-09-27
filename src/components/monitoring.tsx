@@ -3,7 +3,7 @@ import { OPERATIONAL_LABEL, type LeadOperationalStatus } from "@/lib/lead-rules"
 import type { OwnerLeadMetrics, TeamLeadMetrics } from "@/lib/lead-metrics";
 import type { LeadMonitoringView } from "@/lib/monitoring-view";
 import { SortableTable } from "@/components/sortable-table";
-import { AllHandled, ChangeLine, LireButton, ToutLireButton } from "./monitoring-read";
+import { AllHandled, ChangeLine, LireButton, ToutLireButton, TraiteButton } from "./monitoring-read";
 import { Badge, Card, EmptyState, SectionTitle, Stat } from "./ui";
 
 const pct = (v: number | null) => (v == null ? "—" : `${Math.round(v * 100)} %`);
@@ -188,8 +188,9 @@ export function LeadTodo({ view, owner }: { view: LeadMonitoringView; owner: str
               {view.visibleCount} piste(s) à traiter
               {view.changedCount > 0 ? ` · ${view.changedCount} modifiée(s) depuis la lecture` : ""}
               {view.readCount > 0 ? ` · ${view.readCount} déjà lue(s)` : ""}
+              {view.treatedCount > 0 ? ` · ${view.treatedCount} traitée(s)` : ""}
             </span>
-            <ToutLireButton scope="piste" owner={owner} count={view.activeCount - view.readCount} />
+            <ToutLireButton scope="piste" owner={owner} count={view.activeCount - view.readCount - view.treatedCount} />
           </div>
         }
       />
@@ -208,6 +209,7 @@ export function LeadTodo({ view, owner }: { view: LeadMonitoringView; owner: str
                 <div className="flex shrink-0 items-center gap-3">
                   <p className="text-xs text-ink-soft">{lead.owner}</p>
                   <LireButton scope="piste" itemId={lead.leadId} />
+                  <TraiteButton scope="piste" itemId={lead.leadId} />
                 </div>
               </div>
               <div className="mt-1.5 flex flex-wrap items-center gap-2">

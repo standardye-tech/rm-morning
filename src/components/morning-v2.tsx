@@ -617,7 +617,8 @@ export function MorningBoard({
     setAcknowledged((s) => add(s, ids));
     setHandledAbove((s) => add(s, ids));
     start(async () => {
-      await post({ action: "tout_pris_en_compte", category });
+      // Seuls les messages affichés sont traités, un par un.
+      await post({ action: "tout_pris_en_compte", category, messageIds: ids });
     });
   };
 

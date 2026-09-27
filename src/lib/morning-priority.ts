@@ -22,6 +22,8 @@
  * jamais modifiée par un signal mail.
  */
 
+import { actionWeekStart, planActionKey } from "./action-keys";
+import { treatedActions } from "./action-state";
 import { ATTENTION, MORNING_PLAN, MORNING_PRIORITY } from "./config";
 import { parisDate } from "./business-time";
 import { buildExpectedGmvSnapshot } from "./expected-gmv-live";
@@ -110,6 +112,7 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
   const stability = loadStageStability(today);
   const visitById = new Map(loadMilestoneOpportunities().map((m) => [m.opportunityId, m.nextVisitAt]));
   const challengeById = new Map(board.examine.map((e) => [e.row.opportunityId, e]));
+  const week = actionWeekStart(now);
 
   // Dernier message entrant du client par affaire, acquitté ou non : c'est une
   // preuve de vie du client, pas une tâche.
@@ -162,7 +165,7 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
     const first = firstNameOf.get(row.owner) ?? row.owner.split(" ")[0];
     const reason = verdict.family;
     candidates.push({
-      key: `affaire:${id}`,
+      key: planActionKey(id, reason, week),
       reason,
       category: reason,
       source: reason === "bloque" ? "salesforce" : "forecast",
@@ -189,13 +192,19 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
   // RÈGLE VOLONTAIRE, à ne pas « corriger » : 7 affaires MAXIMUM PAR JOURNÉE
   // MÉTIER, traitées incluses. Le Plan du jour est un arbitrage du matin, pas une
   // file temps réel : une nouvelle urgence en cours de journée apparaît dans les
-  // Blocs 1 et 2, sans recréer de place dans le Plan. Demain, `doneActionKeys`
-  // est vide et le Plan repart de l'état courant. (Verrouillé par
+  // Blocs 1 et 2, sans recréer de place dans le Plan. Demain, le budget repart
+  // à zéro (`doneActionKeys` ne compte que le jour même). (Verrouillé par
   // `morning:plan-v2-verify`.)
+  //
+  // État PARTAGÉ (`action-state`) : une affaire traitée ici ou dans « Ma
+  // semaine » (même ActionKey) ne revient pas de la semaine tant que son motif
+  // ne change pas. Le budget compte ce qui a été traité AUJOURD'HUI, où que ce
+  // soit ; l'ancienne coche journalière (`affaire:…`) du jour reste honorée.
   const done = doneActionKeys(now);
+  const treated = treatedActions(candidates.map((a) => a.key));
   const actions = selectAffaires(
     candidates
-      .filter((a) => !done.has(a.key))
+      .filter((a) => !treated.has(a.key) && !done.has(`affaire:${a.opportunityId}`))
       .map((a) => ({ ...a, impact: a.score, gmv: a.gmv ?? 0 })),
     Math.max(0, MORNING_PLAN.maxSituations - done.size),
   ).map(({ impact, ...a }) => {

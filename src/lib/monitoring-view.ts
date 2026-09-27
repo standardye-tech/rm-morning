@@ -13,15 +13,26 @@
  * retirer ce qui a déjà été lu et n'a pas bougé, et attacher à chaque élément
  * restant ce qui a changé depuis.
  *
+ * LU ≠ TRAITÉ. « Lu » (`monitoring_read`) dit « j'ai vu cet état de la ligne » :
+ * c'est un acquittement de NOTIFICATION, porté par l'entité entière (piste ou
+ * opportunité) et par le cliché de ses champs. « Traité » dit « cette action
+ * est gérée » : c'est l'état PARTAGÉ de l'ActionKey de la ligne
+ * (`action-state`), le même que celui du Morning et de Ma semaine. Une ligne
+ * disparaît si elle est lue et inchangée OU si son action est traitée ; une
+ * lecture ne ferme jamais une action, et « Tout lire » ne traite rien.
+ *
  * PLAFOND D'AFFICHAGE ET PÉRIMÈTRE DE LECTURE, volontairement distincts :
  * l'écran ne montre qu'une dizaine de lignes pour rester lisible, mais
  * « Tout lire » acquitte tout le stock actif. Sinon la liste se remplirait
  * aussitôt avec la page suivante et ne pourrait jamais atteindre zéro.
  */
 
+import { leadActionKey, opportunityActionKey } from "./action-keys";
+import { treatAction, treatedActions } from "./action-state";
 import { LEAD_MONITORING, OPPORTUNITY_MONITORING } from "./config";
+import { MILESTONE_LABEL } from "./opportunity-milestones";
 import { buildLeadTodo, type TodoItem } from "./lead-metrics";
-import { loadLeads } from "./lead-store";
+import { loadLeads, type StoredLead } from "./lead-store";
 import {
   buildExceptionList,
   buildValueBlock,
@@ -50,6 +61,8 @@ export type MonitoringListState = {
   visibleCount: number;
   /** Éléments actifs masqués parce que lus et inchangés. */
   readCount: number;
+  /** Éléments actifs masqués parce que leur action est traitée (où que ce soit). */
+  treatedCount: number;
   /** Éléments actifs au total, tels que « Tout lire » les acquittera. */
   activeCount: number;
   /** Éléments revenus parce qu'une valeur a changé depuis la lecture. */
@@ -68,10 +81,12 @@ function stateOf(
   pending: { verdict: ReadVerdict }[],
   visibleCount: number,
   scope: "piste" | "opportunite",
+  treatedCount: number,
 ): MonitoringListState {
   return {
     visibleCount,
-    readCount: activeCount - pending.length,
+    readCount: activeCount - pending.length - treatedCount,
+    treatedCount,
     activeCount,
     changedCount: pending.filter((p) => p.verdict.status === "modifie").length,
     lastReadAt: lastReadAt(scope),
@@ -92,13 +107,15 @@ export function leadMonitoringView(
     "piste",
     all.map((t) => ({ id: t.lead.leadId, fields: leadFields(t.lead) })),
   );
-  const pending = all
+  const treated = treatedLeads(all.map((t) => t.lead));
+  const open = all.filter((t) => !treated.has(t.lead.leadId));
+  const pending = open
     .map((t) => ({ ...t, verdict: verdicts.get(t.lead.leadId)! }))
     .filter((t) => t.verdict.status !== "lu");
 
   return {
     items: pending.slice(0, limit),
-    ...stateOf(all.length, pending, Math.min(pending.length, limit), "piste"),
+    ...stateOf(all.length, pending, Math.min(pending.length, limit), "piste", all.length - open.length),
   };
 }
 
@@ -109,6 +126,20 @@ export function leadReadTargets(ownerFilter: string | null): { id: string; field
     id: t.lead.leadId,
     fields: leadFields(t.lead),
   }));
+}
+
+/** Pistes dont l'action courante est traitée (état partagé). */
+function treatedLeads(leads: StoredLead[]): Set<string> {
+  const keyOf = new Map(leads.map((l) => [l.leadId, leadActionKey(l)]));
+  const treated = treatedActions(keyOf.values());
+  return new Set([...keyOf].filter(([, k]) => treated.has(k)).map(([id]) => id));
+}
+
+/** Opportunités dont l'action courante est traitée (état partagé, Bloc 2 compris). */
+function treatedOpportunities(opportunities: MilestoneOpportunity[]): Set<string> {
+  const keyOf = new Map(opportunities.map((o) => [o.opportunityId, opportunityActionKey(o)]));
+  const treated = treatedActions(keyOf.values());
+  return new Set([...keyOf].filter(([, k]) => treated.has(k)).map(([id]) => id));
 }
 
 // --- Opportunités ---------------------------------------------------------
@@ -147,16 +178,20 @@ export function opportunityMonitoringView(
     scope.union.map((o) => ({ id: o.opportunityId, fields: opportunityFields(o) })),
   );
 
+  const treated = treatedOpportunities(scope.union);
   const pendingValue = scope.value
+    .filter((v) => !treated.has(v.opportunity.opportunityId))
     .map((v) => ({ ...v, verdict: verdicts.get(v.opportunity.opportunityId)! }))
     .filter((v) => v.verdict.status !== "lu");
   const pendingExceptions = scope.exceptions
+    .filter((o) => !treated.has(o.opportunityId))
     .map((o) => ({ opportunity: o, verdict: verdicts.get(o.opportunityId)! }))
     .filter((e) => e.verdict.status !== "lu");
 
   // L'état affiché porte sur l'UNION : c'est le périmètre que « Tout lire »
   // acquitte, et le compteur doit décrire ce que le bouton va faire.
   const pendingUnion = scope.union
+    .filter((o) => !treated.has(o.opportunityId))
     .map((o) => ({ verdict: verdicts.get(o.opportunityId)! }))
     .filter((v) => v.verdict.status !== "lu");
 
@@ -168,6 +203,7 @@ export function opportunityMonitoringView(
       pendingUnion,
       Math.min(pendingValue.length, limit),
       "opportunite",
+      treated.size,
     ),
   };
 }
@@ -221,6 +257,46 @@ export function markItemRead(scope: "piste" | "opportunite", itemId: string, now
   return true;
 }
 
+// --- Geste « Traité » -------------------------------------------------------
+
+/**
+ * Traite l'action COURANTE d'une ligne — et seulement elle.
+ *
+ * L'ActionKey est recalculée depuis la base au moment du geste, jamais reçue du
+ * navigateur : c'est l'anomalie telle qu'elle est maintenant. Une ligne qui
+ * n'est plus une anomalie du Monitoring ne fait rien. Rien n'est lu ni écrit
+ * dans Salesforce ; `monitoring_read` n'est pas touché (traiter ≠ lire).
+ *
+ * « Répondre au client » porte la clé du message du Bloc 2 : le traiter ici
+ * l'acquitte dans le Morning, sans rien changer à la réalité de l'attente.
+ */
+export function treatItem(scope: "piste" | "opportunite", itemId: string, now = new Date()): boolean {
+  if (scope === "piste") {
+    const todo = buildLeadTodo(loadLeads().filter((l) => l.leadId === itemId), ALL)[0];
+    if (!todo) return false;
+    return treatAction(
+      {
+        key: leadActionKey(todo.lead),
+        surface: "monitoring_piste",
+        owner: todo.lead.owner,
+        label: `${todo.lead.name ?? todo.lead.leadId} — ${todo.reason}`,
+      },
+      now,
+    );
+  }
+  const o = opportunityScope(null).union.find((x) => x.opportunityId === itemId);
+  if (!o) return false;
+  return treatAction(
+    {
+      key: opportunityActionKey(o),
+      surface: "monitoring_opportunite",
+      owner: o.owner,
+      label: `${o.client ?? o.opportunityId} — ${MILESTONE_LABEL[o.milestoneStatus]}`,
+    },
+    now,
+  );
+}
+
 // --- Cloche de navigation ---------------------------------------------------
 
 export type MonitoringUnreadCounts = { fresh: number; legacy: number };
@@ -248,7 +324,10 @@ export function monitoringUnreadCounts(): MonitoringUnreadCounts {
     "piste",
     leadTodos.map((t) => ({ id: t.lead.leadId, fields: leadFields(t.lead) })),
   );
+  // Une action traitée ne sonne plus, où qu'elle ait été traitée.
+  const leadTreated = treatedLeads(leadTodos.map((t) => t.lead));
   for (const t of leadTodos) {
+    if (leadTreated.has(t.lead.leadId)) continue;
     if (leadVerdicts.get(t.lead.leadId)?.status === "lu") continue;
     if (t.lead.isLegacy) legacy += 1;
     else fresh += 1;
@@ -259,7 +338,9 @@ export function monitoringUnreadCounts(): MonitoringUnreadCounts {
     "opportunite",
     union.map((o) => ({ id: o.opportunityId, fields: opportunityFields(o) })),
   );
+  const oppTreated = treatedOpportunities(union);
   for (const o of union) {
+    if (oppTreated.has(o.opportunityId)) continue;
     if (oppVerdicts.get(o.opportunityId)?.status === "lu") continue;
     if (o.isLegacy) legacy += 1;
     else fresh += 1;

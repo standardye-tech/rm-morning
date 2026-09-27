@@ -19,8 +19,9 @@ import {
   type AttentionVerdict,
   type Recommendation,
 } from "./attention";
+import { actionWeekStart } from "./action-keys";
 import { bigDealTitle, detectBigDeals, type BigDeal, type BigDealCandidate } from "./big-deals";
-import { ATTENTION, BIG_DEALS, DEAL_OF_WEEK_ANGLES, RADAR, WEEK_SLOTS, WEEK_VIEW } from "./config";
+import { ATTENTION, BIG_DEALS, DEAL_OF_WEEK_ANGLES, RADAR, WEEK_SLOTS } from "./config";
 import {
   recommend,
   type RecommendationCandidate,
@@ -35,8 +36,8 @@ import {
 import { buildForecastV2 } from "./forecast-v2";
 import { computeMetrics, daysSinceActivity } from "./metrics";
 import { computeOpportunityMetrics, loadMilestoneOpportunities } from "./opportunity-metrics";
-import { parisDate, parisWeekday } from "./business-time";
-import { daysBetween, mondayOf, stageRank, todayIso } from "./normalize";
+import { parisDate } from "./business-time";
+import { daysBetween, stageRank, todayIso } from "./normalize";
 import { buildPerformanceBoard } from "./performance";
 import { listRadarContacts, radarInterviews, radarToProcess, type RadarContact } from "./radar-store";
 import { latestImport, loadOpportunities } from "./repository";
@@ -129,10 +130,8 @@ function addDays(iso: string, days: number): string {
 
 /** Semaine affichée : la courante jusqu'au vendredi, la suivante dès le samedi. */
 export function weekBounds(now: Date): { weekStart: string; weekEnd: string; weekLabel: string } {
-  const today = parisDate(now);
-  const dow = parisWeekday(now);
-  let weekStart = mondayOf(today);
-  if (dow >= WEEK_VIEW.switchToNextFromDay) weekStart = addDays(weekStart, 7);
+  // Même semaine que celle des ActionKeys du Plan : les deux ne peuvent diverger.
+  const weekStart = actionWeekStart(now);
   const weekEnd = addDays(weekStart, 4);
   const start = new Date(`${weekStart}T00:00:00`);
   const end = new Date(`${weekEnd}T00:00:00`);

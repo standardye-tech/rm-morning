@@ -25,6 +25,8 @@ export async function POST(request: Request) {
     category?: string;
     /** Clés des situations que le navigateur affiche : « Tout traiter » ne va pas au-delà. */
     keys?: string[];
+    /** Messages que le navigateur affiche dans le bloc : même règle pour « Tout traiter ». */
+    messageIds?: string[];
   };
 
   switch (body.action) {
@@ -43,7 +45,10 @@ export async function POST(request: Request) {
       // considère ouvert à cet instant, pas ce qu'un onglet affichait.
       const category =
         body.category === "chaud" || body.category === "attente" ? body.category : null;
-      const result = acknowledgeAllEvents(category);
+      const shown = Array.isArray(body.messageIds)
+        ? new Set(body.messageIds.filter((k): k is string => typeof k === "string"))
+        : null;
+      const result = acknowledgeAllEvents(category, new Date(), shown);
       return NextResponse.json({ ok: true, ...result });
     }
     case "action_faite": {
@@ -54,6 +59,8 @@ export async function POST(request: Request) {
       // seul : l'action du plan est faite POUR AUJOURD'HUI, et le message qui
       // l'a déclenchée — quand il y en a un — est acquitté DÉFINITIVEMENT.
       // C'est exactement le comportement des blocs 1 et 2 sur ce message.
+      // L'action est l'ActionKey PARTAGÉE du Plan : la tâche correspondante de
+      // « Ma semaine » est traitée du même geste, sans écriture de plus.
       const done = markActionDone(body.actionKey);
       if (body.messageId) acknowledgeEvent(body.messageId);
       return NextResponse.json({ ok: true, changed: done });

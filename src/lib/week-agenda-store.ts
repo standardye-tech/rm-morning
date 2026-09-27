@@ -13,9 +13,17 @@
  * base, la nouvelle est recalculée. Aucun backlog, aucune échéance.
  */
 
+import { restoreAction, treatAction } from "./action-state";
 import { getDb } from "./db";
 
-export type AgendaDone = { key: string; owner: string | null; label: string; doneAt: string };
+export type AgendaDone = {
+  key: string;
+  owner: string | null;
+  label: string;
+  doneAt: string;
+  /** ActionKey partagée quand le sujet reprend une action existante ailleurs (Plan du jour). */
+  actionKey: string | null;
+};
 export type AgendaPlacement = { owner: string; day: number; time: string | null };
 
 const TASK = "task:";
@@ -32,7 +40,7 @@ export function loadAgendaState(weekStart: string): { done: AgendaDone[]; placem
   const placements: AgendaPlacement[] = [];
   for (const r of rows) {
     if (r.kind === "done" && r.item_key.startsWith(TASK)) {
-      done.push({ key: r.item_key.slice(TASK.length), owner: r.owner, label: r.label ?? "", doneAt: r.updated_at });
+      done.push({ key: r.item_key.slice(TASK.length), owner: r.owner, label: r.label ?? "", doneAt: r.updated_at, actionKey: null });
     } else if (r.kind === "placed" && r.item_key.startsWith(PLACE) && r.value) {
       const parsed = parseSlotValue(r.value);
       if (parsed) placements.push({ owner: r.item_key.slice(PLACE.length), ...parsed });
@@ -65,6 +73,29 @@ export function markAgendaTaskDone(
     )
     .run(weekStart, TASK + task.key, task.owner, task.label, now.toISOString());
   return Number(r.changes) > 0;
+}
+
+/**
+ * Coche un sujet. S'il reprend une action existante ailleurs (ActionKey, Plan
+ * du jour), c'est l'état PARTAGÉ qui est écrit : l'action disparaît aussi du
+ * Plan. Un sujet purement managérial reste dans l'état hebdomadaire.
+ */
+export function checkAgendaTask(
+  weekStart: string,
+  task: { key: string; owner: string; label: string; actionKey: string | null },
+  now = new Date(),
+): boolean {
+  if (task.actionKey) {
+    return treatAction({ key: task.actionKey, surface: "semaine", owner: task.owner, label: task.label }, now);
+  }
+  return markAgendaTaskDone(weekStart, task, now);
+}
+
+/** Rétablit un sujet terminé : l'action partagée est rouverte partout. */
+export function restoreAgendaTask(weekStart: string, entry: { key: string; actionKey: string | null }): boolean {
+  const local = undoAgendaTask(weekStart, entry.key);
+  const shared = entry.actionKey ? restoreAction(entry.actionKey) : false;
+  return local || shared;
 }
 
 export function undoAgendaTask(weekStart: string, key: string): boolean {

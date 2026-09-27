@@ -124,7 +124,7 @@ export type MorningSource = "gmail" | "forecast" | "salesforce";
  * Une ligne du Plan = UNE affaire (un OpportunityId).
  */
 export type MorningAction = {
-  /** `affaire:<OpportunityId>` : stable pour une affaire, quelle que soit sa famille. */
+  /** ActionKey `plan:<OpportunityId>:<motif>:<semaine>` (voir `action-keys.ts`) : partagée avec « Ma semaine ». */
   key: string;
   reason: MorningReason;
   /** Famille de l'affaire (identique à `reason`). */

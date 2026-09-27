@@ -98,10 +98,13 @@ check(
   "toutes les anomalies sont non lues juste après la réinitialisation",
   leadViewBefore.readCount === 0 && oppViewBefore.readCount === 0,
 );
+// État partagé des actions : une ligne dont l'action est déjà traitée
+// ailleurs (ex. message « attente » acquitté dans le Morning) ne sonne plus.
+const openOf = (v) => v.activeCount - v.treatedCount;
 check(
-  "le total de la cloche = actif non lu des deux périmètres (pistes + opportunités)",
-  countsBefore.fresh + countsBefore.legacy === leadViewBefore.activeCount + oppViewBefore.activeCount,
-  `cloche ${countsBefore.fresh}+${countsBefore.legacy} · vues ${leadViewBefore.activeCount}+${oppViewBefore.activeCount}`,
+  "le total de la cloche = actif non lu et non traité des deux périmètres (pistes + opportunités)",
+  countsBefore.fresh + countsBefore.legacy === openOf(leadViewBefore) + openOf(oppViewBefore),
+  `cloche ${countsBefore.fresh}+${countsBefore.legacy} · vues ${openOf(leadViewBefore)}+${openOf(oppViewBefore)} · traitées ${leadViewBefore.treatedCount}+${oppViewBefore.treatedCount}`,
 );
 
 const leadAInView = leadViewBefore.items.some((i) => i.lead.leadId === LEAD_A);
@@ -219,14 +222,15 @@ const leadReadCount = markScopeRead("piste", null);
 check("« Tout lire » pistes a acquitté au moins la piste B restante", leadReadCount >= 1, `${leadReadCount} ligne(s)`);
 check(
   "plus aucune piste active non lue après « Tout lire »",
-  leadMonitoringView(null).activeCount === leadMonitoringView(null).readCount,
+  leadMonitoringView(null).activeCount === leadMonitoringView(null).readCount + leadMonitoringView(null).treatedCount,
 );
 
 const oppReadCount = markScopeRead("opportunite", null);
 check("« Tout lire » opportunités s'exécute sans erreur", typeof oppReadCount === "number");
 check(
   "plus aucune opportunité active non lue après « Tout lire »",
-  opportunityMonitoringView(null).activeCount === opportunityMonitoringView(null).readCount,
+  opportunityMonitoringView(null).activeCount ===
+    opportunityMonitoringView(null).readCount + opportunityMonitoringView(null).treatedCount,
 );
 
 const countsFinal = monitoringUnreadCounts();

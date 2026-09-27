@@ -711,6 +711,31 @@ CREATE TABLE IF NOT EXISTS week_agenda_state (
   PRIMARY KEY (week_start, item_key)
 );
 
+-- État UTILISATEUR partagé d'une action métier (ActionKey, voir
+-- action-keys.ts) : « Sami la considère gérée », quelle que soit la surface
+-- du geste (Plan du jour, Monitoring, Ma semaine). Toutes les surfaces lisent
+-- CETTE ligne : aucune ne met à jour les autres.
+--
+-- Ce n'est PAS la réalité métier : une attente client, une anomalie
+-- Salesforce restent vraies dans leurs tables sources. Les actions nées d'un
+-- message (mail:…) ne vivent pas ici : morning_event.status porte déjà
+-- leur état, message par message.
+--
+-- Rétablir ne supprime rien : la ligne repasse « ouvert », avec sa date.
+CREATE TABLE IF NOT EXISTS action_state (
+  action_key  TEXT PRIMARY KEY,
+  source_type TEXT NOT NULL,
+  status      TEXT NOT NULL,
+  surface     TEXT NOT NULL,
+  owner       TEXT,
+  label       TEXT,
+  treated_at  TEXT,
+  restored_at TEXT,
+  updated_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_action_state_status ON action_state (status, treated_at);
+
 -- Journal du Plan du jour : ce que RM Morning a RECOMMANDÉ, à quel rang, pour
 -- quel montant. Un carnet d'observation, PAS un gestionnaire de tâches : aucune
 -- colonne de statut, d'échéance, de report ni de rappel, et rien ne le relit

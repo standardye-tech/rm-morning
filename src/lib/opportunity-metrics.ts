@@ -81,6 +81,12 @@ export type MilestoneOpportunity = {
   milestoneReason: string | null;
   latenessHours: number;
   clientWaiting: boolean;
+  /**
+   * Message « attente » canonique de l'affaire (`canonicalClientAttend`), quand
+   * il existe : il fonde l'action « Répondre au client », partagée avec le
+   * Bloc 2. Projection à la lecture, jamais écrite en base.
+   */
+  waitingMessageId: string | null;
   isLegacy: boolean;
 };
 
@@ -118,6 +124,7 @@ function withCanonicalClientAttend(
   if (attente && !OUTRANKS_CLIENT_ATTEND.includes(o.milestoneStatus)) {
     return {
       ...o,
+      waitingMessageId: attente.messageId,
       milestoneStatus: "client_attend",
       milestoneReason: `dernier message client le ${fmt(attente.sentAt)}, sans réponse constatée`,
       clientWaiting: true,
@@ -150,7 +157,7 @@ function withCanonicalClientAttend(
     };
   }
 
-  return o;
+  return attente ? { ...o, waitingMessageId: attente.messageId } : o;
 }
 
 export function loadMilestoneOpportunities(): MilestoneOpportunity[] {
@@ -192,6 +199,7 @@ export function loadMilestoneOpportunities(): MilestoneOpportunity[] {
         milestoneReason: r.milestone_reason as string | null,
         latenessHours: Number(r.milestone_lateness_hours ?? 0),
         clientWaiting: Number(r.client_waiting) === 1,
+        waitingMessageId: null,
         isLegacy: Number(r.milestone_is_legacy) === 1,
       }),
     )
