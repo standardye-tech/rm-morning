@@ -76,6 +76,7 @@ export const LABEL = {
   momentumTitle: "Momentum 7 jours",
   momentumSubtitle: "Dynamique commerciale observée sur les 7 derniers jours",
   momentumSigned: "Signé cette semaine",
+  momentumSignedDown: "Moins-values signées (avenants négatifs, annulations)",
   momentumEnteredM: "Affaires avancées sur ce mois",
   momentumExitedM: "Affaires repoussées hors de ce mois",
   momentumGmvUp: "Montants revus à la hausse",

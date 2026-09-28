@@ -310,7 +310,7 @@ section("LECTURE EN PHRASES — pluriels, ordre, zéros regroupés");
     ...ids(3, "E").map((id) => delta({ opportunityId: id, stageChange: { from: "A", to: "B" } })),
   ]);
   const texts = movementsOf(o).map((m) => m.text);
-  check("singulier : « 1 affaire signée · 32 k€ »", texts[0] === "1 affaire signée · 32 k€", texts[0]);
+  check("signé positif seul : « GMV signé sur 7 jours · +32 k€ »", texts[0] === "GMV signé sur 7 jours · +32 k€", texts[0]);
   check("pluriel : « 4 affaires revues à la hausse · +73 k€ »", texts[1] === "4 affaires revues à la hausse · +73 k€", texts[1]);
   check("baisse : « 1 affaire revue à la baisse · −166 k€ »", texts[2] === "1 affaire revue à la baisse · −166 k€", texts[2]);
   check("étapes : « 3 affaires ont changé d’étape »", texts[3] === "3 affaires ont changé d’étape", texts[3]);
@@ -337,6 +337,53 @@ section("LECTURE EN PHRASES — pluriels, ordre, zéros regroupés");
     mixed.join(" | "),
   );
   check("aucun mouvement : aucune phrase", movementsOf(aggregateOwnerMomentum("Test Commercial", [])).length === 0);
+}
+
+// ────────────────────────────────────────────────────────────────────────
+section("SIGNÉ TRAVAUX — une ligne signée n'est pas une « affaire signée »");
+
+{
+  // Montants réels de la fenêtre du 21/09 au 28/09/2026 (audit du 28/09).
+  const signedOnly = (lines) =>
+    aggregateOwnerMomentum(
+      "Test Commercial",
+      lines.map(([id, gmv]) => delta({ opportunityId: id, signed: { gmv, signatureDate: "2026-09-22" } })),
+    );
+  const phrases = (o) => movementsOf(o).map((m) => `${m.tone}:${m.text}`);
+
+  const valentin = signedOnly([["006WALBERT", -1036.57]]);
+  const v = phrases(valentin);
+  check("Valentin (WALBERT −1 036,57 €) : « Moins-value signée · −1 k€ », en baisse", v.length === 1 && v[0] === "down:Moins-value signée · −1 k€", v.join(" | "));
+  check("jamais « affaire signée » pour une ligne négative", v.every((t) => !t.includes("affaire signée")));
+
+  const anthony = phrases(signedOnly([["006STARKMAN", -157.92]]));
+  check("petit montant (STARKMAN −157,92 €) : « −158 € », jamais « 0 k€ »", anthony[0] === "down:Moins-value signée · −158 €", anthony.join(" | "));
+
+  const fontaine = phrases(signedOnly([["006BAUMANN", -1902.64]]));
+  check("Fontaine (BAUMANN −1 902,64 €) : « Moins-value signée · −2 k€ »", fontaine[0] === "down:Moins-value signée · −2 k€", fontaine.join(" | "));
+
+  const mixed = phrases(signedOnly([["006CHARVILLAT", 32_090.2], ["006PAROT", -1466.07], ["006SABOURAUD", -255]]));
+  check(
+    "coexistence : « GMV signé positif · +32 k€ » et « Moins-values signées · −2 k€ », séparés",
+    mixed.join(" | ") === "up:GMV signé positif · +32 k€ | down:Moins-values signées · −2 k€",
+    mixed.join(" | "),
+  );
+
+  const small = phrases(signedOnly([["006LEBIHAN", 278]]));
+  check("petit positif : « GMV signé sur 7 jours · +278 € »", small[0] === "up:GMV signé sur 7 jours · +278 €", small.join(" | "));
+
+  const nul = signedOnly([["006NUL", 0]]);
+  check("total nul sur la fenêtre : aucune phrase de signé", movementsOf(nul).length === 0, phrases(nul).join(" | "));
+  check("une moins-value n'affiche pas « Aucun GMV signé »", !quietOf(valentin).includes("Aucun GMV signé"));
+
+  // La note ne dépend PAS de la formulation : la moins-value reste pénalisante.
+  const sv = momentumScore(valentin);
+  check("note Valentin inchangée : impact −1 036,57 €, 10/20 au demi-point", sv.impact === -1036.57 && sv.score === 10, `${sv.impact} -> ${sv.score}`);
+  const sa = momentumScore(signedOnly([["006STARKMAN", -157.92]]));
+  check("note Anthony (STARKMAN seul) : impact −157,92 €, pénalité conservée", sa.impact === -157.92 && sa.score === 10, `${sa.impact} -> ${sa.score}`);
+  const sm = momentumScore(signedOnly([["006CHARVILLAT", 32_090.2], ["006PAROT", -1466.07], ["006SABOURAUD", -255]]));
+  check("note mixte : impact = somme signée nette (30 369 €) -> 13/20", Math.round(sm.impact) === 30_369 && sm.score === 13, `${sm.impact} -> ${sm.score}`);
+  check("le compteur factuel `signed` reste celui du moteur (3 opportunités, net)", signedOnly([["006CHARVILLAT", 32_090.2], ["006PAROT", -1466.07], ["006SABOURAUD", -255]]).signed.count === 3);
 }
 
 console.log(`\n  ${failures === 0 ? "Tous les contrôles passent." : `${failures} contrôle(s) en échec.`}\n`);

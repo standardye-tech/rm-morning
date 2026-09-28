@@ -12,7 +12,7 @@ import {
   type OwnerMomentum,
   type SelectedChange,
 } from "@/lib/since-last-snapshot";
-import { affaires, movementsOf, quietOf, type Tone } from "@/lib/momentum-wording";
+import { affaires, montant, movementsOf, quietOf, type Tone } from "@/lib/momentum-wording";
 import { kEur, LABEL } from "@/lib/vocabulary";
 
 /**
@@ -172,7 +172,8 @@ function moveReason(item: SelectedChange): string | null {
   const d = item.delta;
   switch (item.primaryCategory) {
     case "signed":
-      return "signé";
+      // Une ligne Travaux négative (avenant en moins-value, annulation) n'est pas une signature.
+      return (d.signed?.gmv ?? 0) < 0 ? "moins-value signée" : "GMV signé";
     case "kanban":
       return d.kanbanChange?.enteredM
         ? `entré dans ${d.kanbanChange.toLabel}`
@@ -198,7 +199,7 @@ function TopMoveLine({ item }: { item: SelectedChange }) {
       {reason ? <span className="text-ink-faint"> · {reason}</span> : null}
       <span className="tabular ml-1 font-medium">
         {sign}
-        {kEur(amount)}
+        {montant(amount)}
       </span>
     </li>
   );
