@@ -32,6 +32,7 @@ const { loadOpportunities } = await import(lib("repository"));
 const { parisDate } = await import(lib("business-time"));
 const { ATTENTION } = await import(lib("config"));
 const { loadTeam } = await import(lib("team-store"));
+const { movementsOf, quietOf } = await import(lib("momentum-wording"));
 
 let failures = 0;
 const check = (label, ok, detail = "") => {
@@ -295,6 +296,47 @@ section("NOTE DE MOMENTUM /20 (lot de simplification C)");
   check("deux affaires distinctes : chacune garde sa contribution (30 + 20 k€)", Math.round(deux.impact) === 50_000);
   const agr = aggregateOwnerMomentum("Test Commercial", [delta({ gmv: 50_000, signed: { gmv: 50_000, signatureDate: "2026-09-20" }, kanbanChange: { fromLabel: "Oct.", toLabel: "Sept.", enteredM: true, exitedM: false } })]);
   check("le tableau factuel garde toutes les dimensions (signé ET entrée dans M)", agr.signed.count === 1 && agr.enteredM.count === 1);
+}
+
+// ────────────────────────────────────────────────────────────────────────
+section("LECTURE EN PHRASES — pluriels, ordre, zéros regroupés");
+
+{
+  const ids = (n, prefix) => Array.from({ length: n }, (_, i) => `006${prefix}${i}`);
+  const o = aggregateOwnerMomentum("Test Commercial", [
+    delta({ opportunityId: "006S0", signed: { gmv: 32_000, signatureDate: "2026-09-20" } }),
+    ...ids(4, "U").map((id) => delta({ opportunityId: id, gmvChange: { from: 100_000, to: 118_250, delta: 18_250, suspicious: false } })),
+    delta({ opportunityId: "006D0", gmvChange: { from: 266_000, to: 100_000, delta: -166_000, suspicious: false } }),
+    ...ids(3, "E").map((id) => delta({ opportunityId: id, stageChange: { from: "A", to: "B" } })),
+  ]);
+  const texts = movementsOf(o).map((m) => m.text);
+  check("singulier : « 1 affaire signée · 32 k€ »", texts[0] === "1 affaire signée · 32 k€", texts[0]);
+  check("pluriel : « 4 affaires revues à la hausse · +73 k€ »", texts[1] === "4 affaires revues à la hausse · +73 k€", texts[1]);
+  check("baisse : « 1 affaire revue à la baisse · −166 k€ »", texts[2] === "1 affaire revue à la baisse · −166 k€", texts[2]);
+  check("étapes : « 3 affaires ont changé d’étape »", texts[3] === "3 affaires ont changé d’étape", texts[3]);
+  check("ordre : hausses, puis baisses, puis neutre", movementsOf(o).map((m) => m.tone).join(",") === "up,up,down,neutral");
+  const quiet = quietOf(o).join(" · ");
+  check(
+    "zéros regroupés en une ligne secondaire",
+    quiet === "Aucune affaire avancée ou repoussée sur le mois · Aucune mise en pause / réactivation",
+    quiet,
+  );
+
+  const mixed = movementsOf(
+    aggregateOwnerMomentum("Test Commercial", [
+      ...ids(2, "R").map((id) => delta({ opportunityId: id, standbyChange: { enteredStandby: false } })),
+      delta({ opportunityId: "006P0", standbyChange: { enteredStandby: true } }),
+      delta({ opportunityId: "006X0", gmv: 55_000, kanbanChange: { fromLabel: "Sept.", toLabel: "Oct.", enteredM: false, exitedM: true } }),
+      delta({ opportunityId: "006X1", gmv: 86_000, kanbanChange: { fromLabel: "Oct.", toLabel: "Sept.", enteredM: true, exitedM: false } }),
+    ]),
+  ).map((m) => m.text);
+  check("« 2 affaires réactivées » et « 1 affaire mise en pause »", mixed.includes("2 affaires réactivées") && mixed.includes("1 affaire mise en pause"), mixed.join(" | "));
+  check(
+    "« 1 affaire avancée sur ce mois · 86 k€ » et « 1 affaire repoussée hors de ce mois · 55 k€ »",
+    mixed.includes("1 affaire avancée sur ce mois · 86 k€") && mixed.includes("1 affaire repoussée hors de ce mois · 55 k€"),
+    mixed.join(" | "),
+  );
+  check("aucun mouvement : aucune phrase", movementsOf(aggregateOwnerMomentum("Test Commercial", [])).length === 0);
 }
 
 console.log(`\n  ${failures === 0 ? "Tous les contrôles passent." : `${failures} contrôle(s) en échec.`}\n`);

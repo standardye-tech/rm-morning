@@ -12,6 +12,7 @@ import {
   type OwnerMomentum,
   type SelectedChange,
 } from "@/lib/since-last-snapshot";
+import { affaires, movementsOf, quietOf, type Tone } from "@/lib/momentum-wording";
 import { kEur, LABEL } from "@/lib/vocabulary";
 
 /**
@@ -46,6 +47,7 @@ export function MomentumBlock({
         title={LABEL.momentumTitle}
         aside={formatMomentumWindow(momentum.window)}
       />
+      <p className="px-4 pt-2.5 text-xs text-ink-faint md:px-6">{LABEL.momentumSubtitle}</p>
       {!momentum.window.available ? (
         <EmptyState>Pas assez de recul pour mesurer un momentum sur cette période.</EmptyState>
       ) : (
@@ -68,7 +70,7 @@ export function MomentumBlock({
             ))}
           </ul>
           <details className="border-t border-line px-4 py-2.5 text-xs text-ink-faint md:px-6">
-            <summary className="cursor-pointer list-none underline decoration-dotted">Comment se calcule la note de momentum /20 ?</summary>
+            <summary className="cursor-pointer list-none underline decoration-dotted">Comment est calculée cette note ?</summary>
             <p className="mt-1.5 leading-relaxed">
               Une synthèse de la dynamique business observable des 7 derniers jours — pas une note de compétence, ni
               une note RH, ni une performance annuelle. Impact = signé + ½ × (entrées dans M − sorties de M) + ½ ×
@@ -79,7 +81,7 @@ export function MomentumBlock({
             </p>
           </details>
           <p className="border-t border-line px-4 py-2.5 text-xs text-ink-faint md:px-6">
-            {momentum.totalOpportunitiesTouched} affaire(s) touchée(s) sur la période, tous commerciaux confondus.
+            {affaires(momentum.totalOpportunitiesTouched, "touchée")} sur la période, tous commerciaux confondus.
           </p>
         </>
       )}
@@ -87,44 +89,51 @@ export function MomentumBlock({
   );
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <span className="text-xs">
-      <span className="text-ink-faint">{label}</span>{" "}
-      <span className="tabular font-medium text-ink">{value}</span>
-    </span>
-  );
-}
+const TONE: Record<Tone, { dot: string; text: string }> = {
+  up: { dot: "bg-positive", text: "text-ink" },
+  down: { dot: "bg-warning", text: "text-ink" },
+  neutral: { dot: "bg-line-strong", text: "text-ink-soft" },
+};
 
 function OwnerRow({ owner, score }: { owner: OwnerMomentum; score: MomentumScore }) {
   const detail = score.parts
     .filter((p) => p.value !== 0)
     .map((p) => `${p.label} ${p.value > 0 ? "+" : "−"}${kEur(Math.abs(p.value))}`)
     .join(" · ");
+  const movements = movementsOf(owner);
+  const quiet = quietOf(owner);
   return (
-    <li className="px-4 py-2.5 md:px-6">
-      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+    <li className="px-4 py-3 md:px-6">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5">
         <Link
           href={`/performance?commercial=${encodeURIComponent(owner.owner)}`}
-          className="w-40 shrink-0 text-sm font-medium underline decoration-dotted underline-offset-2"
+          className="text-sm font-medium underline decoration-dotted underline-offset-2"
         >
           {owner.owner}
         </Link>
         <span
-          className="tabular w-32 shrink-0 text-sm"
+          className="tabular text-sm"
           title={`Impact pondéré ${score.impact >= 0 ? "+" : "−"}${kEur(Math.abs(score.impact))}${detail ? ` (${detail})` : " (aucun mouvement)"}`}
         >
-          <span className="text-ink-faint">Momentum : </span>
-          <span className="font-semibold">{String(score.score).replace(".", ",")}/20</span>
+          <span className="text-ink-faint">{LABEL.momentumTitle} : </span>
+          <span className="text-base font-semibold">{String(score.score).replace(".", ",")}/20</span>
         </span>
-        <Metric label={LABEL.momentumSigned} value={`${owner.signed.count} · ${kEur(owner.signed.gmv)}`} />
-        <Metric label={LABEL.momentumEnteredM} value={`${owner.enteredM.count} · ${kEur(owner.enteredM.gmv)}`} />
-        <Metric label={LABEL.momentumExitedM} value={`${owner.exitedM.count} · ${kEur(owner.exitedM.gmv)}`} />
-        <Metric label={LABEL.momentumGmvUp} value={`${owner.gmvUp.count} · +${kEur(owner.gmvUp.gmv)}`} />
-        <Metric label={LABEL.momentumGmvDown} value={`${owner.gmvDown.count} · ${kEur(owner.gmvDown.gmv)}`} />
-        <Metric label={LABEL.momentumStages} value={String(owner.stageChangedCount)} />
-        <Metric label={LABEL.momentumStandby} value={`${owner.standbyEntered} / ${owner.standbyReturned}`} />
       </div>
+      {movements.length > 0 ? (
+        <ul className="mt-1.5 space-y-0.5">
+          {movements.map((m) => (
+            <li key={m.text} className={`flex items-baseline gap-2 text-sm ${TONE[m.tone].text}`} title={m.label}>
+              <span className={`inline-block h-1.5 w-1.5 shrink-0 translate-y-[-1px] rounded-full ${TONE[m.tone].dot}`} aria-hidden />
+              <span className="tabular">{m.text}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {movements.length === 0 || quiet.length > 0 ? (
+        <p className="mt-1 text-xs text-ink-faint">
+          {movements.length === 0 ? "Aucun mouvement sur les 7 derniers jours" : quiet.join(" · ")}
+        </p>
+      ) : null}
       {owner.topMoves.length > 0 ? (
         <details className="group mt-1.5">
           <summary className="cursor-pointer list-none text-xs text-ink-soft hover:text-ink">

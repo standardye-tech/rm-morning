@@ -74,13 +74,14 @@ export const LABEL = {
 
   // --- Momentum 7 jours (audit V3.2, Performance) -----------------------------
   momentumTitle: "Momentum 7 jours",
-  momentumSigned: "Signé",
-  momentumEnteredM: "Entré M",
-  momentumExitedM: "Sorti M",
-  momentumGmvUp: "GMV +",
-  momentumGmvDown: "GMV −",
-  momentumStages: "Stades modifiés",
-  momentumStandby: "Stand-by / retour",
+  momentumSubtitle: "Dynamique commerciale observée sur les 7 derniers jours",
+  momentumSigned: "Signé cette semaine",
+  momentumEnteredM: "Affaires avancées sur ce mois",
+  momentumExitedM: "Affaires repoussées hors de ce mois",
+  momentumGmvUp: "Montants revus à la hausse",
+  momentumGmvDown: "Montants revus à la baisse",
+  momentumStages: "Affaires ayant changé d’étape",
+  momentumStandby: "Mises en pause / Réactivées",
 } as const;
 
 /**
