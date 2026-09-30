@@ -83,6 +83,9 @@ function situation(
   /** Mois de la vue, pour dire « pas prévu pour septembre » et non « pas prévu ». */
   viewMonth: string | null,
 ): { label: string; tone: "neutral" | "positive" | "warning" | "danger" } {
+  // Une ligne Travaux signée négative est une moins-value : elle reste dans le
+  // signé officiel du mois, mais ne se lit pas comme une affaire gagnée.
+  if (row.isSignedRow && (row.gmv ?? 0) < 0) return { label: "Moins-value signée", tone: "neutral" };
   if (row.challenge) {
     // Sur M+1 le motif est unique : l'affaire pourrait signer le mois prochain et
     // n'y est pas déclarée. Nommer le mois cible évite l'ambiguïté quand la ligne
@@ -154,8 +157,8 @@ function Row({
         <td className="whitespace-nowrap px-3 py-[3px] text-right">
           <span className="tabular">{pct(row.expectedProbability)}</span>
           {row.expectedGmv != null && row.expectedGmv > 0 ? (
-            <span className="tabular ml-1.5 text-xs text-ink-faint">
-              {formatEurShort(row.expectedGmv)}
+            <span className="tabular block text-[11px] leading-tight text-ink-faint">
+              Contribution pondérée : {formatEurShort(row.expectedGmv)}
             </span>
           ) : null}
         </td>
@@ -208,8 +211,12 @@ function Group({
                 ? ` · Signé ${kEur(group.signedGmv)} · Atterrissage ${kEur(group.declaredOpenGmv + group.signedGmv)}`
                 : ""}
               {group.adjustedGmv != null ? ` · Perspective ajustée ${kEur(group.adjustedGmv)}` : ""}
-              {showExpected ? ` · GMV probable ${kEur(group.expectedGmv)}` : ""}
-              {` · ${rows.length} affaire${rows.length > 1 ? "s" : ""}`}
+              {` · ${rows.length} affaire${rows.length > 1 ? "s affichées" : " affichée"}`}
+              {showExpected
+                ? group.expectedGmv > 0
+                  ? ` · Potentiel RM restant pondéré : ${kEur(group.expectedGmv)}`
+                  : " · Aucun potentiel supplémentaire identifié"
+                : ""}
             </span>
             {yellow > 0 ? (
               <span className="rounded bg-warning-soft px-1.5 py-0.5 text-xs font-medium text-warning">

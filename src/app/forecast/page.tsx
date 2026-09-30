@@ -206,7 +206,7 @@ export default async function ForecastPage({
           <p className="mt-1 max-w-2xl text-sm text-ink-soft">
             Ce que les commerciaux annoncent, l&apos;analyse régionale, puis la lecture de RM Morning.
             Vert : déjà signé. Jaune : affaire que RM Morning propose d&apos;ajouter au mois — plus de{" "}
-            {Math.round(FORECAST_CHALLENGE.minProbability * 100)} % de chance de signer selon RM Morning.
+            {Math.round(FORECAST_CHALLENGE.minProbability * 100)} % de chance de signer ce mois selon RM Morning.
           </p>
           {/*
             La règle de densité est dite à l'écran : un tableau qui cache des
@@ -215,9 +215,8 @@ export default async function ForecastPage({
           */}
           <p className="mt-1 max-w-2xl text-xs text-ink-faint">
             Sont affichées les affaires déjà signées ce mois-ci, celles déclarées sur le mois
-            par le commercial, et celles à au moins{" "}
-            {Math.round(FORECAST_VISIBILITY.minProbability * 100)} % de chance de signer
-            d&apos;ici la fin du mois. Les autres n&apos;apparaissent pas ici : elles restent
+            par le commercial, et celles à plus de{" "}
+            {Math.round(FORECAST_VISIBILITY.minProbability * 100)} % de chance de signer ce mois. Les autres n&apos;apparaissent pas ici : elles restent
             consultables dans Expected GMV. Les stand-by en cours et les affaires abandonnées
             sont exclus.
           </p>

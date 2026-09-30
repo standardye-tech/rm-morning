@@ -87,7 +87,8 @@ export function ForecastV2Totals({ board }: { board: ForecastV2Board }) {
             value={`${kEur(r.p10)} – ${kEur(r.p90)}`}
           />
           <span className="text-xs text-ink-faint">
-            atterrissage commercial {kEur(commercial)} · écart {kEur(r.expectedFinish - commercial)}
+            Atterrissage commercial {kEur(commercial)} · Écart {LABEL.expectedRegion} vs atterrissage :{" "}
+            {kEur(r.expectedFinish - commercial)}
           </span>
         </>
       ) : (
