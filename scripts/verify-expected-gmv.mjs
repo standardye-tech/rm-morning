@@ -299,6 +299,59 @@ check(
     : `${unknown} valeur(s) inconnue(s) : ${samples.join(", ")}`,
 );
 
+// EC15 — Frontières des « à challenger » d'Expected : ]15 % ; 25 %], sans recouvrement avec Forecast.
+{
+  const { expectedChallengers, forecastChallengers } = await import(lib("forecast-v2"));
+  const row = (id, p, over = {}) => ({
+    opportunityId: id, client: id, owner: "ET Test", gmv: 10_000, expectedProbability: p, expectedGmv: 10_000 * p,
+    isSignedRow: false, outsideKanban: true, frozenMonthEnd: false, kanbanMonth: null, ...over,
+  });
+  const board = (rows) => ({ horizon: 0, month: snap.month, examine: [], salespeople: [{ opportunities: rows }] });
+  const b = board([row("p150", 0.15), row("p151", 0.151), row("p249", 0.249), row("p250", 0.25), row("p251", 0.251), row("mini", 0.2, { gmv: 500, expectedGmv: 100 })]);
+  const x = new Set(expectedChallengers(b).map((e) => e.row.opportunityId));
+  const f = new Set(forecastChallengers(b).map((e) => e.row.opportunityId));
+  check("EC15a. 15,0 % : absent d'Expected", !x.has("p150"));
+  check("EC15b. 15,1 % : Expected", x.has("p151"));
+  check("EC15c. 24,9 % : Expected", x.has("p249"));
+  check("EC15d. 25,0 % : Expected, pas Forecast", x.has("p250") && !f.has("p250"));
+  check("EC15e. 25,1 % : absent d'Expected, bascule Forecast", !x.has("p251") && f.has("p251"));
+  check("EC15f. aucun seuil de montant caché : 500 € à 20 % -> Expected", x.has("mini"));
+  const many = expectedChallengers(board(Array.from({ length: 40 }, (_, i) => row(`n${i}`, 0.2))));
+  check("EC15g. aucun nombre maximum : 40 passent -> 40", many.length === 40);
+  check("EC15h. aucun doublon avec Forecast", ![...x].some((id) => f.has(id)));
+}
+
+// EC16 — Libellés : bornes dites comme le code les applique, fiabilité sans affirmation gratuite.
+{
+  const { expectedChallengeAside, expectedChallengeEmpty, reliabilityHorizonText } = await import(lib("expected-wording"));
+  const aside = expectedChallengeAside(3);
+  check("EC16a. bornes explicites : 15 % exclu, 25 % inclus", aside.includes("plus de 15 %") && aside.includes("jusqu'à 25 % inclus"), aside);
+  check("EC16b. accord : « 1 affaire », « 3 affaires »", expectedChallengeAside(1).startsWith("1 affaire à") && aside.startsWith("3 affaires à"));
+  check("EC16c. message vide cohérent avec les bornes", expectedChallengeEmpty().includes("plus de 15 %"));
+  check("EC16d. sans indice ni date : aucune phrase « non atteint »", reliabilityHorizonText({ reliability: null, reliableIn: null }) === null);
+  check("EC16e. indice mesuré sans date : « 90 % non atteint historiquement »", reliabilityHorizonText({ reliability: 75, reliableIn: null }) === "90 % non atteint historiquement");
+  const soon = reliabilityHorizonText({ reliability: 80, reliableIn: { days: 3, date: "2026-10-03" } });
+  check("EC16f. seuil dit « 90 % ou plus » (le code compare en ≥), jamais « > 90 % »", soon.includes("90 % ou plus") && !soon.includes("> 90"), soon);
+  check("EC16g. déjà atteint : « Déjà à 90 % ou plus »", reliabilityHorizonText({ reliability: 92, reliableIn: { days: 0, date: "2026-09-30" } }).startsWith("Déjà à 90 % ou plus"));
+}
+
+// EC17 — Aucun jargon du moteur dans le texte rendu d'Expected.
+{
+  const { readFileSync } = await import("node:fs");
+  const files = ["src/components/expected-gmv.tsx", "src/components/expected-reliability.tsx", "src/components/m1-overview.tsx", "src/app/expected-gmv/page.tsx"];
+  // Commentaires retirés : seul ce qui peut atteindre l'écran est contrôlé.
+  const rendered = files
+    .map((f) => readFileSync(path.resolve(process.cwd(), f), "utf8"))
+    .map((s) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\{\/\*[\s\S]*?\*\/\}/g, "").replace(/^\s*\/\/.*$/gm, ""))
+    .join("\n");
+  const banned = ["PR-AUC", "Brier", "Affaires scorées", "Logistic", "WAPE", "P10", "P90", "GMV probable"];
+  const hits = banned.filter((w) => rendered.includes(w));
+  check("EC17a. ni PR-AUC, ni Brier, ni « Affaires scorées », ni « GMV probable » à l'écran", hits.length === 0, hits.join(", ") || "aucun");
+  const m1 = readFileSync(path.resolve(process.cwd(), "src/components/m1-overview.tsx"), "utf8");
+  check("EC17b. trajectoire : colonnes datées « Vue au » et lecture « ce que nous pensions »", m1.includes("Vue au") && m1.includes("ce que nous pensions"));
+  check("EC17c. explicabilité : l'écart n'est pas présenté comme une somme d'affaires", m1.includes("n&apos;additionnent pas l&apos;écart"));
+}
+
 if (snap.issues.length > 0) {
   console.log(`\n  anomalies signalées par le service de lecture :`);
   for (const i of snap.issues) console.log(`      ${i}`);

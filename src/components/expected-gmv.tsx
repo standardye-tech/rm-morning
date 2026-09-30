@@ -21,6 +21,8 @@ import type { ExpectedM1Snapshot } from "@/lib/expected-m1";
 import { LABEL, READING_HINT, READING_LABEL, readForecast } from "@/lib/vocabulary";
 import type { HistoricalReference } from "@/lib/official-signed";
 import { CHALLENGE_LABEL, type ForecastV2Examine } from "@/lib/forecast-v2";
+import { expectedChallengeAside, expectedChallengeEmpty } from "@/lib/expected-wording";
+import { montant } from "@/lib/momentum-wording";
 
 /**
  * Séparateur de milliers en espace insécable classique. `toLocaleString("fr-FR")`
@@ -61,10 +63,10 @@ export function ExpectedGmvChallenge({ items }: { items: ForecastV2Examine[] }) 
       <SectionTitle
         eyebrow="Upside du mois"
         title={LABEL.challenge}
-        aside={`${items.length} affaire(s) entre 15 % et 25 % · au-delà : Forecast`}
+        aside={expectedChallengeAside(items.length)}
       />
       {items.length === 0 ? (
-        <p className="px-4 pb-4 text-sm text-ink-soft md:px-6">Aucune affaire supplémentaire entre 15 % et 25 % aujourd&apos;hui.</p>
+        <p className="px-4 pb-4 text-sm text-ink-soft md:px-6">{expectedChallengeEmpty()}</p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[46rem] text-sm md:min-w-0">
@@ -74,7 +76,7 @@ export function ExpectedGmvChallenge({ items }: { items: ForecastV2Examine[] }) 
                 <th className="px-3 py-2 font-medium">Commercial</th>
                 <th className="px-3 py-2 text-right font-medium">GMV</th>
                 <th className="px-3 py-2 text-right font-medium">{LABEL.chanceThisMonth}</th>
-                <th className="px-3 py-2 text-right font-medium">GMV probable</th>
+                <th className="px-3 py-2 text-right font-medium">Contribution pondérée</th>
                 <th className="px-4 md:px-6 py-2 font-medium">Pourquoi cette affaire ressort</th>
               </tr>
             </thead>
@@ -85,11 +87,12 @@ export function ExpectedGmvChallenge({ items }: { items: ForecastV2Examine[] }) 
                     <SalesforceOpportunityLink opportunityId={e.row.opportunityId}>{e.row.client}</SalesforceOpportunityLink>
                   </td>
                   <td className="px-3 py-2 text-xs text-ink-soft">{e.row.owner}</td>
-                  <td className="tabular px-3 py-2 text-right font-medium">{kEur(e.row.gmv)}</td>
+                  <td className="tabular px-3 py-2 text-right font-medium">{e.row.gmv == null ? "—" : montant(e.row.gmv)}</td>
                   <td className="tabular px-3 py-2 text-right">
                     {e.row.expectedProbability == null ? "—" : pct(e.row.expectedProbability)}
                   </td>
-                  <td className="tabular px-3 py-2 text-right">{kEur(e.row.expectedGmv)}</td>
+                  {/* À l'euro sous 1 k€ : une contribution réelle ne s'affiche jamais « 0 k€ ». */}
+                  <td className="tabular px-3 py-2 text-right">{e.row.expectedGmv == null ? "—" : montant(e.row.expectedGmv)}</td>
                   <td className="px-4 md:px-6 py-2 text-xs text-ink-soft">
                     <Badge tone="warning">{CHALLENGE_LABEL[e.kind]}</Badge> <span className="text-ink-faint">{e.reason}</span>
                   </td>
@@ -246,7 +249,7 @@ export function ExpectedGmvHorizons({
           />
           <Line label={LABEL.expectedFinish} value={kEur(r.expectedFinish)} strong hint={`sur ${r.count} affaire(s) suivies`} />
           <Line
-            label="Écart"
+            label={`Écart ${LABEL.expectedFinish} vs prévu par l'équipe`}
             value={commercial == null ? "—" : kEur(r.expectedFinish - commercial)}
           />
           <Line label={LABEL.probableZone} value={`${kEur(r.p10)} – ${kEur(r.p90)}`} />

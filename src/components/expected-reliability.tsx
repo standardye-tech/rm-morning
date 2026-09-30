@@ -1,5 +1,6 @@
 import { Card, SectionTitle } from "@/components/ui";
 import type { ExpectedReliabilityView, HorizonReliability } from "@/lib/expected-reliability-view";
+import { reliabilityHorizonText } from "@/lib/expected-wording";
 
 /**
  * « Fiabilité d'Expected GMV » — lot de simplification (F5 à F7), verrous du
@@ -13,12 +14,6 @@ import type { ExpectedReliabilityView, HorizonReliability } from "@/lib/expected
  */
 
 const DDMM = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
-
-function horizonText(h: HorizonReliability): string {
-  if (!h.reliableIn) return "90 % non atteint historiquement";
-  if (h.reliableIn.days === 0) return "Déjà au-dessus de 90 % à ce stade, historiquement";
-  return `Fiabilité > 90 % estimée dans ${h.reliableIn.days} jour${h.reliableIn.days > 1 ? "s" : ""} (le ${DDMM(h.reliableIn.date)})`;
-}
 
 const LABEL: Record<string, (h: HorizonReliability) => string> = {
   "Mois en cours": (h) => `Mois en cours (${h.monthLabel})`,
@@ -49,7 +44,7 @@ export function ExpectedReliabilityBlock({ view }: { view: ExpectedReliabilityVi
               <span className="text-ink-soft">{(LABEL[h.label] ?? ((x: HorizonReliability) => x.label))(h)} : </span>
               <Value h={h} />
             </p>
-            <p className="text-xs text-ink-soft">{horizonText(h)}</p>
+            {reliabilityHorizonText(h) ? <p className="text-xs text-ink-soft">{reliabilityHorizonText(h)}</p> : null}
           </li>
         ))}
       </ul>
