@@ -10,8 +10,9 @@ import {
   type ForecastMovement,
 } from "@/lib/forecast-labels";
 import type { ForecastV2Row } from "@/lib/forecast-v2";
-import { formatEur, formatEurShort, formatFrenchDate } from "@/lib/normalize";
-import { LABEL, kEur, pct } from "@/lib/vocabulary";
+import { footerItems, groupSummary, hasWeightedContribution, signedRowSituation } from "@/lib/forecast-wording";
+import { formatEurShort, formatFrenchDate } from "@/lib/normalize";
+import { LABEL, pct } from "@/lib/vocabulary";
 
 /**
  * La feuille de rapprochement Forecast.
@@ -85,7 +86,8 @@ function situation(
 ): { label: string; tone: "neutral" | "positive" | "warning" | "danger" } {
   // Une ligne Travaux signée négative est une moins-value : elle reste dans le
   // signé officiel du mois, mais ne se lit pas comme une affaire gagnée.
-  if (row.isSignedRow && (row.gmv ?? 0) < 0) return { label: "Moins-value signée", tone: "neutral" };
+  const signed = signedRowSituation(row);
+  if (signed) return signed;
   if (row.challenge) {
     // Sur M+1 le motif est unique : l'affaire pourrait signer le mois prochain et
     // n'y est pas déclarée. Nommer le mois cible évite l'ambiguïté quand la ligne
@@ -156,7 +158,7 @@ function Row({
       {showExpected ? (
         <td className="whitespace-nowrap px-3 py-[3px] text-right">
           <span className="tabular">{pct(row.expectedProbability)}</span>
-          {row.expectedGmv != null && row.expectedGmv > 0 ? (
+          {hasWeightedContribution(row.expectedGmv) ? (
             <span className="tabular block text-[11px] leading-tight text-ink-faint">
               Contribution pondérée : {formatEurShort(row.expectedGmv)}
             </span>
@@ -206,17 +208,7 @@ function Group({
             </span>
             <span className="text-sm font-semibold">{group.salesperson}</span>
             <span className="tabular text-xs text-ink-soft">
-              Reste annoncé {kEur(group.declaredOpenGmv)}
-              {group.signedGmv > 0
-                ? ` · Signé ${kEur(group.signedGmv)} · Atterrissage ${kEur(group.declaredOpenGmv + group.signedGmv)}`
-                : ""}
-              {group.adjustedGmv != null ? ` · Perspective ajustée ${kEur(group.adjustedGmv)}` : ""}
-              {` · ${rows.length} affaire${rows.length > 1 ? "s affichées" : " affichée"}`}
-              {showExpected
-                ? group.expectedGmv > 0
-                  ? ` · Potentiel RM restant pondéré : ${kEur(group.expectedGmv)}`
-                  : " · Aucun potentiel supplémentaire identifié"
-                : ""}
+              {groupSummary({ ...group, rowCount: rows.length }, showExpected)}
             </span>
             {yellow > 0 ? (
               <span className="rounded bg-warning-soft px-1.5 py-0.5 text-xs font-medium text-warning">
@@ -247,16 +239,21 @@ export function ForecastSheet({
   probabilityLabel = LABEL.chanceThisMonth,
   /** Mois de la vue, au format AAAA-MM. */
   viewMonth = null,
-  /** Libellé du pied de tableau, qui n'est pas un total de mois sur M+1. */
-  expectedFooterLabel,
+  /** Horizon de la vue : le pied ne dit pas la même chose sur M, M+1 et M+2. */
+  horizon = 0,
+  /** Périmètre du pied : la Région, ou le seul commercial filtré. */
+  scopeLabel = "TOTAL RÉGION",
 }: {
   groups: SheetGroup[];
   showExpected: boolean;
-  totals: { signed: number; kanban: number; expected: number; count: number };
+  totals: { signed: number; declaredOpen: number; kanban: number; expected: number; count: number };
   probabilityLabel?: string;
   viewMonth?: string | null;
-  expectedFooterLabel?: string;
+  horizon?: 0 | 1 | 2;
+  scopeLabel?: string;
 }) {
+  const columns = showExpected ? 6 : 5;
+  const footer = footerItems(totals, { horizon, showExpected });
   const [allCollapsed, setAllCollapsed] = useState(false);
   // La clé force le remontage des groupes : « Tout replier » et « Tout déplier »
   // doivent reprendre la main sur les groupes ouverts ou fermés à la main.
@@ -266,7 +263,8 @@ export function ForecastSheet({
     <div className="rounded-md border border-line bg-surface">
       <div className="flex items-baseline justify-between gap-4 border-b border-line px-4 md:px-6 py-1.5">
         <span className="text-[11px] uppercase tracking-wide text-ink-faint">
-          {groups.length} commerciaux · {totals.count} affaires prévues sur le mois
+          {groups.length} commercia{groups.length > 1 ? "ux" : "l"} · {totals.count} affaire
+          {totals.count > 1 ? "s prévues" : " prévue"} sur le mois
         </span>
         <button
           type="button"
@@ -309,22 +307,18 @@ export function ForecastSheet({
               />
             ))}
           </tbody>
+          {/*
+            Le pied ne s'aligne plus sous les colonnes : la colonne GMV mélange des
+            lignes signées, déclarées et ajoutées par RM Morning, et aucun des
+            totaux ci-dessous n'est la somme de cette colonne. Chaque montant porte
+            donc son nom. Une confiance ne se totalise pas (E5) : aucune n'y figure.
+          */}
           <tfoot>
             <tr className="border-t-2 border-line-strong bg-canvas text-sm">
-              <td className="py-2 pl-6 pr-3 font-semibold">TOTAL RÉGION</td>
-              <td className="tabular px-3 py-2 text-right font-medium">
-                {formatEur(totals.kanban)}
-              </td>
-              <td className="px-3 py-2" />
-              {/* Une confiance ne se totalise pas : aucune somme pondérée n'est affichée (E5). */}
-              <td className="px-3 py-2" />
-              {showExpected ? (
-                <td className="tabular px-3 py-2 text-right font-semibold">
-                  {formatEurShort(totals.expected)}
-                </td>
-              ) : null}
-              <td className="py-2 pl-3 pr-6 text-xs text-ink-soft">
-                {expectedFooterLabel ?? `signé ${kEur(totals.signed)}`}
+              <td colSpan={columns} className="py-2 pl-6 pr-6">
+                <span className="mr-4 font-semibold">{scopeLabel}</span>
+                <span className="tabular font-medium">{footer.primary.join(" · ")}</span>
+                <span className="tabular block text-xs text-ink-soft">{footer.detail.join(" · ")}</span>
               </td>
             </tr>
           </tfoot>

@@ -114,7 +114,7 @@ if (plan.actions.length > 0) {
 
 // --- A2. Forecast : la règle d'affichage -----------------------------------
 
-section("A2 — Forecast : déclarée en signature OU Expected ≥ 25 %");
+section("A2 — Forecast : déclarée en signature OU Expected > 25 % (strict)");
 
 const board = buildForecastV2(0);
 const rows = board.salespeople.flatMap((s) => s.opportunities);
@@ -158,8 +158,28 @@ check(
   visible(cas(false, 0.249)) === false,
 );
 check(
-  "non déclaré + Expected 25 % → visible",
-  visible(cas(false, 0.25)) === true,
+  "non déclaré + Expected 25,0 % pile → absent (reste dans Expected GMV)",
+  visible(cas(false, 0.25)) === false,
+);
+check(
+  "non déclaré + Expected 25,1 % → visible (ajout RM Morning)",
+  visible(cas(false, 0.251)) === true,
+);
+check(
+  "déclaré en signature + Expected 25,0 % → visible (la déclaration suffit)",
+  visible(cas(true, 0.25)) === true,
+);
+check(
+  "déclaré en signature + Expected 24,9 % → visible (la déclaration suffit)",
+  visible(cas(true, 0.249)) === true,
+);
+check(
+  "signé + Expected 25,0 % → visible (le signé ne dépend pas du seuil)",
+  visible({ ...cas(false, 0.25), isSignedRow: true }) === true,
+);
+check(
+  "signé sans Expected → visible",
+  visible({ ...cas(false, null), isSignedRow: true }) === true,
 );
 check(
   "non déclaré + Expected 40 % → visible",
@@ -184,18 +204,18 @@ check(
   `${declaredLowProb.length} cas mesuré(s)`,
 );
 
-const undeclaredHigh = rows.filter((r) => !isDeclaredOnMonth(r, board.month) && (r.expectedProbability ?? 0) >= seuil);
+const undeclaredHigh = rows.filter((r) => !isDeclaredOnMonth(r, board.month) && (r.expectedProbability ?? 0) > seuil);
 check(
-  "une affaire non déclarée à ≥ 25 % est visible",
+  "une affaire non déclarée à > 25 % est visible",
   undeclaredHigh.every((r) => visible(r) || isFrozenOut(r, today)),
   `${undeclaredHigh.length} cas mesuré(s)`,
 );
 
 const undeclaredLow = rows.filter(
-  (r) => !isDeclaredOnMonth(r, board.month) && (r.expectedProbability ?? 0) < seuil,
+  (r) => !r.isSignedRow && !isDeclaredOnMonth(r, board.month) && (r.expectedProbability ?? 0) <= seuil,
 );
 check(
-  "une affaire non déclarée sous 25 % est masquée",
+  "une affaire non déclarée à 25 % ou moins est masquée",
   undeclaredLow.every((r) => !visible(r)),
   `${undeclaredLow.length} cas mesuré(s)`,
 );

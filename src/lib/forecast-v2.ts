@@ -199,7 +199,9 @@ export function isDeclaredOnMonth(row: ForecastV2Row, month: MonthKey): boolean 
  * une propriété de l'ÉTAPE (40 % pour tout « Examen devis »), pas du dossier.
  */
 export function isProbableOnMonth(row: ForecastV2Row): boolean {
-  return (row.expectedProbability ?? 0) >= FORECAST_VISIBILITY.minProbability;
+  // Strictement au-delà du seuil : à 25,0 % pile, l'affaire relève d'Expected
+  // GMV (15 % < p ≤ 25 %) et RM Morning ne l'ajoute pas au Forecast.
+  return (row.expectedProbability ?? 0) > FORECAST_VISIBILITY.minProbability;
 }
 
 /**

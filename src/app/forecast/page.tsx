@@ -248,7 +248,8 @@ export default async function ForecastPage({
           </Link>
           {remainingOnly ? (
             <span className="ml-1 text-xs text-ink-faint">
-              {hiddenSigned} affaire{hiddenSigned > 1 ? "s" : ""} signée{hiddenSigned > 1 ? "s" : ""} masquée
+              {/* « lignes » et non « affaires » : une moins-value signée est masquée aussi. */}
+              {hiddenSigned} ligne{hiddenSigned > 1 ? "s" : ""} signée{hiddenSigned > 1 ? "s" : ""} masquée
               {hiddenSigned > 1 ? "s" : ""}
             </span>
           ) : null}
@@ -290,13 +291,8 @@ export default async function ForecastPage({
             probabilityLabel={
               offset === 1 ? chanceInMonth(board.monthLabel) : LABEL.chanceThisMonth
             }
-            expectedFooterLabel={
-              offset === 1
-                ? "somme des affaires en cours — la projection du mois est au-dessus"
-                : offset === 2
-                  ? "déclaratif seul"
-                  : undefined
-            }
+            horizon={offset}
+            scopeLabel={ownerFilter ? `TOTAL ${ownerFilter}` : undefined}
           />
           {board.issues.length > 0 ? (
             <details className="group rounded-xl border border-line bg-surface px-4 py-3 md:px-6">

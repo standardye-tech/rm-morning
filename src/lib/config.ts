@@ -1038,8 +1038,9 @@ export const PERFORMANCE = {
  *
  *   — le commercial la déclare sur le mois (Projection Kanban ou Perspective) —
  *     c'est son engagement, il est affiché quelle que soit la probabilité ;
- *   — RM Morning lui donne au moins `minProbability` de chance de signer sur le
- *     mois, d'après le modèle Expected GMV.
+ *   — RM Morning lui donne STRICTEMENT plus de `minProbability` de chance de
+ *     signer sur le mois, d'après le modèle Expected GMV (25,0 % pile reste
+ *     dans Expected GMV — même frontière que `FORECAST_CHALLENGE`).
  *
  * La Probability Salesforce n'entre PAS dans cette règle. Elle est attachée à
  * l'étape, pas au dossier : elle vaut 40 % pour tout « Examen devis », qu'il
@@ -1049,7 +1050,7 @@ export const PERFORMANCE = {
  * commercial, et « tout=1 » les rouvre toutes.
  */
 export const FORECAST_VISIBILITY = {
-  /** Chance de signer sur le mois à partir de laquelle une affaire s'affiche. */
+  /** Chance de signer sur le mois au-delà de laquelle (strictement) une affaire s'affiche. */
   minProbability: 0.25,
 } as const;
 

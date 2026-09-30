@@ -303,6 +303,95 @@ for (const e of M.examine) {
   );
 }
 
+// FC12 — Frontière unique à 25 % : l'ajout par RM Morning est STRICTEMENT au-delà.
+{
+  const { isVisibleInForecast, forecastChallengers, expectedChallengers } = await import(lib("forecast-v2"));
+  const month = M.month;
+  const today = new Date().toISOString().slice(0, 10);
+  const row = (id, p, over = {}) => ({
+    opportunityId: id, client: id, owner: "ET Test", gmv: 10_000, expectedProbability: p, expectedGmv: p == null ? null : 10_000 * p,
+    isSignedRow: false, outsideKanban: true, perspectiveMonth: null, kanbanMonth: null, isStandby: false, standbyUntil: null,
+    frozenMonthEnd: false, ...over,
+  });
+  const cases = [["p150", 0.15], ["p151", 0.151], ["p249", 0.249], ["p250", 0.25], ["p251", 0.251]];
+  const board = { horizon: 0, month, examine: [], salespeople: [{ opportunities: cases.map(([id, p]) => row(id, p)) }] };
+  const f = new Set(forecastChallengers(board).map((e) => e.row.opportunityId));
+  const x = new Set(expectedChallengers(board).map((e) => e.row.opportunityId));
+  const vis = (id, p, over) => isVisibleInForecast(row(id, p, over), month, today);
+  check("FC12a. 15,0 % : ni Expected ni Forecast", !x.has("p150") && !f.has("p150") && !vis("v", 0.15));
+  check("FC12b. 15,1 % : Expected seulement", x.has("p151") && !f.has("p151") && !vis("v", 0.151));
+  check("FC12c. 24,9 % : Expected seulement", x.has("p249") && !f.has("p249") && !vis("v", 0.249));
+  check("FC12d. 25,0 % : Expected, ni affichée ni challengée dans Forecast", x.has("p250") && !f.has("p250") && !vis("v", 0.25));
+  check("FC12e. 25,1 % : affichée et challengée dans Forecast, absente d'Expected", f.has("p251") && !x.has("p251") && vis("v", 0.251));
+  check("FC12f. déclarée au Kanban à 25,0 % ou 10 % : toujours affichée", vis("v", 0.25, { outsideKanban: false }) && vis("v", 0.1, { outsideKanban: false }));
+  check("FC12g. déclarée en Perspective M à 25,0 % : toujours affichée", vis("v", 0.25, { perspectiveMonth: month }));
+  check("FC12h. signée, quelle que soit la probabilité : toujours affichée", vis("v", 0.25, { isSignedRow: true }) && vis("v", null, { isSignedRow: true }));
+}
+
+// FC13 — Pied de la feuille : chaque montant nommé, réconcilié avec la bande.
+{
+  const { footerItems, groupSummary, signedRowSituation, hasWeightedContribution } = await import(lib("forecast-wording"));
+  const { kEur: uiKEur } = await import(lib("vocabulary"));
+  const r = M.region;
+  const footerSigned = M.salespeople.reduce((t, s) => t + s.signedGmvActual, 0);
+  const footerDeclared = M.salespeople.reduce((t, s) => t + s.declaredOpenGmv, 0);
+  check("FC13a. Signé à date du pied = Signé à date de la bande", Math.abs(footerSigned - r.signedGmvActual) < 0.005, eur(footerSigned));
+  check("FC13b. Reste annoncé du pied = Reste annoncé de la bande", Math.abs(footerDeclared - r.declaredOpenGmv) < 0.005, eur(footerDeclared));
+  check(
+    "FC13c. Signé à date + Reste annoncé = Atterrissage commercial (euros)",
+    Math.abs(footerSigned + footerDeclared - r.commercialLanding) < 0.005,
+    `${eur(footerSigned)} + ${eur(footerDeclared)} = ${eur(r.commercialLanding)}`,
+  );
+  const k = (v) => Math.round(v / 1000);
+  check(
+    "FC13d. réconciliation à l'arrondi de l'écran (k€)",
+    k(r.signedGmvActual) + k(r.declaredOpenGmv) === k(r.commercialLanding),
+    `${uiKEur(r.signedGmvActual)} + ${uiKEur(r.declaredOpenGmv)} = ${uiKEur(r.commercialLanding)}`,
+  );
+  const items = footerItems({ signed: r.signedGmvActual, declaredOpen: r.declaredOpenGmv, kanban: 342_642, expected: 1_800 }, { horizon: 0, showExpected: true });
+  check(
+    "FC13e. l'atterrissage du pied s'écrit comme celui de la bande",
+    items.primary[2] === `Atterrissage commercial : ${uiKEur(r.commercialLanding)}`,
+    items.primary[2],
+  );
+  check("FC13f. aucun montant nu : chaque élément du pied porte un libellé", [...items.primary, ...items.detail].every((t) => /^[A-ZÉ][^:]+ : /.test(t)));
+  check("FC13g. Kanban nommé, jamais présenté comme un total de la colonne GMV", items.detail.includes("Projection Kanban des affaires affichées : 343 k€"));
+  check(
+    "FC13h. petite contribution pondérée à l'euro, pas « 0 k€ »",
+    items.detail[0].endsWith(": 2 k€") &&
+      footerItems({ signed: 0, declaredOpen: 0, kanban: 0, expected: 420 }, { horizon: 0, showExpected: true }).detail[0].endsWith(": 420 €"),
+  );
+  const m1Items = footerItems({ signed: 0, declaredOpen: 0, kanban: 0, expected: 5_000 }, { horizon: 1, showExpected: true });
+  check("FC13i. M+1 : la somme pondérée est dite distincte de la projection", /pas la projection du mois/.test(m1Items.detail[0]));
+  const m2Items = footerItems({ signed: 0, declaredOpen: 0, kanban: 0, expected: 0 }, { horizon: 2, showExpected: false });
+  check("FC13j. M+2 : aucune contribution RM chiffrée", !m2Items.detail.some((t) => /Contribution/.test(t)));
+
+  // Résumé par commercial — les cinq situations.
+  const g = (over) => ({ signedGmv: 0, declaredOpenGmv: 0, adjustedGmv: null, expectedGmv: 0, rowCount: 1, ...over });
+  const s1 = groupSummary(g({ signedGmv: 2_000, expectedGmv: 35_000, rowCount: 5 }), true);
+  check("FC14a. signé + potentiel RM : les deux nommés séparément", s1.includes("Signé 2 k€") && s1.includes("5 affaires affichées") && s1.includes("Potentiel RM restant pondéré : 35 k€"), s1);
+  const s2 = groupSummary(g({ signedGmv: 60_000, rowCount: 6 }), true);
+  check("FC14b. uniquement du signé : signé écrit, « aucun potentiel supplémentaire »", s2.includes("Signé 60 k€") && s2.endsWith("Aucun potentiel supplémentaire identifié"), s2);
+  const s3 = groupSummary(g({ declaredOpenGmv: 34_000, expectedGmv: 21_000, rowCount: 1 }), true);
+  check("FC14c. uniquement du reste annoncé : pas de « Signé 0 »", !s3.includes("Signé") && s3.includes("Reste annoncé 34 k€") && s3.includes("1 affaire affichée"), s3);
+  const s4 = groupSummary(g({ signedGmv: -158, rowCount: 1 }), true);
+  check("FC14d. seul mouvement = moins-value : signé négatif écrit à l'euro", s4.includes("Signé −158 €") && s4.includes("Atterrissage −158 €"), s4);
+  const s5 = groupSummary(g({ declaredOpenGmv: 10_000, expectedGmv: 0.3, rowCount: 2 }), true);
+  check("FC14e. contribution nulle : « aucun potentiel », jamais « 0 k€ »", s5.endsWith("Aucun potentiel supplémentaire identifié") && !/(^|\s)0 k€/.test(s5), s5);
+  const s6 = groupSummary(g({ declaredOpenGmv: 10_000, expectedGmv: 420 }), true);
+  check("FC14f. petite contribution : à l'euro", s6.includes("Potentiel RM restant pondéré : 420 €"), s6);
+  check("FC14g. aucun libellé « GMV probable » dans le résumé", ![s1, s2, s3, s4, s5, s6].some((t) => t.includes("GMV probable")));
+
+  // Lignes signées.
+  check("FC15a. moins-value de 158 € : « Moins-value signée »", signedRowSituation({ isSignedRow: true, gmv: -158 })?.label === "Moins-value signée");
+  check("FC15b. moins-value de 1 500 € : « Moins-value signée »", signedRowSituation({ isSignedRow: true, gmv: -1_500 })?.label === "Moins-value signée");
+  check("FC15c. signé positif : mouvement ordinaire (Signée)", signedRowSituation({ isSignedRow: true, gmv: 5_000 }) === null);
+  check("FC15d. ligne non signée négative : jamais « Moins-value signée »", signedRowSituation({ isSignedRow: false, gmv: -500 }) === null);
+  check("FC15e. contribution pondérée affichée dès 1 €", hasWeightedContribution(1) && !hasWeightedContribution(0.4) && !hasWeightedContribution(null));
+  const negSigned = M.salespeople.flatMap((s) => s.opportunities).filter((o) => o.isSignedRow && (o.gmv ?? 0) < 0);
+  console.log(`  (info) lignes signées négatives du mois : ${negSigned.map((o) => `${o.client} ${eur(o.gmv)}`).join(", ") || "aucune"}`);
+}
+
 console.log(`\n──── SEUILS DE DIVERGENCE (configurables) ────`);
 console.log(`  proche      : couverture ≥ ${FORECAST_DIVERGENCE.closeRatio}× celle de la Région`);
 console.log(`  prudent     : entre ${FORECAST_DIVERGENCE.prudentRatio}× et ${FORECAST_DIVERGENCE.closeRatio}×`);

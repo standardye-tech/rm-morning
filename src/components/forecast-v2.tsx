@@ -36,7 +36,7 @@ export function ForecastV2Totals({ board }: { board: ForecastV2Board }) {
       <Total
         label={LABEL.declaredOpen}
         value={kEur(r.declaredOpenGmv)}
-        hint={`Perspective M · ${r.declaredOpenCount} affaire(s) · atterrissage ${kEur(r.commercialLanding)} = ${kEur(r.signedGmvActual)} signés + ${kEur(r.declaredOpenGmv)} à signer`}
+        hint={`Perspective M · ${r.declaredOpenCount} affaire${r.declaredOpenCount > 1 ? "s" : ""} · atterrissage ${kEur(r.commercialLanding)} = ${kEur(r.signedGmvActual)} signés + ${kEur(r.declaredOpenGmv)} à signer`}
       />
       <Total
         label={LABEL.adjustedPerspective}
@@ -69,7 +69,7 @@ export function ForecastV2Totals({ board }: { board: ForecastV2Board }) {
             hint={`${LABEL.confidence.toLowerCase()} ${m1.confidence}`}
           />
           <span className="text-xs text-ink-faint">
-            les commerciaux annoncent {kEur(r.declaredOpenGmv)} · écart{" "}
+            Les commerciaux annoncent {kEur(r.declaredOpenGmv)} · Écart annonces vs {LABEL.projectionM1} :{" "}
             {kEur(r.declaredOpenGmv - m1.projection)}
           </span>
         </>
