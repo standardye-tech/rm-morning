@@ -328,6 +328,37 @@ for (const e of M.examine) {
   check("FC12h. signée, quelle que soit la probabilité : toujours affichée", vis("v", 0.25, { isSignedRow: true }) && vis("v", null, { isSignedRow: true }));
 }
 
+// FC16 — Périmètre commercial : la prévision d'un commercial compte TOUTES ses
+// affaires éligibles (décision du 30/09/2026), et Σ commerciaux = Région.
+{
+  const { scopeTotals, isVisibleInForecast } = await import(lib("forecast-v2"));
+  const { parisDate } = await import(lib("business-time"));
+  const today = parisDate();
+  const region = scopeTotals(M, null);
+  check("FC16a. périmètre Région = bande Région (Prévision RM Morning)", Math.abs(region.expectedFinish - M.region.expectedFinish) < 0.01, eur(region.expectedFinish));
+  let sumFinish = 0, sumRemaining = 0, sumLanding = 0, worstOwner = 0, cut = 0;
+  for (const s of M.salespeople) {
+    const t = scopeTotals(M, s.salesperson);
+    sumFinish += t.expectedFinish;
+    sumRemaining += t.expectedRemaining;
+    sumLanding += t.commercialLanding;
+    const all = s.opportunities.reduce((x, o) => x + (o.expectedGmv ?? 0), 0);
+    worstOwner = Math.max(worstOwner, Math.abs(t.expectedRemaining - all), Math.abs(t.expectedFinish - (t.signed + all)));
+    const visible = s.opportunities.filter((o) => isVisibleInForecast(o, M.month, today)).reduce((x, o) => x + (o.expectedGmv ?? 0), 0);
+    if (all - visible > 0.01) cut += 1;
+  }
+  check("FC16b. par commercial : Prévision = signé + pondéré de TOUTES ses affaires, pas des lignes affichées", worstOwner < 0.01, `écart max ${eur(worstOwner)} · ${cut} commercial(aux) dont des affaires éligibles sont masquées du tableau`);
+  check("FC16c. Σ Prévisions commerciaux = Prévision Région", Math.abs(sumFinish - M.region.expectedFinish) < 0.01, `${eur(sumFinish)} vs ${eur(M.region.expectedFinish)}`);
+  check("FC16d. Σ pondérés commerciaux = pondéré Région", Math.abs(sumRemaining - M.region.expectedRemaining) < 0.01, eur(sumRemaining));
+  check("FC16e. Σ atterrissages commerciaux = atterrissage Région", Math.abs(sumLanding - M.region.commercialLanding) < 0.01, eur(sumLanding));
+  const one = M.salespeople.find((s) => s.opportunities.some((o) => !isVisibleInForecast(o, M.month, today) && (o.expectedGmv ?? 0) > 0));
+  if (one) {
+    const t = scopeTotals(M, one.salesperson);
+    console.log(`  (info) ${one.salesperson} : Prévision ${kEur(t.expectedFinish)} = ${kEur(t.signed)} signés + ${kEur(t.expectedRemaining)} pondérés (toutes affaires éligibles)`);
+  }
+  check("FC16f. pied : Signé à date + Contribution RM pondérée du reste = Prévision RM Morning", Math.abs(region.signed + region.expectedRemaining - M.region.expectedFinish) < 0.01);
+}
+
 // FC13 — Pied de la feuille : chaque montant nommé, réconcilié avec la bande.
 {
   const { footerItems, groupSummary, signedRowSituation, hasWeightedContribution } = await import(lib("forecast-wording"));
@@ -348,22 +379,27 @@ for (const e of M.examine) {
     k(r.signedGmvActual) + k(r.declaredOpenGmv) === k(r.commercialLanding),
     `${uiKEur(r.signedGmvActual)} + ${uiKEur(r.declaredOpenGmv)} = ${uiKEur(r.commercialLanding)}`,
   );
-  const items = footerItems({ signed: r.signedGmvActual, declaredOpen: r.declaredOpenGmv, kanban: 342_642, expected: 1_800 }, { horizon: 0, showExpected: true });
+  const items = footerItems({ signed: r.signedGmvActual, declaredOpen: r.declaredOpenGmv, expectedRemaining: 1_800 }, { horizon: 0, showExpected: true });
   check(
     "FC13e. l'atterrissage du pied s'écrit comme celui de la bande",
     items.primary[2] === `Atterrissage commercial : ${uiKEur(r.commercialLanding)}`,
     items.primary[2],
   );
   check("FC13f. aucun montant nu : chaque élément du pied porte un libellé", [...items.primary, ...items.detail].every((t) => /^[A-ZÉ][^:]+ : /.test(t)));
-  check("FC13g. Kanban nommé, jamais présenté comme un total de la colonne GMV", items.detail.includes("Projection Kanban des affaires affichées : 343 k€"));
+  check(
+    "FC13g. le pied ne montre que Signé, Reste annoncé, Atterrissage et Contribution RM (plus de Kanban)",
+    items.primary.length === 3 && items.detail.length === 1 && ![...items.primary, ...items.detail].some((t) => /Kanban/.test(t)) &&
+      items.detail[0].startsWith("Contribution RM pondérée du reste : "),
+    [...items.primary, ...items.detail].join(" · "),
+  );
   check(
     "FC13h. petite contribution pondérée à l'euro, pas « 0 k€ »",
     items.detail[0].endsWith(": 2 k€") &&
-      footerItems({ signed: 0, declaredOpen: 0, kanban: 0, expected: 420 }, { horizon: 0, showExpected: true }).detail[0].endsWith(": 420 €"),
+      footerItems({ signed: 0, declaredOpen: 0, expectedRemaining: 420 }, { horizon: 0, showExpected: true }).detail[0].endsWith(": 420 €"),
   );
-  const m1Items = footerItems({ signed: 0, declaredOpen: 0, kanban: 0, expected: 5_000 }, { horizon: 1, showExpected: true });
+  const m1Items = footerItems({ signed: 0, declaredOpen: 0, expectedRemaining: 5_000 }, { horizon: 1, showExpected: true });
   check("FC13i. M+1 : la somme pondérée est dite distincte de la projection", /pas la projection du mois/.test(m1Items.detail[0]));
-  const m2Items = footerItems({ signed: 0, declaredOpen: 0, kanban: 0, expected: 0 }, { horizon: 2, showExpected: false });
+  const m2Items = footerItems({ signed: 0, declaredOpen: 0, expectedRemaining: 0 }, { horizon: 2, showExpected: false });
   check("FC13j. M+2 : aucune contribution RM chiffrée", !m2Items.detail.some((t) => /Contribution/.test(t)));
 
   // Résumé par commercial — les cinq situations.

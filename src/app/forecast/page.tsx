@@ -4,7 +4,8 @@ import { ForecastSheet, type SheetGroup } from "@/components/forecast-sheet";
 import { ForecastV2Freshness, ForecastV2Totals } from "@/components/forecast-v2";
 import { Card, EmptyState } from "@/components/ui";
 import { monthLabel, shiftMonth } from "@/lib/forecast-board";
-import { applyTableMode, buildForecastV2, forecastChallengers, isVisibleInForecast } from "@/lib/forecast-v2";
+import { applyTableMode, buildForecastV2, forecastChallengers, isVisibleInForecast, scopeTotals } from "@/lib/forecast-v2";
+import { hasWeightedContribution } from "@/lib/forecast-wording";
 import { loadAdjustedPerspective } from "@/lib/adjusted-perspective";
 import { FORECAST_CHALLENGE, FORECAST_VISIBILITY } from "@/lib/config";
 import { parisDate } from "@/lib/business-time";
@@ -104,11 +105,15 @@ export default async function ForecastPage({
         adjustedGmv: adjusted.ok ? (adjusted.value.byOwner[sp.salesperson] ?? 0) : null,
         kanbanGmv: rows.reduce((t, o) => t + (o.outsideKanban ? 0 : o.gmv ?? 0), 0),
         perspectiveSnapshotGmv: sp.perspectiveSnapshotGmv,
-        expectedGmv: rows.reduce((t, o) => t + (o.expectedGmv ?? 0), 0),
+        // Potentiel du COMMERCIAL, toutes affaires éligibles : la règle
+        // d'affichage choisit des lignes, elle ne réduit pas sa prévision.
+        expectedGmv: sp.expectedGmv,
         rows,
       };
     })
-    .filter((g) => g.rows.length > 0 || g.signedGmv > 0 || g.declaredOpenGmv > 0);
+    .filter(
+      (g) => g.rows.length > 0 || g.signedGmv !== 0 || g.declaredOpenGmv > 0 || hasWeightedContribution(g.expectedGmv),
+    );
 
   const hiddenSigned = remainingOnly
     ? board.salespeople
@@ -120,15 +125,14 @@ export default async function ForecastPage({
   // Forecast est définitivement organisé par commercial (E2) : aucun choix de tri.
   groups.sort((a, b) => a.salesperson.localeCompare(b.salesperson, "fr"));
 
-  // Les totaux de la bande sont resommés depuis ces mêmes lignes : un seul
-  // chemin de calcul, donc jamais d'écart entre la bande et le pied du tableau.
+  // Montants de la bande et du pied : ceux du PÉRIMÈTRE (Région ou commercial),
+  // calculés sur toutes ses affaires éligibles (`scopeTotals`). Les lignes
+  // affichées ne servent qu'aux compteurs du tableau.
   const filtered = ownerFilter !== null;
+  const scope = scopeTotals(board, ownerFilter);
   const sheetTotals = {
-    signed: groups.reduce((t, g) => t + g.signedGmv, 0),
-    declaredOpen: groups.reduce((t, g) => t + g.declaredOpenGmv, 0),
     kanban: groups.reduce((t, g) => t + g.kanbanGmv, 0),
     perspectiveSnapshot: groups.reduce((t, g) => t + g.perspectiveSnapshotGmv, 0),
-    expected: groups.reduce((t, g) => t + g.expectedGmv, 0),
     count: groups.reduce((t, g) => t + g.rows.filter((r) => !r.outsideKanban).length, 0),
   };
   const view = filtered
@@ -139,18 +143,16 @@ export default async function ForecastPage({
           count: sheetTotals.count,
           kanbanGmv: sheetTotals.kanban,
           perspectiveSnapshotGmv: sheetTotals.perspectiveSnapshot,
-          expectedRemaining: sheetTotals.expected,
-          signedGmvActual: sheetTotals.signed,
-          declaredOpenGmv: sheetTotals.declaredOpen,
-          declaredOpenCount: board.salespeople
-            .filter((sp) => !ownerFilter || sp.salesperson === ownerFilter)
-            .reduce((t, sp) => t + sp.declaredOpenCount, 0),
-          commercialLanding: sheetTotals.signed + sheetTotals.declaredOpen,
+          expectedRemaining: scope.expectedRemaining,
+          signedGmvActual: scope.signed,
+          declaredOpenGmv: scope.declaredOpen,
+          declaredOpenCount: scope.declaredOpenCount,
+          commercialLanding: scope.commercialLanding,
           adjustedPerspective:
             adjusted.ok && ownerFilter
               ? { ...adjusted.value, gmv: adjusted.value.byOwner[ownerFilter] ?? 0 }
               : board.region.adjustedPerspective,
-          expectedFinish: sheetTotals.signed + sheetTotals.expected,
+          expectedFinish: scope.expectedFinish,
         },
       }
     : board;
@@ -286,7 +288,12 @@ export default async function ForecastPage({
           <ForecastSheet
             groups={groups}
             showExpected={board.expectedAvailable}
-            totals={sheetTotals}
+            totals={{
+              signed: scope.signed,
+              declaredOpen: scope.declaredOpen,
+              expectedRemaining: scope.expectedRemaining,
+              count: sheetTotals.count,
+            }}
             viewMonth={board.month}
             probabilityLabel={
               offset === 1 ? chanceInMonth(board.monthLabel) : LABEL.chanceThisMonth

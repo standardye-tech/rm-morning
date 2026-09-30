@@ -246,7 +246,7 @@ export function ForecastSheet({
 }: {
   groups: SheetGroup[];
   showExpected: boolean;
-  totals: { signed: number; declaredOpen: number; kanban: number; expected: number; count: number };
+  totals: { signed: number; declaredOpen: number; expectedRemaining: number; count: number };
   probabilityLabel?: string;
   viewMonth?: string | null;
   horizon?: 0 | 1 | 2;
@@ -311,7 +311,9 @@ export function ForecastSheet({
             Le pied ne s'aligne plus sous les colonnes : la colonne GMV mélange des
             lignes signées, déclarées et ajoutées par RM Morning, et aucun des
             totaux ci-dessous n'est la somme de cette colonne. Chaque montant porte
-            donc son nom. Une confiance ne se totalise pas (E5) : aucune n'y figure.
+            donc son nom, et vaut pour tout le périmètre (Région ou commercial),
+            pas pour les seules lignes affichées. Une confiance ne se totalise pas
+            (E5) : aucune n'y figure.
           */}
           <tfoot>
             <tr className="border-t-2 border-line-strong bg-canvas text-sm">

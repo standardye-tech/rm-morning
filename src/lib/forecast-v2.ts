@@ -256,6 +256,42 @@ export function isVisibleInForecast(
   return isDeclaredOnMonth(row, month) || isProbableOnMonth(row);
 }
 
+/**
+ * Totaux d'un PÉRIMÈTRE — la Région (`owner` nul) ou un commercial.
+ *
+ * Décision du 30/09/2026 : sélectionner un commercial change le périmètre, pas
+ * la définition. La prévision d'un commercial compte donc TOUTES ses affaires
+ * éligibles, exactement comme la Région compte toutes les siennes — jamais les
+ * seules lignes que la règle d'affichage laisse dans le tableau. Par
+ * construction, Σ commerciaux = Région.
+ */
+export type ForecastScopeTotals = {
+  signed: number;
+  declaredOpen: number;
+  declaredOpenCount: number;
+  commercialLanding: number;
+  expectedRemaining: number;
+  expectedFinish: number;
+};
+
+export function scopeTotals(
+  board: Pick<ForecastV2Board, "salespeople">,
+  owner: string | null,
+): ForecastScopeTotals {
+  const scope = board.salespeople.filter((s) => owner == null || s.salesperson === owner);
+  const signed = scope.reduce((t, s) => t + s.signedGmvActual, 0);
+  const declaredOpen = scope.reduce((t, s) => t + s.declaredOpenGmv, 0);
+  const expectedRemaining = scope.reduce((t, s) => t + s.expectedGmv, 0);
+  return {
+    signed,
+    declaredOpen,
+    declaredOpenCount: scope.reduce((t, s) => t + s.declaredOpenCount, 0),
+    commercialLanding: signed + declaredOpen,
+    expectedRemaining,
+    expectedFinish: signed + expectedRemaining,
+  };
+}
+
 export type ForecastTableMode = "all" | "remaining";
 
 /**

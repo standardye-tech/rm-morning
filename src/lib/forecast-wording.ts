@@ -72,18 +72,18 @@ export function signedRowSituation(row: { isSignedRow: boolean; gmv: number | nu
 export type ForecastFooterTotals = {
   signed: number;
   declaredOpen: number;
-  kanban: number;
-  expected: number;
+  expectedRemaining: number;
 };
 
 /**
- * Pied de la feuille : chaque montant porte son nom.
+ * Pied de la feuille : chaque montant porte son nom, pour tout le périmètre.
  *
- *   Signé à date            = Σ signé officiel (Travaux) des commerciaux affichés
- *   Reste annoncé           = Σ lignes ouvertes de la Perspective M, signé exclu
+ *   Signé à date            = Σ signé officiel (Travaux) du périmètre
+ *   Reste annoncé           = Σ lignes ouvertes de la Perspective, signé exclu
  *   Atterrissage commercial = Signé à date + Reste annoncé (même somme que la bande)
- *   Projection Kanban       = Σ GMV brute des lignes affichées inscrites au Kanban
- *   Contribution RM pondérée= Σ (GMV × chance de signer) des lignes affichées
+ *   Contribution RM pondérée du reste
+ *                           = Σ (GMV × chance de signer) des affaires éligibles
+ *                             non signées ; Signé + elle = Prévision RM Morning
  *
  * Sur M+1, la somme pondérée n'est pas la projection du mois ; sur M+2 elle
  * n'existe pas. Le libellé le dit plutôt que de laisser un chiffre nu.
@@ -99,15 +99,14 @@ export function footerItems(
   ];
   const detail: string[] = [];
   if (opts.showExpected) {
-    const z = hasWeightedContribution(t.expected) ? montant(t.expected) : "aucune";
+    const z = hasWeightedContribution(t.expectedRemaining) ? montant(t.expectedRemaining) : "aucune";
     detail.push(
       opts.horizon === 1
-        ? `Contribution RM pondérée des affaires affichées : ${z} (somme des lignes, pas la projection du mois, au-dessus)`
-        : `Contribution RM pondérée du reste (affaires affichées non signées) : ${z}`,
+        ? `Contribution RM pondérée du reste : ${z} (somme des affaires, pas la projection du mois, au-dessus)`
+        : `Contribution RM pondérée du reste : ${z}`,
     );
   } else if (opts.horizon === 2) {
     detail.push("Déclaratif seul : pas de contribution RM à cet horizon");
   }
-  detail.push(`Projection Kanban des affaires affichées : ${montant(t.kanban)}`);
   return { primary, detail };
 }
