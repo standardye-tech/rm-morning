@@ -4,6 +4,7 @@ import { m1GapDeals, type ConstruireM1 } from "@/lib/build-m1";
 import type { M1Trajectory, SeriesKey, Trend, TrendReading } from "@/lib/m1-trajectory";
 import { formatFrenchDate } from "@/lib/normalize";
 import { kEur } from "@/lib/vocabulary";
+import { announcedRemainingCount } from "@/lib/forecast-wording";
 
 /**
  * « Octobre 2026 — où en est-on ? » — vue M+1 d'Expected GMV, lot de
@@ -150,7 +151,7 @@ export function M1OverviewBlock({ data, trajectory }: { data: ConstruireM1; traj
         <Row
           label={`Ce que les commerciaux annoncent pour ${m}`}
           value={kEur(data.announced.gmv)}
-          hint={`Perspective ${m} · ${data.announced.count} affaire${data.announced.count > 1 ? "s" : ""}`}
+          hint={`Perspective ${m} · ${announcedRemainingCount(data.announced.count)}`}
         />
         <Row
           label={`Ta perspective ajustée pour ${m}`}

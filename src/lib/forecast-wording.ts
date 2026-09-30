@@ -69,6 +69,47 @@ export function signedRowSituation(row: { isSignedRow: boolean; gmv: number | nu
   return null;
 }
 
+/** Compteur du tableau : les lignes ouvertes réellement affichées. */
+export function openShownCount(count: number): string {
+  return count > 1 ? `${count} affaires non signées affichées` : `${count} affaire non signée affichée`;
+}
+
+/** Compteur de l'annonce commerciale : une ligne de Perspective active = une affaire. */
+export function announcedRemainingCount(count: number): string {
+  return count > 1 ? `${count} affaires annoncées restant à signer` : `${count} affaire annoncée restant à signer`;
+}
+
+type PerspectiveFacts = {
+  isSignedRow: boolean;
+  /** Seules les affaires comptées dans le Reste annoncé rappellent leur montant déclaré. */
+  countedInDeclaredOpen: boolean;
+  outsideKanban: boolean;
+  gmv: number | null;
+  perspectiveMonth: string | null;
+  perspectiveRawGmv: number | null;
+};
+
+/**
+ * Le Reste annoncé somme le montant du CLASSEUR Perspective ; le tableau montre
+ * le GMV Salesforce actuel. Quand les deux diffèrent d'au moins 1 000 €, le
+ * montant déclaré est rappelé en second niveau — la donnée Salesforce reste le
+ * montant principal.
+ */
+export function perspectiveAmountNote(row: PerspectiveFacts, viewMonth: string | null): string | null {
+  if (!row.countedInDeclaredOpen || viewMonth == null || row.perspectiveMonth !== viewMonth || row.perspectiveRawGmv == null) return null;
+  if (Math.abs(row.perspectiveRawGmv - (row.gmv ?? 0)) < 1000) return null;
+  return `Perspective déclarée : ${montant(row.perspectiveRawGmv)}`;
+}
+
+/** Déclarée en Perspective du mois, mais pas au Kanban de ce mois : dit tel quel. */
+export function perspectiveOffKanbanSituation(
+  row: PerspectiveFacts,
+  viewMonth: string | null,
+): { label: string; tone: "neutral" } | null {
+  if (!row.countedInDeclaredOpen || !row.outsideKanban || viewMonth == null || row.perspectiveMonth !== viewMonth) return null;
+  return { label: "Déclarée en Perspective, hors Kanban du mois", tone: "neutral" };
+}
+
 export type ForecastFooterTotals = {
   signed: number;
   declaredOpen: number;

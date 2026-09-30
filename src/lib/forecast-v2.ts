@@ -30,6 +30,7 @@
 import { EXPECTED_CHALLENGE, EXPECTED_M1, FORECAST_CHALLENGE, FORECAST_DIVERGENCE, FORECAST_VISIBILITY } from "./config";
 import {
   buildForecastBoard,
+  type DeclaredOpenLine,
   type ForecastMonthBoard,
   type ForecastRow,
   type ForecastSalespersonBlock,
@@ -42,6 +43,7 @@ import {
   type ExpectedM1Snapshot,
 } from "./expected-m1";
 import { officialSignedGmv } from "./official-signed";
+import { parisDate } from "./business-time";
 import type { AdjustedPerspective } from "./sources/adjusted-perspective-parser";
 import { clientLabel } from "./vocabulary";
 
@@ -94,6 +96,12 @@ export type ForecastV2Row = Omit<ForecastRow, "expectedProbability" | "expectedG
    * challengeable : elle est acquise. Voir `isVisibleInForecast`.
    */
   isSignedRow: boolean;
+  /**
+   * L'affaire compte dans le Reste annoncé (ligne OUVERTE et active de la
+   * Perspective du mois). Faux pour une ligne Gagnée, Perdue ou Repoussée du
+   * classeur, même si `perspectiveRawGmv` en porte le montant.
+   */
+  countedInDeclaredOpen: boolean;
 };
 
 export type ForecastV2Salesperson = Omit<ForecastSalespersonBlock, "opportunities"> & {
@@ -169,6 +177,11 @@ export type ForecastV2Board = Omit<ForecastMonthBoard, "salespeople" | "region">
   expectedAvailable: boolean;
   expectedUnavailableReason: string | null;
   examine: ForecastV2Examine[];
+  /**
+   * Lignes ouvertes de la Perspective du mois, avec leur statut : ce qui entre
+   * dans le Reste annoncé et ce qui en sort, et pourquoi. Diagnostic et contrôles.
+   */
+  perspectiveLines: (DeclaredOpenLine & { status: PerspectiveLineStatus })[];
   issues: string[];
 };
 
@@ -220,7 +233,7 @@ export function isProbableOnMonth(row: ForecastV2Row): boolean {
  * affaires SIGNÉES, elles, sont réintroduites explicitement par
  * `buildForecastV2` (famille A) : voir `isVisibleInForecast`.
  */
-export function isFrozenOut(row: ForecastV2Row, today: string): boolean {
+export function isFrozenOut(row: Pick<ForecastV2Row, "isStandby" | "standbyUntil">, today: string): boolean {
   return row.isStandby && row.standbyUntil != null && row.standbyUntil.slice(0, 10) > today;
 }
 
@@ -291,6 +304,40 @@ export function scopeTotals(
     expectedFinish: signed + expectedRemaining,
   };
 }
+
+/**
+ * Statut d'une ligne OUVERTE de la Perspective du mois (décision du 30/09/2026).
+ *
+ *   signed    — l'affaire a une ligne Travaux signée dans le mois : elle est
+ *               dans le signé officiel, pas dans le reste ;
+ *   unmatched — la ligne ne désigne aucune opportunité connue : elle reste
+ *               comptée comme avant, mais signalée dans les remarques ;
+ *   terminal  — opportunité terminale (abandonnée, perdue, sortie de la
+ *               source) : exclue, même règle que le périmètre du mois ;
+ *   standby   — stand-by en cours (`isFrozenOut`, même règle que l'affichage) :
+ *               exclue ;
+ *   active    — comptée dans le Reste annoncé ET visible dans le tableau.
+ *
+ * La source Perspective n'est jamais modifiée : on choisit seulement ce qui
+ * entre dans la projection active.
+ */
+export type PerspectiveLineStatus = "active" | "signed" | "unmatched" | "terminal" | "standby";
+
+export function perspectiveLineStatus(
+  line: Pick<DeclaredOpenLine, "opportunityId" | "opportunity">,
+  signedIds: ReadonlySet<string>,
+  today: string,
+): PerspectiveLineStatus {
+  if (line.opportunityId && signedIds.has(line.opportunityId)) return "signed";
+  const o = line.opportunity;
+  if (!o) return "unmatched";
+  if (o.isTerminal) return "terminal";
+  if (isFrozenOut({ isStandby: o.isStandby, standbyUntil: o.standbyUntil }, today)) return "standby";
+  return "active";
+}
+
+/** Une ligne compte dans le Reste annoncé : active, ou non rattachée (comptée comme avant, signalée). */
+export const countsInDeclaredOpen = (s: PerspectiveLineStatus) => s === "active" || s === "unmatched";
 
 export type ForecastTableMode = "all" | "remaining";
 
@@ -411,6 +458,7 @@ export function buildForecastV2(
         frozenMonthEnd: (horizon === 1 ? p?.frozenM1 : e?.frozenMonthEnd) ?? false,
         outsideKanban: false,
         isSignedRow: false,
+        countedInDeclaredOpen: false,
       };
     });
 
@@ -420,6 +468,38 @@ export function buildForecastV2(
   // Σ Expected commerciaux = Expected Région reste vrai (FC1, FC2).
   const inBoard = new Set(board.salespeople.flatMap((s) => s.opportunities.map((o) => o.opportunityId)));
   const extras = new Map<string, ForecastV2Row[]>();
+
+  // --- Perspective du mois : statut de chaque ligne ouverte, UNE fois. Le même
+  // ensemble sert au Reste annoncé, à son compteur et à la visibilité.
+  const today = parisDate(now);
+  const officialSignedIds = new Set(official.rows.map((l) => l.opportunityId).filter((x): x is string => !!x));
+  const perspectiveLines = board.declaredOpen.map((l) => ({ ...l, status: perspectiveLineStatus(l, officialSignedIds, today) }));
+  const declaredActive = new Map(
+    perspectiveLines.filter((l) => l.status === "active").map((l) => [l.opportunityId as string, l]),
+  );
+  // Une affaire déclarée en Perspective du mois l'est, qu'elle soit ou non au
+  // Kanban : les lignes hors Kanban reçoivent leurs attributs Perspective, ce
+  // qui fait jouer `isDeclaredOnMonth` pour elles aussi. Elles restent hors
+  // Kanban (`outsideKanban`) : rien n'est transformé en projection Kanban.
+  const withPerspective = (row: ForecastV2Row): ForecastV2Row => {
+    const l = declaredActive.get(row.opportunityId);
+    return l
+      ? {
+          ...row,
+          perspectiveMonth: board.month,
+          perspectiveGmv: l.projectedGmv,
+          perspectiveRawGmv: l.gmv,
+          perspectiveConfidence: l.confidence,
+        }
+      : row;
+  };
+  const extraIds = new Set<string>();
+  const pushExtra = (owner: string, row: ForecastV2Row) => {
+    const list = extras.get(owner) ?? [];
+    list.push(withPerspective(row));
+    extras.set(owner, list);
+    extraIds.add(row.opportunityId);
+  };
 
   // --- M+1 : les lignes jaunes, et elles seules.
   //
@@ -436,6 +516,8 @@ export function buildForecastV2(
       if (o.perspectiveMonth === board.month) inPerspective.add(o.opportunityId);
     }
   }
+  // Déclarées en Perspective hors Kanban : déclarées quand même, jamais « suggérées ».
+  for (const id of declaredActive.keys()) inPerspective.add(id);
   // Le seuil vient de la configuration, pas du snapshot : le faire varier ne doit
   // pas obliger à republier le scoring. Celui inscrit dans le snapshot n'est
   // qu'une trace de ce qui était en vigueur à la publication.
@@ -474,10 +556,9 @@ export function buildForecastV2(
       frozenMonthEnd: o.frozenM1,
       outsideKanban: true,
       isSignedRow: false,
+      countedInDeclaredOpen: false,
     };
-    const list = extras.get(o.owner) ?? [];
-    list.push(row);
-    extras.set(o.owner, list);
+    pushExtra(o.owner, row);
   }
 
   if (available) {
@@ -507,11 +588,45 @@ export function buildForecastV2(
         frozenMonthEnd: e.frozenMonthEnd,
         outsideKanban: true,
         isSignedRow: false,
+        countedInDeclaredOpen: false,
       };
-      const list = extras.get(e.owner) ?? [];
-      list.push(row);
-      extras.set(e.owner, list);
+      pushExtra(e.owner, row);
     }
+  }
+
+  // Déclarées en Perspective du mois, actives, mais ni au Kanban du mois ni
+  // scorées : sans cette ligne, elles compteraient dans le Reste annoncé sans
+  // apparaître au tableau.
+  for (const l of declaredActive.values()) {
+    const id = l.opportunityId as string;
+    const o = l.opportunity!;
+    if (inBoard.has(id) || extraIds.has(id)) continue;
+    pushExtra(l.owner, {
+      opportunityId: id,
+      client: o.client,
+      owner: l.owner,
+      stage: o.stage,
+      gmv: o.gmv,
+      kanbanMonth: o.kanbanMonth,
+      kanbanRaw: o.kanbanRaw,
+      isStandby: o.isStandby,
+      perspectiveMonth: null,
+      perspectiveGmv: null,
+      perspectiveRawGmv: null,
+      perspectiveConfidence: null,
+      movement: "non_comparable",
+      nextExpectedEvent: null,
+      nextExpectedLabel: null,
+      milestoneStatus: null,
+      reading: null,
+      expectedProbability: null,
+      expectedGmv: null,
+      standbyUntil: o.standbyUntil,
+      frozenMonthEnd: false,
+      outsideKanban: true,
+      isSignedRow: false,
+      countedInDeclaredOpen: false,
+    });
   }
 
   // --- Famille A : affaires SIGNÉES dans le mois affiché.
@@ -569,6 +684,7 @@ export function buildForecastV2(
         frozenMonthEnd: false,
         outsideKanban: true,
         isSignedRow: true,
+        countedInDeclaredOpen: false,
       };
       const list = signedRowsByOwner.get(deal.owner) ?? [];
       list.push(row);
@@ -580,11 +696,31 @@ export function buildForecastV2(
   // Une ligne encore « ouverte » dans le classeur mais déjà signée côté Travaux
   // est retirée : elle est comptée dans Signé, la compter ici l'ajouterait deux
   // fois à l'atterrissage.
+  //
+  // Décision du 30/09/2026 : les stand-by en cours et les affaires terminales
+  // sortent aussi du Reste annoncé (`perspectiveLineStatus`), comme elles sortent
+  // du tableau. Une ligne = une opportunité dans `forecast_current` (clé
+  // `row_key` = OpportunityId) : le compteur compte des affaires.
   const declaredByOwner = new Map<string, { gmv: number; count: number }>();
-  for (const l of board.declaredOpen) {
+  for (const l of perspectiveLines) {
+    if (!countsInDeclaredOpen(l.status)) continue;
     if (l.opportunityId && signedIds.has(l.opportunityId)) continue;
     const cur = declaredByOwner.get(l.owner) ?? { gmv: 0, count: 0 };
     declaredByOwner.set(l.owner, { gmv: cur.gmv + l.gmv, count: cur.count + 1 });
+  }
+  const linesOf = (s: PerspectiveLineStatus) => perspectiveLines.filter((l) => l.status === s);
+  const kSum = (ls: { gmv: number }[]) => Math.round(ls.reduce((t, l) => t + l.gmv, 0) / 1000);
+  const unmatched = linesOf("unmatched");
+  if (unmatched.length > 0) {
+    issues.push(
+      `${unmatched.length} ligne(s) de Perspective sans opportunité Salesforce rattachée, comptée(s) dans le Reste annoncé (${kSum(unmatched)} k€) : à rattacher dans le classeur.`,
+    );
+  }
+  const excludedLines = [...linesOf("standby"), ...linesOf("terminal")];
+  if (excludedLines.length > 0) {
+    issues.push(
+      `${excludedLines.length} ligne(s) de Perspective en stand-by ou abandonnée(s), exclue(s) du Reste annoncé (${kSum(excludedLines)} k€).`,
+    );
   }
 
   const owners = new Set<string>([
@@ -610,7 +746,7 @@ export function buildForecastV2(
         ...attach(block?.opportunities ?? []).filter(notYetSigned),
         ...(extras.get(owner) ?? []).filter(notYetSigned),
         ...(signedRowsByOwner.get(owner) ?? []),
-      ];
+      ].map((r) => ({ ...r, countedInDeclaredOpen: !r.isSignedRow && declaredActive.has(r.opportunityId) }));
       const expectedGmv = rows.reduce((t, r) => t + (r.expectedGmv ?? 0), 0);
       const signedGmvActual = signedByOwner.get(owner) ?? 0;
       const kanbanGmv = block?.kanbanGmv ?? 0;
@@ -724,6 +860,7 @@ export function buildForecastV2(
         : horizon === 1
           ? examineM1(salespeople, m1SuggestionIds)
           : [],
+    perspectiveLines,
     issues,
   };
 }
@@ -746,7 +883,15 @@ function outsideMonthCandidates(board: Pick<ForecastV2Board, "salespeople" | "mo
   const nextMonth = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
   return board.salespeople
     .flatMap((s) => s.opportunities)
-    .filter((r) => !r.isSignedRow && r.outsideKanban && !r.frozenMonthEnd && r.expectedProbability != null)
+    .filter(
+      (r) =>
+        !r.isSignedRow &&
+        r.outsideKanban &&
+        // Déclarée en Perspective du mois hors Kanban : déjà annoncée, rien à proposer.
+        r.perspectiveMonth !== board.month &&
+        !r.frozenMonthEnd &&
+        r.expectedProbability != null,
+    )
     .map((row): ForecastV2Examine => ({
       row,
       kind: row.kanbanMonth === nextMonth ? "prevue_mois_suivant" : "absente_du_mois",
@@ -774,7 +919,10 @@ const byExpected = (a: ForecastV2Examine, b: ForecastV2Examine) =>
 export function forecastChallengers(
   board: Pick<ForecastV2Board, "examine" | "salespeople" | "month" | "horizon">,
 ): ForecastV2Examine[] {
-  const pool = board.horizon === 0 ? outsideMonthCandidates(board) : board.examine;
+  const pool =
+    board.horizon === 0
+      ? outsideMonthCandidates(board)
+      : board.examine.filter((e) => e.row.perspectiveMonth !== board.month);
   return pool.filter((e) => (e.row.expectedProbability ?? 0) > FORECAST_CHALLENGE.minProbability).sort(byExpected);
 }
 

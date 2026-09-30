@@ -292,7 +292,7 @@ export default async function ForecastPage({
               signed: scope.signed,
               declaredOpen: scope.declaredOpen,
               expectedRemaining: scope.expectedRemaining,
-              count: sheetTotals.count,
+              openShown: groups.reduce((t, g) => t + g.rows.filter((r) => !r.isSignedRow).length, 0),
             }}
             viewMonth={board.month}
             probabilityLabel={

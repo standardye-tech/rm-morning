@@ -328,6 +328,64 @@ for (const e of M.examine) {
   check("FC12h. signée, quelle que soit la probabilité : toujours affichée", vis("v", 0.25, { isSignedRow: true }) && vis("v", null, { isSignedRow: true }));
 }
 
+// FC17 — Perspective ↔ Forecast (décision du 30/09/2026) : tout ce qui compte dans
+// le Reste annoncé est visible, ou signalé ; stand-by et abandonnées en sortent.
+{
+  const { perspectiveLineStatus, countsInDeclaredOpen, isVisibleInForecast, isDeclaredOnMonth, isFrozenOut } = await import(lib("forecast-v2"));
+  const { perspectiveAmountNote, perspectiveOffKanbanSituation, openShownCount, announcedRemainingCount } = await import(lib("forecast-wording"));
+  const { parisDate } = await import(lib("business-time"));
+  const today = parisDate();
+  const opp = (over = {}) => ({ client: "X", stage: "Examen devis", gmv: 10_000, kanbanMonth: null, kanbanRaw: null, isTerminal: false, isStandby: false, standbyUntil: null, ...over });
+  const st = (line, signed = []) => perspectiveLineStatus(line, new Set(signed), today);
+  check("FC17a. Perspective active normale → comptée", st({ opportunityId: "a", opportunity: opp() }) === "active");
+  check("FC17b. Perspective + stand-by en cours → exclue", st({ opportunityId: "b", opportunity: opp({ isStandby: true, standbyUntil: "2099-12-31" }) }) === "standby");
+  check("FC17c. Perspective + stand-by échu → comptée (même règle que l'affichage)", st({ opportunityId: "b2", opportunity: opp({ isStandby: true, standbyUntil: "2000-01-01" }) }) === "active");
+  check("FC17d. Perspective + abandonnée / terminale → exclue", st({ opportunityId: "c", opportunity: opp({ isTerminal: true }) }) === "terminal");
+  check("FC17e. Perspective + signée → exclue du reste (comptée dans le signé)", st({ opportunityId: "d", opportunity: opp() }, ["d"]) === "signed");
+  check("FC17f. sans opportunité rattachée → comptée comme avant, signalée", st({ opportunityId: null, opportunity: null }) === "unmatched" && countsInDeclaredOpen("unmatched"));
+  check("FC17g. seules active et non rattachée comptent", ["active", "unmatched"].every(countsInDeclaredOpen) && !["standby", "terminal", "signed"].some(countsInDeclaredOpen));
+
+  const month = M.month;
+  const off = { opportunityId: "o", isSignedRow: false, countedInDeclaredOpen: true, outsideKanban: true, perspectiveMonth: month, kanbanMonth: "2099-01", perspectiveRawGmv: 43_000, gmv: 17_000, isStandby: false, standbyUntil: null, expectedProbability: null };
+  check("FC17h. Perspective du mois + Kanban d'un autre mois → visible, déclarée", isVisibleInForecast(off, month, today) && isDeclaredOnMonth(off, month));
+  check("FC17i. … identifiée « hors Kanban du mois »", perspectiveOffKanbanSituation(off, month)?.label === "Déclarée en Perspective, hors Kanban du mois");
+  check("FC17j. GMV Salesforce 17 k€ / Perspective 43 k€ → « Perspective déclarée : 43 k€ »", perspectiveAmountNote(off, month) === "Perspective déclarée : 43 k€");
+  check("FC17k. écart < 1 k€ → rien", perspectiveAmountNote({ ...off, perspectiveRawGmv: 17_400 }, month) === null);
+  check("FC17l. montant déclaré sous 1 k€ → à l'euro", perspectiveAmountNote({ ...off, perspectiveRawGmv: 450, gmv: 2_000 }, month) === "Perspective déclarée : 450 €");
+  check("FC17m. une Perspective d'un autre mois ne s'affiche pas", perspectiveAmountNote({ ...off, perspectiveMonth: "2099-02" }, month) === null);
+  check(
+    "FC17o. ligne du classeur Gagnée / Perdue / Repoussée (hors Reste annoncé) : aucun montant déclaré rappelé",
+    perspectiveAmountNote({ ...off, countedInDeclaredOpen: false }, month) === null && perspectiveOffKanbanSituation({ ...off, countedInDeclaredOpen: false }, month) === null,
+  );
+  check("FC17n. compteurs", openShownCount(3) === "3 affaires non signées affichées" && announcedRemainingCount(4) === "4 affaires annoncées restant à signer" && announcedRemainingCount(1) === "1 affaire annoncée restant à signer");
+
+  // Invariants A → E sur l'état réel, pour les trois horizons.
+  for (const [label, B] of [["M", M], ["M+1", M1], ["M+2", buildForecastV2(2)]]) {
+    const r = B.region;
+    const counted = B.perspectiveLines.filter((l) => countsInDeclaredOpen(l.status));
+    const rows = new Map(B.salespeople.flatMap((s) => s.opportunities).map((o) => [o.opportunityId, o]));
+    check(`FC17-A ${label}. Signé + Reste annoncé = Atterrissage commercial`, Math.abs(r.signedGmvActual + r.declaredOpenGmv - r.commercialLanding) < 0.01);
+    check(`FC17-C ${label}. Reste annoncé = Σ lignes Perspective actives (+ non rattachées)`, Math.abs(counted.reduce((t, l) => t + l.gmv, 0) - r.declaredOpenGmv) < 0.01, eur(r.declaredOpenGmv));
+    check(`FC17-D ${label}. compteur = nombre d'affaires éligibles`, counted.length === r.declaredOpenCount, `${r.declaredOpenCount} affaire(s)`);
+    const bad = B.perspectiveLines
+      .filter((l) => l.status === "active")
+      .filter((l) => {
+        const row = rows.get(l.opportunityId);
+        return !row || row.isSignedRow || !isVisibleInForecast(row, B.month, today) || !isDeclaredOnMonth(row, B.month) ||
+          isFrozenOut(row, today) || l.opportunity.isTerminal;
+      });
+    check(`FC17-B ${label}. toute affaire rattachée du Reste annoncé est active, non signée, visible et déclarée`, bad.length === 0,
+      bad.map((l) => l.opportunityId).join(", ") || `${B.perspectiveLines.filter((l) => l.status === "active").length} affaire(s)`);
+    const offK = B.perspectiveLines.filter((l) => l.status === "active" && rows.get(l.opportunityId)?.outsideKanban);
+    const flagged = B.salespeople.flatMap((s) => s.opportunities).filter((o) => o.countedInDeclaredOpen).map((o) => o.opportunityId).sort();
+    const active = B.perspectiveLines.filter((l) => l.status === "active").map((l) => l.opportunityId).sort();
+    check(`FC17-F ${label}. une ligne porte « comptée dans le Reste annoncé » ssi sa Perspective est active`, flagged.join() === active.join(), `${flagged.length}`);
+    check(`FC17-E ${label}. Perspective hors Kanban : visible`, offK.every((l) => isVisibleInForecast(rows.get(l.opportunityId), B.month, today)), `${offK.length} cas`);
+    const by = (s) => B.perspectiveLines.filter((l) => l.status === s).length;
+    console.log(`  (info) ${label} : ${by("active")} active(s) · ${by("unmatched")} non rattachée(s) · ${by("standby")} stand-by · ${by("terminal")} terminale(s) · ${by("signed")} signée(s)`);
+  }
+}
+
 // FC16 — Périmètre commercial : la prévision d'un commercial compte TOUTES ses
 // affaires éligibles (décision du 30/09/2026), et Σ commerciaux = Région.
 {

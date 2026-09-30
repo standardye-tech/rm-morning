@@ -23,6 +23,7 @@ import type { HistoricalReference } from "@/lib/official-signed";
 import { CHALLENGE_LABEL, type ForecastV2Examine } from "@/lib/forecast-v2";
 import { expectedChallengeAside, expectedChallengeEmpty } from "@/lib/expected-wording";
 import { montant } from "@/lib/momentum-wording";
+import { announcedRemainingCount } from "@/lib/forecast-wording";
 
 /**
  * Séparateur de milliers en espace insécable classique. `toLocaleString("fr-FR")`
@@ -248,7 +249,7 @@ export function ExpectedGmvHorizons({
             label={LABEL.announced}
             value={kEur(commercial)}
             hint={`signé + reste annoncé (Perspective)${
-              commercialCount == null ? "" : ` · ${commercialCount} affaire${commercialCount > 1 ? "s" : ""} à signer`
+              commercialCount == null ? "" : ` · ${announcedRemainingCount(commercialCount)}`
             }`}
           />
           <Line label={LABEL.expectedFinish} value={kEur(r.expectedFinish)} strong hint={`sur ${r.count} affaire(s) suivies`} />

@@ -10,7 +10,15 @@ import {
   type ForecastMovement,
 } from "@/lib/forecast-labels";
 import type { ForecastV2Row } from "@/lib/forecast-v2";
-import { footerItems, groupSummary, hasWeightedContribution, signedRowSituation } from "@/lib/forecast-wording";
+import {
+  footerItems,
+  groupSummary,
+  hasWeightedContribution,
+  openShownCount,
+  perspectiveAmountNote,
+  perspectiveOffKanbanSituation,
+  signedRowSituation,
+} from "@/lib/forecast-wording";
 import { formatEurShort, formatFrenchDate } from "@/lib/normalize";
 import { LABEL, pct } from "@/lib/vocabulary";
 
@@ -88,6 +96,9 @@ function situation(
   // signé officiel du mois, mais ne se lit pas comme une affaire gagnée.
   const signed = signedRowSituation(row);
   if (signed) return signed;
+  // Annoncée dans la Perspective du mois sans être au Kanban de ce mois.
+  const offKanban = perspectiveOffKanbanSituation(row, viewMonth);
+  if (offKanban) return offKanban;
   if (row.challenge) {
     // Sur M+1 le motif est unique : l'affaire pourrait signer le mois prochain et
     // n'y est pas déclarée. Nommer le mois cible évite l'ambiguïté quand la ligne
@@ -135,7 +146,14 @@ function Row({
           </span>
         ) : null}
       </td>
-      <td className="tabular whitespace-nowrap px-3 py-[3px] text-right font-medium">{formatEurShort(row.gmv)}</td>
+      <td className="tabular whitespace-nowrap px-3 py-[3px] text-right font-medium">
+        {formatEurShort(row.gmv)}
+        {perspectiveAmountNote(row, viewMonth) ? (
+          <span className="block text-[11px] font-normal leading-tight text-ink-faint">
+            {perspectiveAmountNote(row, viewMonth)}
+          </span>
+        ) : null}
+      </td>
       <td className="whitespace-nowrap px-3 py-[3px] text-center text-xs">
         {row.outsideKanban ? (
           <span className="text-ink-faint">{monthName(row.kanbanMonth) ?? "—"}</span>
@@ -246,7 +264,8 @@ export function ForecastSheet({
 }: {
   groups: SheetGroup[];
   showExpected: boolean;
-  totals: { signed: number; declaredOpen: number; expectedRemaining: number; count: number };
+  /** `openShown` : lignes non signées réellement affichées dans le tableau. */
+  totals: { signed: number; declaredOpen: number; expectedRemaining: number; openShown: number };
   probabilityLabel?: string;
   viewMonth?: string | null;
   horizon?: 0 | 1 | 2;
@@ -263,8 +282,7 @@ export function ForecastSheet({
     <div className="rounded-md border border-line bg-surface">
       <div className="flex items-baseline justify-between gap-4 border-b border-line px-4 md:px-6 py-1.5">
         <span className="text-[11px] uppercase tracking-wide text-ink-faint">
-          {groups.length} commercia{groups.length > 1 ? "ux" : "l"} · {totals.count} affaire
-          {totals.count > 1 ? "s prévues" : " prévue"} sur le mois
+          {groups.length} commercia{groups.length > 1 ? "ux" : "l"} · {openShownCount(totals.openShown)}
         </span>
         <button
           type="button"

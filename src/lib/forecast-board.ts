@@ -156,7 +156,7 @@ export type ForecastMonthBoard = {
    * jamais pondéré par la confiance. Lu tel quel dans le classeur, membres de
    * l'équipe seulement.
    */
-  declaredOpen: { opportunityId: string | null; owner: string; gmv: number }[];
+  declaredOpen: DeclaredOpenLine[];
   /** Présentes dans la dernière Perspective du mois, plus projetées dessus. */
   exits: ForecastExit[];
   /** Affaires très avancées projetées sur le mois suivant. Règles existantes. */
@@ -192,6 +192,31 @@ function kanbanKey(o: Opportunity): MonthKey | null {
 const clientOf = (o: Opportunity) => clientLabel(o.clientContact, o.name);
 
 /**
+ * Ligne OUVERTE de la Perspective du mois, avec l'état Salesforce de
+ * l'opportunité qu'elle désigne (null : ligne non rattachée). L'éligibilité au
+ * Reste annoncé est décidée par `forecast-v2` (`perspectiveLineStatus`), avec
+ * les mêmes règles que le reste de Forecast.
+ */
+export type DeclaredOpenLine = {
+  opportunityId: string | null;
+  owner: string;
+  /** GMV brut annoncé dans le classeur, jamais pondéré. */
+  gmv: number;
+  projectedGmv: number | null;
+  confidence: number | null;
+  opportunity: {
+    client: string;
+    stage: string | null;
+    gmv: number | null;
+    kanbanMonth: MonthKey | null;
+    kanbanRaw: string | null;
+    isTerminal: boolean;
+    isStandby: boolean;
+    standbyUntil: string | null;
+  } | null;
+};
+
+/**
  * Construit le tableau d'un mois.
  *
  * `monthOffset` : 0 pour M, 1 pour M+1. Le même moteur sert aux deux vues —
@@ -212,6 +237,7 @@ export function buildForecastBoard(
   const nextMonth = shiftMonth(month, 1);
 
   const opportunities = loadOpportunities();
+  const opportunityById = new Map(opportunities.map((o) => [o.opportunityId, o]));
   const issues: string[] = [];
 
   // --- Perspective LA PLUS FRAÎCHE disponible pour ce mois.
@@ -467,11 +493,31 @@ export function buildForecastBoard(
     perspectiveUpdatedAt,
     region,
     salespeople,
-    declaredOpen: perspectiveLines.flatMap((l) => {
+    declaredOpen: perspectiveLines.flatMap((l): DeclaredOpenLine[] => {
       const member = matchTeamMember(l.salesperson);
-      return l.state == null && l.gmv != null && member
-        ? [{ opportunityId: l.opportunityId, owner: member.name, gmv: l.gmv }]
-        : [];
+      if (!(l.state == null && l.gmv != null && member)) return [];
+      const o = l.opportunityId ? (opportunityById.get(l.opportunityId) ?? null) : null;
+      return [
+        {
+          opportunityId: l.opportunityId,
+          owner: member.name,
+          gmv: l.gmv,
+          projectedGmv: l.projectedGmv ?? null,
+          confidence: l.confidence ?? null,
+          opportunity: o
+            ? {
+                client: clientOf(o),
+                stage: o.stage,
+                gmv: o.gmv,
+                kanbanMonth: kanbanKey(o),
+                kanbanRaw: o.kanbanRaw,
+                isTerminal: o.isTerminal,
+                isStandby: o.isStandby,
+                standbyUntil: o.standbyUntil,
+              }
+            : null,
+        },
+      ];
     }),
     exits,
     candidates,
