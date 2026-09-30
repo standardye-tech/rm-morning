@@ -64,7 +64,27 @@ export type ExpectedGmvOpportunity = {
    */
   frozen7d: boolean;
   frozenMonthEnd: boolean;
+  /**
+   * Affaire déjà signée dans le mois au sens officiel (lignes Travaux) mais
+   * encore présente dans le scoring, le temps du prochain import. Son GMV est
+   * compté dans le signé ; ses contributions pondérées valent 0, sinon la même
+   * affaire compterait deux fois dans la prévision. La probabilité reste lisible.
+   */
+  alreadySigned: boolean;
 };
+
+/**
+ * Contribution pondérée d'une affaire : montant × probabilité, sauf si elle est
+ * gelée par la règle stand-by ou déjà signée dans le mois (son GMV est alors
+ * dans le signé officiel — le repondérer la compterait deux fois).
+ */
+export function weightedContribution(
+  gmv: number,
+  probability: number,
+  opts: { frozen: boolean; alreadySigned: boolean },
+): number {
+  return opts.frozen || opts.alreadySigned ? 0 : gmv * probability;
+}
 
 export type ExpectedGmvSalesperson = {
   salesperson: string;
@@ -179,6 +199,12 @@ export type ExpectedGmvSnapshot = {
    * dérive de calcul seraient indiscernables.
    */
   excluded: { count: number; openGmv: number; expected7d: number; expectedRemaining: number };
+  /**
+   * Contributions pondérées retirées aux affaires déjà signées ce mois
+   * (`alreadySigned`). Elles restent listées — seul leur pondéré est neutralisé —
+   * et l'identité devient : affiché + écarté + neutralisé = service.
+   */
+  signedNeutralized: { count: number; expected7d: number; expectedRemaining: number };
   issues: string[];
 };
 
@@ -311,6 +337,10 @@ export function buildExpectedGmvSnapshot(): ExpectedGmvSnapshot | null {
     set.add(line.opportunityId);
     signedDealsByOwner.set(line.salesperson, set);
   }
+  // Affaires signées dans le mois : leur réalisé est dans `official`, leur
+  // pondéré ne doit plus s'y ajouter (double comptage).
+  const signedIds = new Set(official.rows.map((l) => l.opportunityId).filter((x): x is string => !!x));
+  const signedNeutralized = { count: 0, expected7d: 0, expectedRemaining: 0 };
 
   const issues: string[] = [];
   const seen = new Set<string>();
@@ -366,6 +396,15 @@ export function buildExpectedGmvSnapshot(): ExpectedGmvSnapshot | null {
     }
 
     const gmv = r.amount ?? 0;
+    const alreadySigned = signedIds.has(r.opportunity_id);
+    if (alreadySigned) {
+      signedNeutralized.count += 1;
+      signedNeutralized.expected7d += weightedContribution(gmv, r.p_7d, { frozen: r.frozen_7d === 1, alreadySigned: false });
+      signedNeutralized.expectedRemaining += weightedContribution(gmv, r.p_month_end, {
+        frozen: r.frozen_month_end === 1,
+        alreadySigned: false,
+      });
+    }
     opportunities.push({
       opportunityId: r.opportunity_id,
       // Le scoring écrit le libellé brut Salesforce ; la forme canonique de
@@ -383,9 +422,10 @@ export function buildExpectedGmvSnapshot(): ExpectedGmvSnapshot | null {
       // stand-by la neutralise. Elle est recalculée ici plutôt que relue : si le
       // service dérivait, l'écart apparaîtrait au contrôle plutôt que de se
       // propager à l'écran.
-      expected7d: r.frozen_7d === 1 ? 0 : gmv * r.p_7d,
+      // Déjà signée : le pondéré est neutralisé, le signé officiel la compte.
+      expected7d: weightedContribution(gmv, r.p_7d, { frozen: r.frozen_7d === 1, alreadySigned }),
       pMonthEnd: r.p_month_end,
-      expectedMonthEnd: r.frozen_month_end === 1 ? 0 : gmv * r.p_month_end,
+      expectedMonthEnd: weightedContribution(gmv, r.p_month_end, { frozen: r.frozen_month_end === 1, alreadySigned }),
       ageDays: r.age_days ?? 0,
       daysInStage: r.days_in_stage,
       daysLeftInMonth: r.days_left_in_month,
@@ -405,6 +445,7 @@ export function buildExpectedGmvSnapshot(): ExpectedGmvSnapshot | null {
       standbyUntil: r.standby_until,
       frozen7d: r.frozen_7d === 1,
       frozenMonthEnd: r.frozen_month_end === 1,
+      alreadySigned,
     });
   }
 
@@ -498,6 +539,7 @@ export function buildExpectedGmvSnapshot(): ExpectedGmvSnapshot | null {
       signedGmv: snap.signed_to_date,
     },
     excluded,
+    signedNeutralized,
     issues,
   };
 }

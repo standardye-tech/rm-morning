@@ -24,6 +24,11 @@ export const LABEL = {
   // libellés portent maintenant l'AUTEUR de la prévision, qui est la seule chose
   // qui les sépare ; « fin de mois » passe en sous-titre commun.
   kanbanFinish: "Prévu par l'équipe",
+  // « Ce que les commerciaux annoncent » = leur PERSPECTIVE (signé + reste
+  // annoncé), comme l'atterrissage commercial de Forecast. Le Kanban ne porte
+  // jamais ce libellé : il se dit « pipeline positionné sur le mois ».
+  announced: "Ce que les commerciaux annoncent",
+  kanbanPositioned: "Pipeline positionné sur le mois",
   perspective: "Dernière Perspective",
   // Forecast : trois lectures, jamais mélangées. Commerciaux → analyse de Sami →
   // RM Morning → réalisé.
@@ -133,7 +138,7 @@ export const READING_HINT: Record<ForecastReading, string> = {
     "L'écart est important : la prévision commerciale mérite une revue affaire par affaire.",
   indisponible: "Aucun modèle validé ne couvre encore ce mois.",
   non_conclu:
-    "Les deux chiffres ne comptent pas les mêmes affaires : la prévision commerciale ne retient que celles portant une Projection Kanban sur le mois, la prévision RM Morning score tout le pipe ouvert. L'écart ne se lit donc pas comme un excès d'optimisme.",
+    "Les deux chiffres ne comptent pas les mêmes affaires : l'annonce des commerciaux reprend les lignes de leur Perspective du mois, la prévision RM Morning pondère tout le pipe ouvert. L'écart ne se lit donc pas comme un excès d'optimisme.",
 };
 
 /**

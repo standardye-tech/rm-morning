@@ -146,8 +146,8 @@ export default async function ExpectedGmvPage({
 
       <ExpectedGmvHorizons
         snap={snap}
-        commercial={board.region.signedGmvActual + board.region.kanbanGmv}
-        commercialCount={board.region.count}
+        commercial={board.region.commercialLanding}
+        commercialCount={board.region.declaredOpenCount}
         m1={boardM1.expectedM1}
         m1Declarative={m1Declarative}
         m1Suggestions={m1Suggestions}

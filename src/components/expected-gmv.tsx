@@ -129,10 +129,11 @@ export function ExpectedForecastDetail({ snap }: { snap: ExpectedGmvSnapshot }) 
           hint={`${r.count} affaires suivies, chacune comptée à hauteur de sa chance de signer`}
         />
         <Line label={`Ce que RM Morning prévoit pour ${snap.monthLabel}`} value={kEur(r.expectedFinish)} strong />
+        {/* Aucune fréquence annoncée : la couverture de cet intervalle n'a jamais été mesurée sur l'historique. */}
         <Line
-          label="Fourchette probable"
+          label={LABEL.probableZone}
           value={`${kEur(r.p10)} – ${kEur(r.p90)}`}
-          hint="8 fois sur 10, le mois devrait finir dans cette fourchette"
+          hint="Intervalle indicatif issu du modèle RM Morning"
         />
         <Line
           label="Signatures probables dans les 7 prochains jours"
@@ -220,7 +221,7 @@ export function ExpectedGmvHorizons({
 }: {
   snap: ExpectedGmvSnapshot;
   commercial: number | null;
-  /** Nombre d'affaires derrière la prévision commerciale, pour dire le périmètre. */
+  /** Lignes ouvertes de la Perspective derrière l'annonce commerciale, pour dire le périmètre. */
   commercialCount?: number | null;
   /** Projection M+1. Null tant que `npm run m1:publish` n'a pas tourné. */
   m1: ExpectedM1Snapshot | null;
@@ -242,14 +243,17 @@ export function ExpectedGmvHorizons({
             l'échelle des trois autres. Il n'apparaissait qu'en note dépliée.
           */}
           <Line label={LABEL.signed} value={kEur(r.signedGmv)} hint={`${r.signedCount} affaire(s)`} />
+          {/* Même définition que l'atterrissage commercial de Forecast : signé + reste annoncé (Perspective). */}
           <Line
-            label={LABEL.kanbanFinish}
+            label={LABEL.announced}
             value={kEur(commercial)}
-            hint={commercialCount == null ? undefined : `sur ${commercialCount} affaire(s) prévue(s)`}
+            hint={`signé + reste annoncé (Perspective)${
+              commercialCount == null ? "" : ` · ${commercialCount} affaire${commercialCount > 1 ? "s" : ""} à signer`
+            }`}
           />
           <Line label={LABEL.expectedFinish} value={kEur(r.expectedFinish)} strong hint={`sur ${r.count} affaire(s) suivies`} />
           <Line
-            label={`Écart ${LABEL.expectedFinish} vs prévu par l'équipe`}
+            label={`Écart ${LABEL.expectedFinish} vs annonce des commerciaux`}
             value={commercial == null ? "—" : kEur(r.expectedFinish - commercial)}
           />
           <Line label={LABEL.probableZone} value={`${kEur(r.p10)} – ${kEur(r.p90)}`} />
@@ -436,9 +440,9 @@ function ExpectedM2Card({
             />
           ) : null}
           <Line
-            label={LABEL.kanban}
+            label={LABEL.kanbanPositioned}
             value={kEur(m2.kanbanGmv)}
-            hint={m2.kanbanCount == null ? undefined : `sur ${m2.kanbanCount} affaire(s) prévue(s)`}
+            hint={m2.kanbanCount == null ? undefined : `${m2.kanbanCount} affaire${m2.kanbanCount > 1 ? "s" : ""} au Kanban du mois`}
           />
           <Line label={LABEL.perspective} value={kEur(m2.perspectiveGmv)} />
         </dl>

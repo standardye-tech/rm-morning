@@ -33,7 +33,8 @@ const ofMonth = (m: string) => (/^[aeiouyâéèêëîïôûùüh]/i.test(m) ? `d
 /** Les séries, dites en français — « pour octobre », jamais « M+1 ». */
 const SERIES_LABEL: Record<SeriesKey, (m: string) => string> = {
   rmMorning: (m) => `Ce que RM Morning prévoyait pour ${m}`,
-  declared: (m) => `Ce que les commerciaux annonçaient pour ${m}`,
+  // Photos Kanban : l'historique de la Perspective n'existe pas par date d'observation.
+  declared: (m) => `Pipeline positionné sur ${m} (Kanban)`,
   identified: (m) => `GMV d'affaires déjà identifiées pour ${m}`,
   adjusted: (m) => `Ta perspective ajustée pour ${m}`,
 };
@@ -128,7 +129,7 @@ export function M1OverviewBlock({ data, trajectory }: { data: ConstruireM1; traj
   const weeksLabel = `${oneDecimal(t.daysLeft / 7)} semaine(s)`;
 
   const gapDeals = m1GapDeals(data.deals);
-  const gap = forecast ? data.declared.gmv - forecast.projection : null;
+  const gap = forecast ? data.announced.gmv - forecast.projection : null;
   const suggested = data.deals.filter((d) => !d.declaredOnM1);
   const title = `${m.charAt(0).toUpperCase()}${m.slice(1)} ${data.month.slice(0, 4)} — où en est-on ?`;
 
@@ -148,8 +149,8 @@ export function M1OverviewBlock({ data, trajectory }: { data: ConstruireM1; traj
         />
         <Row
           label={`Ce que les commerciaux annoncent pour ${m}`}
-          value={kEur(data.declared.gmv)}
-          hint={`Projection Kanban · ${data.declared.count} affaire(s)`}
+          value={kEur(data.announced.gmv)}
+          hint={`Perspective ${m} · ${data.announced.count} affaire${data.announced.count > 1 ? "s" : ""}`}
         />
         <Row
           label={`Ta perspective ajustée pour ${m}`}
@@ -264,8 +265,8 @@ export function M1OverviewBlock({ data, trajectory }: { data: ConstruireM1; traj
         <Subsection
           title={
             gap >= 0
-              ? `Pourquoi RM Morning prévoit ${kEur(forecast.projection)} alors que les commerciaux annoncent ${kEur(data.declared.gmv)} ?`
-              : `Pourquoi RM Morning prévoit plus (${kEur(forecast.projection)}) que les commerciaux n'annoncent (${kEur(data.declared.gmv)}) ?`
+              ? `Pourquoi RM Morning prévoit ${kEur(forecast.projection)} alors que les commerciaux annoncent ${kEur(data.announced.gmv)} ?`
+              : `Pourquoi RM Morning prévoit plus (${kEur(forecast.projection)}) que les commerciaux n'annoncent (${kEur(data.announced.gmv)}) ?`
           }
         >
           <p className="px-4 pb-2 text-sm md:px-6">
@@ -274,8 +275,8 @@ export function M1OverviewBlock({ data, trajectory }: { data: ConstruireM1; traj
           {gap > 0 && gapDeals.length > 0 ? (
             <>
               <p className="px-4 pb-2 text-xs text-ink-soft md:px-6">
-                Principales affaires annoncées pour {m} mais jugées moins solides par RM Morning, par enjeu (la part de
-                leur GMV que RM Morning n&apos;attend pas sur {m}) :
+                Principales affaires positionnées sur {m} au Kanban mais jugées moins solides par RM Morning, par enjeu
+                (la part de leur GMV que RM Morning n&apos;attend pas sur {m}) :
               </p>
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[46rem] text-sm">
@@ -300,7 +301,7 @@ export function M1OverviewBlock({ data, trajectory }: { data: ConstruireM1; traj
               {gapDeals.length > GAP_VISIBLE ? (
                 <details className="border-t border-line">
                   <summary className="cursor-pointer list-none px-4 py-2.5 text-xs text-ink-soft underline decoration-dotted md:px-6">
-                    Voir les {gapDeals.length - GAP_VISIBLE} autres affaires annoncées (
+                    Voir les {gapDeals.length - GAP_VISIBLE} autres affaires positionnées (
                     {kEur(gapDeals.slice(GAP_VISIBLE).reduce((t, d) => t + d.stake, 0))} d&apos;enjeu)
                   </summary>
                   <div className="overflow-x-auto">
@@ -330,8 +331,8 @@ export function M1OverviewBlock({ data, trajectory }: { data: ConstruireM1; traj
       >
         {suggested.length === 0 ? (
           <EmptyState>
-            Aucune affaire non annoncée n&apos;a une chance réelle de signer en {m}. Les {data.declared.count} affaires
-            annoncées sont détaillées ci-dessus.
+            Aucune affaire hors du Kanban {ofMonth(m)} n&apos;a une chance réelle de signer en {m}. Les{" "}
+            {data.declared.count} affaires positionnées au Kanban sont dans le pipeline ci-dessus.
           </EmptyState>
         ) : (
           <div className="overflow-x-auto">
@@ -367,7 +368,7 @@ export function M1OverviewBlock({ data, trajectory }: { data: ConstruireM1; traj
           </div>
         )}
         <p className="border-t border-line px-4 py-3 text-xs text-ink-faint md:px-6">
-          Le GMV identifié ({kEur(data.identified.gmv)}, annoncé et suggéré) n&apos;est pas la prévision : ce que RM
+          Le GMV identifié ({kEur(data.identified.gmv)}, positionné au Kanban et suggéré) n&apos;est pas la prévision : ce que RM
           Morning prévoit pour {m} est un chiffre distinct, calculé sur l&apos;historique et la force du pipe.
         </p>
       </Subsection>

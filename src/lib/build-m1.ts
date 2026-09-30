@@ -98,6 +98,12 @@ export type ConstruireM1 = {
   forecastUnavailableReason: string | null;
   coverage: Coverage | null;
   deals: M1Deal[];
+  /**
+   * « Ce que les commerciaux annoncent » : lignes ouvertes de la Perspective du
+   * mois cible, signé exclu (même source que Forecast M+1). `declared` reste le
+   * pipeline positionné au Kanban, lu par la trajectoire.
+   */
+  announced: { gmv: number; count: number };
   /** Total des affaires identifiées : jamais présenté comme la prévision. */
   identified: { count: number; gmv: number };
   futureShare: string;
@@ -155,6 +161,7 @@ export async function buildConstruireM1(now: Date = new Date()): Promise<Constru
     monthLabel: board.monthLabel,
     objective: objective ? { amount: objective.amount, updatedAt: objective.updatedAt } : null,
     declared: { gmv: board.region.kanbanGmv, count: board.region.count },
+    announced: { gmv: board.region.declaredOpenGmv, count: board.region.declaredOpenCount },
     adjusted,
     forecast,
     forecastUnavailableReason: forecast ? null : board.expectedUnavailableReason,

@@ -164,13 +164,14 @@ check(
 // zéro et la probabilité rester non nulle.
 let worst7 = 0;
 let badFrozen = 0;
+// Même exigence pour une affaire déjà signée dans le mois : contribution nulle.
 for (const o of snap.opportunities) {
-  if (o.frozen7d) {
+  if (o.frozen7d || o.alreadySigned) {
     if (o.expected7d !== 0) badFrozen += 1;
   } else {
     worst7 = Math.max(worst7, Math.abs(o.expected7d - o.gmv * o.p7d));
   }
-  if (o.frozenMonthEnd) {
+  if (o.frozenMonthEnd || o.alreadySigned) {
     if (o.expectedMonthEnd !== 0) badFrozen += 1;
   } else {
     worst7 = Math.max(worst7, Math.abs(o.expectedMonthEnd - o.gmv * o.pMonthEnd));
@@ -224,16 +225,19 @@ check(
 // dérive de calcul.
 const drift = {
   openGmv: Math.abs(snap.region.openGmv + snap.excluded.openGmv - snap.stored.openGmv),
-  expected7d: Math.abs(snap.region.expected7d + snap.excluded.expected7d - snap.stored.expected7d),
+  expected7d: Math.abs(
+    snap.region.expected7d + snap.excluded.expected7d + snap.signedNeutralized.expected7d - snap.stored.expected7d,
+  ),
   expectedRemaining: Math.abs(
-    snap.region.expectedRemaining + snap.excluded.expectedRemaining - snap.stored.expectedRemaining,
+    snap.region.expectedRemaining + snap.excluded.expectedRemaining + snap.signedNeutralized.expectedRemaining -
+      snap.stored.expectedRemaining,
   ),
 };
 const worst8 = Math.max(...Object.values(drift));
 check(
-  "EC8. agrégats interface + écartés = agrégats du service de scoring",
+  "EC8. agrégats interface + écartés + signés neutralisés = agrégats du service de scoring",
   worst8 < 0.01,
-  `écart max ${eur(worst8)} · ${snap.excluded.count} affaire(s) écartée(s) pour ${eur(snap.excluded.openGmv)} de GMV ouvert`,
+  `écart max ${eur(worst8)} · ${snap.excluded.count} affaire(s) écartée(s) pour ${eur(snap.excluded.openGmv)} de GMV ouvert · ${snap.signedNeutralized.count} déjà signée(s), ${eur(snap.signedNeutralized.expectedRemaining)} de pondéré neutralisé`,
 );
 
 // EC14 — le GMV signé affiché doit être exactement le GMV officiel du mois.
@@ -344,12 +348,71 @@ check(
     .map((f) => readFileSync(path.resolve(process.cwd(), f), "utf8"))
     .map((s) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\{\/\*[\s\S]*?\*\/\}/g, "").replace(/^\s*\/\/.*$/gm, ""))
     .join("\n");
-  const banned = ["PR-AUC", "Brier", "Affaires scorées", "Logistic", "WAPE", "P10", "P90", "GMV probable"];
+  const banned = ["PR-AUC", "Brier", "Affaires scorées", "Logistic", "WAPE", "P10", "P90", "GMV probable", "fois sur 10"];
   const hits = banned.filter((w) => rendered.includes(w));
-  check("EC17a. ni PR-AUC, ni Brier, ni « Affaires scorées », ni « GMV probable » à l'écran", hits.length === 0, hits.join(", ") || "aucun");
+  check("EC17a. ni PR-AUC, ni Brier, ni « Affaires scorées », ni « GMV probable », ni « 8 fois sur 10 » à l'écran", hits.length === 0, hits.join(", ") || "aucun");
   const m1 = readFileSync(path.resolve(process.cwd(), "src/components/m1-overview.tsx"), "utf8");
   check("EC17b. trajectoire : colonnes datées « Vue au » et lecture « ce que nous pensions »", m1.includes("Vue au") && m1.includes("ce que nous pensions"));
   check("EC17c. explicabilité : l'écart n'est pas présenté comme une somme d'affaires", m1.includes("n&apos;additionnent pas l&apos;écart"));
+}
+
+// EC19 — « Ce que les commerciaux annoncent » = la Perspective, jamais le Kanban.
+{
+  const { readFileSync } = await import("node:fs");
+  const { buildForecastV2 } = await import(lib("forecast-v2"));
+  const { LABEL } = await import(lib("vocabulary"));
+  const src = (f) => readFileSync(path.resolve(process.cwd(), f), "utf8");
+  const page = src("src/app/expected-gmv/page.tsx");
+  const card = src("src/components/expected-gmv.tsx");
+  const m1 = src("src/components/m1-overview.tsx");
+  const buildM1 = src("src/lib/build-m1.ts");
+  check("EC19a. libellé unique", LABEL.announced === "Ce que les commerciaux annoncent" && LABEL.kanbanPositioned === "Pipeline positionné sur le mois");
+  check(
+    "EC19b. M : la carte compare la prévision à l'atterrissage commercial (signé + Perspective), comme Forecast",
+    /commercial=\{board\.region\.commercialLanding\}/.test(page) && !/kanbanGmv\}\s*\n?\s*commercialCount/.test(page) && card.includes("label={LABEL.announced}"),
+  );
+  check(
+    "EC19c. M+1 : « Ce que les commerciaux annoncent » lit la Perspective (declaredOpenGmv)",
+    /announced: \{ gmv: board\.region\.declaredOpenGmv, count: board\.region\.declaredOpenCount \}/.test(buildM1) &&
+      /annoncent pour \$\{m\}`\}\s*\n\s*value=\{kEur\(data\.announced\.gmv\)\}/.test(m1) &&
+      !/annon[cç]\w*[^\n]*data\.declared\.gmv|data\.declared\.gmv[^\n]*annon/.test(m1),
+  );
+  check(
+    "EC19d. le Kanban n'est plus jamais dit « annoncé » : M+2 et trajectoire en « pipeline positionné »",
+    !card.includes("label={LABEL.kanban}") && !card.includes("label={LABEL.kanbanFinish}") && m1.includes("Pipeline positionné sur ${m} (Kanban)"),
+  );
+  const fM = buildForecastV2(0), fM1 = buildForecastV2(1);
+  console.log(
+    `  (info) M : annonce ${kEur(fM.region.commercialLanding)} (Perspective) · pipeline Kanban ${kEur(fM.region.signedGmvActual + fM.region.kanbanGmv)} — ` +
+      `M+1 : annonce ${kEur(fM1.region.declaredOpenGmv)} (Perspective) · pipeline Kanban ${kEur(fM1.region.kanbanGmv)}`,
+  );
+}
+
+// EC18 — Une affaire signée officiellement et encore scorée ne pondère plus.
+{
+  const { weightedContribution } = await import(lib("expected-gmv-live"));
+  const { buildForecastV2 } = await import(lib("forecast-v2"));
+  check("EC18a. cas fabriqué : signée + encore scorée à 40 % → contribution 0", weightedContribution(50_000, 0.4, { frozen: false, alreadySigned: true }) === 0);
+  check("EC18b. cas fabriqué : non signée à 40 % → 20 000 €", weightedContribution(50_000, 0.4, { frozen: false, alreadySigned: false }) === 20_000);
+  const signedIds = new Set(officialSignedGmv(snap.month).rows.map((l) => l.opportunityId).filter(Boolean));
+  const stillScored = snap.opportunities.filter((o) => signedIds.has(o.opportunityId));
+  check(
+    "EC18c. état réel : toute affaire signée ce mois encore scorée est marquée et ne pondère plus",
+    stillScored.every((o) => o.alreadySigned && o.expectedMonthEnd === 0 && o.expected7d === 0) &&
+      snap.opportunities.every((o) => !o.alreadySigned || signedIds.has(o.opportunityId)),
+    `${stillScored.length} cas : ${stillScored.map((o) => `${o.client} ${(o.pMonthEnd * 100).toFixed(1)} %`).join(", ") || "aucun"}`,
+  );
+  check(
+    "EC18d. son GMV reste dans le signé officiel",
+    Math.abs(snap.region.signedGmv - officialSignedGmv(snap.month).gmv) < 0.01,
+    eur(snap.region.signedGmv),
+  );
+  const fc = buildForecastV2(0);
+  check(
+    "EC18e. pondéré restant identique dans Forecast et Expected",
+    Math.abs(fc.region.expectedRemaining - snap.region.expectedRemaining) < 0.01,
+    `${eur(fc.region.expectedRemaining)} vs ${eur(snap.region.expectedRemaining)}`,
+  );
 }
 
 if (snap.issues.length > 0) {

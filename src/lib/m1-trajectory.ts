@@ -354,7 +354,7 @@ export function buildM1Trajectory(
     const photo = declaredValues[i];
     if (photo != null && Math.abs(photo - data.declared.gmv) > 1) {
       notes.push(
-        `Le déclaratif du jour (${kEur(data.declared.gmv)}) diffère de la photo Opportunity du jour (${kEur(photo)}) : ` +
+        `Le pipeline Kanban du jour (${kEur(data.declared.gmv)}) diffère de la photo Opportunity du jour (${kEur(photo)}) : ` +
           "le moteur compte des affaires absentes de la photo. La dernière colonne reprend le chiffre du moteur.",
       );
     }
