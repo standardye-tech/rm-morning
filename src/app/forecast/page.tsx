@@ -282,7 +282,7 @@ export default async function ForecastPage({
         </Card>
       ) : (
         <div className="mt-3 space-y-3">
-          <ForecastV2Totals board={view} />
+          <ForecastV2Totals board={view} ownerFiltered={filtered} />
           <ForecastSheet
             groups={groups}
             showExpected={board.expectedAvailable}

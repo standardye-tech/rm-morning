@@ -21,7 +21,18 @@ import { LABEL, kEur } from "@/lib/vocabulary";
  * Les quatre chiffres tiennent donc sur une ligne au-dessus du tableau, et rien
  * ne s'interpose entre eux et les affaires.
  */
-export function ForecastV2Totals({ board }: { board: ForecastV2Board }) {
+export function ForecastV2Totals({
+  board,
+  ownerFiltered = false,
+}: {
+  board: ForecastV2Board;
+  /**
+   * Un seul commercial est affiché. La zone probable et la projection M+1 sont
+   * des chiffres de RÉGION, sans déclinaison par commercial : ils sont alors
+   * dits comme tels, jamais comparés au déclaratif d'un seul commercial.
+   */
+  ownerFiltered?: boolean;
+}) {
   const r = board.region;
   const commercial = r.commercialLanding;
   const m1 = board.expectedM1;
@@ -62,16 +73,23 @@ export function ForecastV2Totals({ board }: { board: ForecastV2Board }) {
       */}
       {board.horizon === 1 && m1 != null ? (
         <>
-          <Total label={LABEL.projectionM1} value={kEur(m1.projection)} strong />
           <Total
-            label={LABEL.indicativeRange}
+            label={ownerFiltered ? `${LABEL.projectionM1} · Région` : LABEL.projectionM1}
+            value={kEur(m1.projection)}
+            strong={!ownerFiltered}
+            hint={ownerFiltered ? "chiffre de la Région, pas de projection par commercial" : undefined}
+          />
+          <Total
+            label={ownerFiltered ? `${LABEL.indicativeRange} · Région` : LABEL.indicativeRange}
             value={`${kEur(m1.rangeLo)} – ${kEur(m1.rangeHi)}`}
             hint={`${LABEL.confidence.toLowerCase()} ${m1.confidence}`}
           />
-          <span className="text-xs text-ink-faint">
-            Les commerciaux annoncent {kEur(r.declaredOpenGmv)} · Écart annonces vs {LABEL.projectionM1} :{" "}
-            {kEur(r.declaredOpenGmv - m1.projection)}
-          </span>
+          {ownerFiltered ? null : (
+            <span className="text-xs text-ink-faint">
+              Les commerciaux annoncent {kEur(r.declaredOpenGmv)} · Écart annonces vs {LABEL.projectionM1} :{" "}
+              {kEur(r.declaredOpenGmv - m1.projection)}
+            </span>
+          )}
         </>
       ) : board.horizon === 2 ? (
         <Total
@@ -84,7 +102,8 @@ export function ForecastV2Totals({ board }: { board: ForecastV2Board }) {
           <Total label={LABEL.expectedRegion} value={kEur(r.expectedFinish)} strong />
           <Total
             label={LABEL.probableZone}
-            value={`${kEur(r.p10)} – ${kEur(r.p90)}`}
+            value={ownerFiltered ? "—" : `${kEur(r.p10)} – ${kEur(r.p90)}`}
+            hint={ownerFiltered ? "calculée pour la Région uniquement" : undefined}
           />
           <span className="text-xs text-ink-faint">
             Atterrissage commercial {kEur(commercial)} · Écart {LABEL.expectedRegion} vs atterrissage :{" "}
