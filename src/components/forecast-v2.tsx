@@ -36,7 +36,7 @@ export function ForecastV2Totals({ board }: { board: ForecastV2Board }) {
       <Total
         label={LABEL.declaredOpen}
         value={kEur(r.declaredOpenGmv)}
-        hint={`Perspective M · ${r.declaredOpenCount} affaire${r.declaredOpenCount > 1 ? "s" : ""} · atterrissage ${kEur(r.commercialLanding)} = ${kEur(r.signedGmvActual)} signés + ${kEur(r.declaredOpenGmv)} à signer`}
+        hint={`Perspective ${board.horizon === 0 ? "M" : `M+${board.horizon}`} · ${r.declaredOpenCount} affaire${r.declaredOpenCount > 1 ? "s" : ""} · atterrissage ${kEur(r.commercialLanding)} = ${kEur(r.signedGmvActual)} signés + ${kEur(r.declaredOpenGmv)} à signer`}
       />
       <Total
         label={LABEL.adjustedPerspective}
