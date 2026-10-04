@@ -1235,6 +1235,15 @@ export const OPPORTUNITY_MONITORING = {
   /** Éléments du bloc « À débloquer maintenant ». */
   maxValueItems: 8,
 
+  /**
+   * GMV minimale pour entrer dans « À débloquer maintenant » (strictement
+   * inférieure : exclue). Plus large que le plancher du Plan du jour : une
+   * affaire à 35 k€ peut justifier une intervention manager, une affaire à
+   * moins de 10 k€ ne doit pas consommer une des huit priorités. Ce bloc
+   * seulement : ni les pistes, ni les exceptions de suivi, ni le Morning.
+   */
+  minValueGmv: 10_000,
+
   /** Exceptions Opportunités autorisées dans les 5 actions du Morning. */
   maxMorningActions: 2,
 

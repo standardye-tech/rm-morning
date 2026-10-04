@@ -258,11 +258,15 @@ section("F / G — Lire n'est jamais traiter");
   markItemRead("opportunite", OPP, now);
   check("F. « Lu » : aucune action fermée (état partagé inchangé)", treatedCount() === t0 && ackCount() === a0);
   check("F. … l'attente reste dans le Bloc 2, le Plan intact", inBloc2(MSG1) && inPlan(planKey));
-  check("F. … la ligne quitte le Monitoring comme lue, pas comme traitée", !inMonitoring(OPP) && treatedActions([mailKey1]).size === 0);
+  // Lu ≠ traité : « À débloquer maintenant » garde l'action ouverte, marquée lue.
+  const valueTop = () => opportunityMonitoringView(null).items.find((i) => i.opportunity.opportunityId === OPP);
+  check("F. … la ligne reste dans « À débloquer maintenant », marquée lue", valueTop()?.verdict.status === "lu" && treatedActions([mailKey1]).size === 0);
+  check("F. … sous la même ActionKey que le Bloc 2 (mail:…:waiting_reply)", keys.opportunityActionKey(valueTop()?.opportunity ?? {}) === mailKey1);
   markScopeRead("opportunite", null, now);
   markScopeRead("piste", null, now);
   check("G. « Tout lire » (pistes et opportunités) : aucune action traitée", treatedCount() === t0 && ackCount() === a0);
   check("G. … Bloc 2 et Plan inchangés", inBloc2(MSG1) && inPlan(planKey));
+  check("G. … et l'attente reste dans « À débloquer maintenant »", !!valueTop());
   db.prepare("DELETE FROM monitoring_read").run();
 }
 

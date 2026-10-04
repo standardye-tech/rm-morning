@@ -82,10 +82,9 @@ export default async function MonitoringPage({
   const allLeads = loadLeads();
   const leads = ownerFilter ? allLeads.filter((l) => l.owner === ownerFilter) : allLeads;
   const metrics = computeLeadMetrics(leads, period);
-  // Les listes à traiter passent par la vue de lecture : elles ne montrent que
-  // ce qui n'a pas encore été lu, ou ce qui a changé depuis. Les KPI, eux,
-  // restent calculés sur le stock complet — lire une anomalie ne la fait pas
-  // disparaître des compteurs.
+  // Les listes à traiter passent par la vue de lecture : elles montrent les
+  // actions ouvertes (non traitées), lues ou non, avec ce qui a changé depuis
+  // la lecture. Les KPI, eux, restent calculés sur le stock complet.
   const leadView = leadMonitoringView(ownerFilter);
 
   const allOpportunities = loadMilestoneOpportunities();

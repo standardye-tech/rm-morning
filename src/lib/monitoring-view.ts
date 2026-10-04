@@ -10,21 +10,24 @@
  * Les règles de priorité ne sont pas retouchées : `buildLeadTodo`,
  * `buildValueBlock` et `buildExceptionList` restent seuls juges de ce qui est
  * une anomalie et de son ordre. Ce module ne fait que deux choses de plus :
- * retirer ce qui a déjà été lu et n'a pas bougé, et attacher à chaque élément
- * restant ce qui a changé depuis.
+ * retirer ce dont l'action est traitée, et attacher à chaque élément restant
+ * son état de lecture et ce qui a changé depuis.
  *
  * LU ≠ TRAITÉ. « Lu » (`monitoring_read`) dit « j'ai vu cet état de la ligne » :
  * c'est un acquittement de NOTIFICATION, porté par l'entité entière (piste ou
  * opportunité) et par le cliché de ses champs. « Traité » dit « cette action
  * est gérée » : c'est l'état PARTAGÉ de l'ActionKey de la ligne
- * (`action-state`), le même que celui du Morning et de Ma semaine. Une ligne
- * disparaît si elle est lue et inchangée OU si son action est traitée ; une
- * lecture ne ferme jamais une action, et « Tout lire » ne traite rien.
+ * (`action-state`), le même que celui du Morning et de Ma semaine.
+ *
+ * Toutes les listes du Monitoring portent un bouton « Traité » : ce sont des
+ * listes d'ACTIONS, pas de notifications. Seule une action traitée en sort ;
+ * une ligne lue reste affichée, marquée lue, tant que son action est ouverte,
+ * et ne compte simplement plus comme non lue. « Tout lire » ne change donc ni
+ * les lignes ni leur ordre : seulement les compteurs de lecture et la cloche.
  *
  * PLAFOND D'AFFICHAGE ET PÉRIMÈTRE DE LECTURE, volontairement distincts :
  * l'écran ne montre qu'une dizaine de lignes pour rester lisible, mais
- * « Tout lire » acquitte tout le stock actif. Sinon la liste se remplirait
- * aussitôt avec la page suivante et ne pourrait jamais atteindre zéro.
+ * « Tout lire » acquitte tout le stock actif, affiché ou non.
  */
 
 import { leadActionKey, opportunityActionKey } from "./action-keys";
@@ -57,9 +60,9 @@ export type ValueEntry = ValueItem & { verdict: ReadVerdict };
 export type ExceptionEntry = { opportunity: MilestoneOpportunity; verdict: ReadVerdict };
 
 export type MonitoringListState = {
-  /** Éléments restant à traiter, plafonnés pour l'affichage. */
+  /** Actions ouvertes (non traitées), plafonnées pour l'affichage. */
   visibleCount: number;
-  /** Éléments actifs masqués parce que lus et inchangés. */
+  /** Actions ouvertes lues et inchangées : toujours affichées, plus comptées comme non lues. */
   readCount: number;
   /** Éléments actifs masqués parce que leur action est traitée (où que ce soit). */
   treatedCount: number;
@@ -108,14 +111,15 @@ export function leadMonitoringView(
     all.map((t) => ({ id: t.lead.leadId, fields: leadFields(t.lead) })),
   );
   const treated = treatedLeads(all.map((t) => t.lead));
-  const open = all.filter((t) => !treated.has(t.lead.leadId));
-  const pending = open
-    .map((t) => ({ ...t, verdict: verdicts.get(t.lead.leadId)! }))
-    .filter((t) => t.verdict.status !== "lu");
+  // Lu ≠ traité : seule une action traitée sort de la liste.
+  const open = all
+    .filter((t) => !treated.has(t.lead.leadId))
+    .map((t) => ({ ...t, verdict: verdicts.get(t.lead.leadId)! }));
+  const unread = open.filter((t) => t.verdict.status !== "lu");
 
   return {
-    items: pending.slice(0, limit),
-    ...stateOf(all.length, pending, Math.min(pending.length, limit), "piste", all.length - open.length),
+    items: open.slice(0, limit),
+    ...stateOf(all.length, unread, Math.min(open.length, limit), "piste", all.length - open.length),
   };
 }
 
@@ -179,14 +183,14 @@ export function opportunityMonitoringView(
   );
 
   const treated = treatedOpportunities(scope.union);
-  const pendingValue = scope.value
+  // Lu ≠ traité : la lecture ne retire pas une action. Le Top N se calcule sur
+  // toutes les actions encore ouvertes, dans l'ordre de `buildValueBlock`.
+  const openValue = scope.value
     .filter((v) => !treated.has(v.opportunity.opportunityId))
-    .map((v) => ({ ...v, verdict: verdicts.get(v.opportunity.opportunityId)! }))
-    .filter((v) => v.verdict.status !== "lu");
-  const pendingExceptions = scope.exceptions
+    .map((v) => ({ ...v, verdict: verdicts.get(v.opportunity.opportunityId)! }));
+  const openExceptions = scope.exceptions
     .filter((o) => !treated.has(o.opportunityId))
-    .map((o) => ({ opportunity: o, verdict: verdicts.get(o.opportunityId)! }))
-    .filter((e) => e.verdict.status !== "lu");
+    .map((o) => ({ opportunity: o, verdict: verdicts.get(o.opportunityId)! }));
 
   // L'état affiché porte sur l'UNION : c'est le périmètre que « Tout lire »
   // acquitte, et le compteur doit décrire ce que le bouton va faire.
@@ -196,12 +200,12 @@ export function opportunityMonitoringView(
     .filter((v) => v.verdict.status !== "lu");
 
   return {
-    items: pendingValue.slice(0, limit),
-    exceptions: pendingExceptions.slice(0, exceptionLimit),
+    items: openValue.slice(0, limit),
+    exceptions: openExceptions.slice(0, exceptionLimit),
     ...stateOf(
       scope.union.length,
       pendingUnion,
-      Math.min(pendingValue.length, limit),
+      Math.min(openValue.length, limit),
       "opportunite",
       treated.size,
     ),

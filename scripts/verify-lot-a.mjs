@@ -329,6 +329,12 @@ for (const [scope, label, buildView] of [
 ]) {
   section(`A3/A4 — Monitoring ${label} : Tout lire et détection des nouveautés`);
 
+  // Lu ≠ Traité : toutes les listes du Monitoring sont des listes d'ACTIONS.
+  // « Tout lire » ne change ni leurs lignes ni leur ordre, seulement la lecture.
+  const lists = (v) => (scope === "piste" ? [v.items] : [v.items, v.exceptions]);
+  const idOf = (i) => (scope === "piste" ? i.lead.leadId : i.opportunity.opportunityId);
+  const shape = (v) => JSON.stringify(lists(v).map((l) => l.map(idOf)));
+  const unread = (v) => v.activeCount - v.readCount - v.treatedCount;
   resetRead(scope);
   const initial = buildView(null);
   check("la liste part remplie", initial.items.length > 0, `${initial.activeCount} élément(s) actifs`);
@@ -338,9 +344,13 @@ for (const [scope, label, buildView] of [
   check("« Tout lire » acquitte tout le stock actif", read === initial.activeCount, `${read} lu(s)`);
 
   const emptied = buildView(null);
-  check("la liste active revient à vide", emptied.items.length === 0, `${emptied.visibleCount} restant(s)`);
-  // Lues ou traitées (état partagé, ex. attente acquittée dans le Morning).
-  check("l'écran peut annoncer « Tout est traité »", emptied.readCount + emptied.treatedCount === emptied.activeCount);
+  check(
+    "« Tout lire » ne change ni les actions affichées ni leur ordre",
+    shape(emptied) === shape(initial) && emptied.visibleCount === initial.visibleCount,
+    `${emptied.visibleCount} action(s) à traiter`,
+  );
+  check("… elles sont toutes marquées lues", lists(emptied).flat().every((i) => i.verdict.status === "lu"));
+  check("… et le compteur de non-lus tombe à zéro", unread(emptied) === 0, `${unread(initial)} → ${unread(emptied)}`);
   check("la dernière lecture est datée", emptied.lastReadAt != null, emptied.lastReadAt ?? "—");
 
   const snapshots = db
@@ -348,9 +358,9 @@ for (const [scope, label, buildView] of [
     .get(scope).n;
   check("un snapshot des valeurs vues est persisté", Number(snapshots) === read, `${snapshots} signature(s)`);
 
-  // Une donnée modifiée doit faire revenir l'élément, et lui seul.
-  const first = initial.items[0];
-  const id = scope === "piste" ? first.lead.leadId : first.opportunity.opportunityId;
+  // Une donnée modifiée doit marquer l'élément « modifié », et lui seul.
+  const first = lists(initial).at(-1)[0];
+  const id = idOf(first);
   if (scope === "piste") {
     db.prepare("UPDATE lead SET recall_date = '2099-12-31' WHERE lead_id = ?").run(id);
   } else {
@@ -358,10 +368,8 @@ for (const [scope, label, buildView] of [
   }
 
   const afterChange = buildView(null);
-  const back = afterChange.items.find(
-    (i) => (scope === "piste" ? i.lead.leadId : i.opportunity.opportunityId) === id,
-  );
-  check("l'élément modifié revient dans la liste", back != null, id);
+  const back = lists(afterChange).flat().find((i) => idOf(i) === id);
+  check("l'élément modifié est toujours dans la liste", back != null, id);
   if (back) {
     check("il est marqué comme modifié", back.verdict.status === "modifie");
     check(
@@ -375,13 +383,14 @@ for (const [scope, label, buildView] of [
     );
   }
   check(
-    "les éléments inchangés restent masqués",
-    afterChange.items.length === 1,
-    `${afterChange.items.length} affiché(s), ${afterChange.changedCount} modifié(s)`,
+    "les éléments inchangés restent lus",
+    lists(afterChange).flat().filter((i) => i.verdict.status !== "lu").every((i) => idOf(i) === id) &&
+      afterChange.changedCount === 1 && unread(afterChange) === 1,
+    `${afterChange.changedCount} modifié(s), ${unread(afterChange)} non lu(s)`,
   );
 
-  // Un nouvel élément jamais lu doit apparaître sans être marqué « modifié ».
-  const neverRead = afterChange.items.filter((i) => i.verdict.status === "jamais_lu").length;
+  // Aucun élément ne doit apparaître comme « jamais lu » après une lecture globale.
+  const neverRead = lists(afterChange).flat().filter((i) => i.verdict.status === "jamais_lu").length;
   check("aucun faux « nouveau » n'est produit", neverRead === 0);
 }
 

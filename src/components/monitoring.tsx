@@ -2,8 +2,9 @@ import { SalesforceRecordLink } from "@/components/salesforce-link";
 import { OPERATIONAL_LABEL, type LeadOperationalStatus } from "@/lib/lead-rules";
 import type { OwnerLeadMetrics, TeamLeadMetrics } from "@/lib/lead-metrics";
 import type { LeadMonitoringView } from "@/lib/monitoring-view";
+import { monitoringSummary } from "@/lib/monitoring-wording";
 import { SortableTable } from "@/components/sortable-table";
-import { AllHandled, ChangeLine, LireButton, ToutLireButton, TraiteButton } from "./monitoring-read";
+import { ChangeLine, ReadMark, ToutLireButton, TraiteButton } from "./monitoring-read";
 import { Badge, Card, EmptyState, SectionTitle, Stat } from "./ui";
 
 const pct = (v: number | null) => (v == null ? "—" : `${Math.round(v * 100)} %`);
@@ -170,10 +171,9 @@ export function OwnerTable({ owners }: { owners: OwnerLeadMetrics[] }) {
 /**
  * Bloc « À traiter maintenant ». Le stock ancien y est volontairement contingenté.
  *
- * Depuis le Lot A, la liste est FILTRÉE PAR L'ÉTAT DE LECTURE : une piste lue et
- * inchangée n'y figure plus, et revient dès qu'une de ses informations de
- * décision bouge — avec la valeur modifiée mise en évidence. C'est ce qui permet
- * à la liste d'atteindre réellement zéro.
+ * Une liste d'ACTIONS : seule une piste traitée en sort. Une piste lue reste
+ * affichée, marquée lue, tant que son action est ouverte ; si une information
+ * de décision bouge, la valeur modifiée est mise en évidence.
  */
 export function LeadTodo({ view, owner }: { view: LeadMonitoringView; owner: string | null }) {
   const { items } = view;
@@ -184,22 +184,17 @@ export function LeadTodo({ view, owner }: { view: LeadMonitoringView; owner: str
         title="À traiter maintenant"
         aside={
           <div className="flex flex-wrap items-center gap-3">
-            <span>
-              {view.visibleCount} piste(s) à traiter
-              {view.changedCount > 0 ? ` · ${view.changedCount} modifiée(s) depuis la lecture` : ""}
-              {view.readCount > 0 ? ` · ${view.readCount} déjà lue(s)` : ""}
-              {view.treatedCount > 0 ? ` · ${view.treatedCount} traitée(s)` : ""}
-            </span>
+            <span>{monitoringSummary("piste", view)}</span>
             <ToutLireButton scope="piste" owner={owner} count={view.activeCount - view.readCount - view.treatedCount} />
           </div>
         }
       />
       {items.length === 0 ? (
-        view.activeCount > 0 || view.readCount > 0 ? (
-          <AllHandled readCount={view.readCount} lastReadAt={view.lastReadAt} what="pistes" />
-        ) : (
-          <EmptyState>Aucune piste en anomalie. Les échéances sont tenues.</EmptyState>
-        )
+        <EmptyState>
+          {view.treatedCount > 0
+            ? "Tout est traité : aucune action ouverte sur les pistes."
+            : "Aucune piste en anomalie. Les échéances sont tenues."}
+        </EmptyState>
       ) : (
         <ul className="divide-y divide-line">
           {items.map(({ lead, reason, verdict }) => (
@@ -208,7 +203,7 @@ export function LeadTodo({ view, owner }: { view: LeadMonitoringView; owner: str
                 <p className="text-[15px] font-medium"><SalesforceRecordLink recordId={lead.leadId}>{lead.name ?? lead.leadId}</SalesforceRecordLink></p>
                 <div className="flex shrink-0 items-center gap-3">
                   <p className="text-xs text-ink-soft">{lead.owner}</p>
-                  <LireButton scope="piste" itemId={lead.leadId} />
+                  <ReadMark scope="piste" itemId={lead.leadId} verdict={verdict} />
                   <TraiteButton scope="piste" itemId={lead.leadId} />
                 </div>
               </div>

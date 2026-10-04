@@ -13,8 +13,11 @@
  *   — la cloche (`monitoringUnreadCounts`) est calculée depuis `monitoring_read`,
  *     jamais depuis `operational_status`/`milestone_status` bruts : elle suit
  *     exactement les compteurs `activeCount`/`readCount` des écrans ;
- *   — un champ de décision qui change fait réapparaître la ligne ET remonte la
- *     cloche, sans qu'on ait besoin de la relire depuis Salesforce ;
+ *   — un champ de décision qui change marque la ligne « modifiée » ET remonte
+ *     la cloche, sans qu'on ait besoin de la relire depuis Salesforce ;
+ *   — Lu ≠ Traité, dans toutes les listes (pistes, « À débloquer maintenant »,
+ *     exceptions de suivi) : une ligne lue reste affichée, seule une ligne
+ *     traitée sort ; « Tout lire » ne change ni les lignes ni leur ordre ;
  *   — persistance : chaque geste est relu immédiatement depuis la même base,
  *     comme le ferait un rechargement de page.
  */
@@ -52,6 +55,7 @@ const check = (label, ok, detail = "") => {
 const section = (t) => console.log(`\n${t}`);
 
 const db = getDb();
+const ALL = Number.MAX_SAFE_INTEGER;
 const today = new Date().toISOString().slice(0, 10);
 const now = new Date().toISOString();
 
@@ -124,9 +128,10 @@ check("markItemRead renvoie true pour une piste existante", okReadA === true);
 const leadViewAfterA = leadMonitoringView(null);
 const countsAfterA = monitoringUnreadCounts();
 
+// Lu ≠ traité : la piste lue reste affichée, marquée lue.
 check(
-  "seule la piste A a disparu de la vue, la piste B reste",
-  !leadViewAfterA.items.some((i) => i.lead.leadId === LEAD_A) &&
+  "la piste A reste dans la vue, marquée lue ; seule elle change d'état",
+  leadMonitoringView(null, ALL).items.some((i) => i.lead.leadId === LEAD_A && i.verdict.status === "lu") &&
     leadViewAfterA.readCount === leadViewBefore.readCount + 1,
 );
 check(
@@ -150,12 +155,13 @@ const countsMid = monitoringUnreadCounts();
 const okReadOpp = markItemRead("opportunite", OPP_A, new Date(now));
 check("markItemRead renvoie true pour une opportunité existante", okReadOpp === true);
 
-const oppViewAfter = opportunityMonitoringView(null);
 const countsAfterOpp = monitoringUnreadCounts();
+// Lu ≠ traité : l'action reste ouverte dans les deux blocs, marquée lue.
+const oppPoolAfter = opportunityMonitoringView(null, ALL, ALL);
 check(
-  "l'opportunité disparaît des deux blocs (valeur ET exceptions)",
-  !oppViewAfter.items.some((v) => v.opportunity.opportunityId === OPP_A) &&
-    !oppViewAfter.exceptions.some((e) => e.opportunity.opportunityId === OPP_A),
+  "lue, l'opportunité reste dans « À débloquer maintenant » ET dans les exceptions",
+  oppPoolAfter.items.some((v) => v.opportunity.opportunityId === OPP_A && v.verdict.status === "lu") &&
+    oppPoolAfter.exceptions.some((e) => e.opportunity.opportunityId === OPP_A && e.verdict.status === "lu"),
 );
 check(
   "la cloche baisse d'exactement une unité (opportunité fraîche)",
@@ -176,24 +182,26 @@ section("5 — Persistance : une relecture depuis la même base reflète l'état
 
 check(
   "relire la vue juste après l'écriture montre exactement le même résultat (pas de cache local)",
-  !leadMonitoringView(null).items.some((i) => i.lead.leadId === LEAD_A) &&
-    !opportunityMonitoringView(null).items.some((v) => v.opportunity.opportunityId === OPP_A),
+  leadMonitoringView(null, ALL).items.some((i) => i.lead.leadId === LEAD_A && i.verdict.status === "lu") &&
+    opportunityMonitoringView(null, ALL).items.some(
+      (v) => v.opportunity.opportunityId === OPP_A && v.verdict.status === "lu",
+    ),
 );
 check(
   "relire deux fois de suite est idempotent",
   JSON.stringify(monitoringUnreadCounts()) === JSON.stringify(monitoringUnreadCounts()),
 );
 
-// --- 6 — Une valeur qui change fait réapparaître la ligne et remonte la cloche
+// --- 6 — Une valeur qui change marque la ligne « modifiée » et remonte la cloche
 
-section("6 — Signature : un champ de décision modifié fait réapparaître la ligne");
+section("6 — Signature : un champ de décision modifié marque la ligne « modifiée »");
 
 const countsBefore6 = monitoringUnreadCounts();
 db.prepare("UPDATE lead SET recall_date = ? WHERE lead_id = ?").run(`${today}T09:00:00.000Z`, LEAD_A);
 
-const leadViewAfterChange = leadMonitoringView(null);
+const leadViewAfterChange = leadMonitoringView(null, ALL);
 const entryA = leadViewAfterChange.items.find((i) => i.lead.leadId === LEAD_A);
-check("la piste A revient dans la vue après changement d'échéance", entryA != null);
+check("la piste A est dans la vue après changement d'échéance", entryA != null);
 check("elle revient avec le statut « modifié », pas « jamais lu »", entryA?.verdict.status === "modifie");
 check(
   "le changement affiché porte sur l'échéance, avant → après",
@@ -206,26 +214,38 @@ check(
   `avant ${countsBefore6.fresh} · après ${countsAfterChange.fresh}`,
 );
 
-section("7 — Une relecture sans changement ne revient pas");
+section("7 — Une relecture sans changement reste lue");
 
 markItemRead("piste", LEAD_A);
 const countsRelu = monitoringUnreadCounts();
-const stillGone = !leadMonitoringView(null).items.some((i) => i.lead.leadId === LEAD_A);
-check("relue sans changement depuis, la piste A reste absente", stillGone);
+const stillRead = leadMonitoringView(null, ALL).items.some((i) => i.lead.leadId === LEAD_A && i.verdict.status === "lu");
+check("relue sans changement depuis, la piste A reste affichée, marquée lue", stillRead);
 check("la cloche est repassée sous le niveau du point 6", countsRelu.fresh === countsAfterChange.fresh - 1);
 
 // --- 8 — « Tout lire » ramène le périmètre à zéro pour ce qu'il couvre ------
 
 section("8 — « Tout lire » acquitte tout le stock actif restant");
 
+const leadIds = (v) => JSON.stringify(v.items.map((i) => i.lead.leadId));
+const leadsBefore8 = leadMonitoringView(null);
 const leadReadCount = markScopeRead("piste", null);
+check(
+  "bouton global (pistes) : mêmes actions, même ordre, même nombre à traiter",
+  leadIds(leadMonitoringView(null)) === leadIds(leadsBefore8) && leadMonitoringView(null).visibleCount === leadsBefore8.visibleCount,
+);
 check("« Tout lire » pistes a acquitté au moins la piste B restante", leadReadCount >= 1, `${leadReadCount} ligne(s)`);
 check(
   "plus aucune piste active non lue après « Tout lire »",
   leadMonitoringView(null).activeCount === leadMonitoringView(null).readCount + leadMonitoringView(null).treatedCount,
 );
 
+const oppIds = (v) => JSON.stringify([v.items.map((i) => i.opportunity.opportunityId), v.exceptions.map((e) => e.opportunity.opportunityId)]);
+const oppsBefore8 = opportunityMonitoringView(null);
 const oppReadCount = markScopeRead("opportunite", null);
+check(
+  "bouton global (opportunités) : mêmes actions dans les deux blocs, même ordre, même nombre à traiter",
+  oppIds(opportunityMonitoringView(null)) === oppIds(oppsBefore8) && opportunityMonitoringView(null).visibleCount === oppsBefore8.visibleCount,
+);
 check("« Tout lire » opportunités s'exécute sans erreur", typeof oppReadCount === "number");
 check(
   "plus aucune opportunité active non lue après « Tout lire »",
@@ -239,6 +259,141 @@ check(
   countsFinal.fresh === 0 && countsFinal.legacy === 0,
   `fresh=${countsFinal.fresh} legacy=${countsFinal.legacy}`,
 );
+
+// --- 9 — « À débloquer maintenant » : les priorités, pas les non-lus ----------
+
+section("9 — À débloquer maintenant : Lu garde l'action, Traité la retire");
+
+resetRead("opportunite");
+const OPP_TOP = "TESTLECTURE_OPP_TOP"; // relance devis à 900 k€ : en tête du bloc
+db.prepare(
+  `INSERT INTO opportunity
+     (opportunity_id, name, owner, gmv, stage, is_signed, is_terminal, is_standby, is_active,
+      milestone_status, milestone_is_legacy, client_waiting, milestone_lateness_hours, first_seen_on, last_import_id)
+   VALUES (?, ?, ?, ?, 'Examen devis', 0, 0, 0, 1, 'sla_devis', 0, 0, 200, ?, 0)`,
+).run(OPP_TOP, "Client Test Lecture Top", "Commercial Test Lecture", 900_000, today);
+
+const top8 = () => opportunityMonitoringView(null).items;
+const topIds = () => top8().map((v) => v.opportunity.opportunityId);
+const before9 = opportunityMonitoringView(null);
+const counts9 = monitoringUnreadCounts();
+check("A0. action prioritaire non lue : visible", top8().some((v) => v.opportunity.opportunityId === OPP_TOP && v.verdict.status === "jamais_lu"));
+const idsBefore = topIds();
+
+markItemRead("opportunite", OPP_TOP);
+const after9 = opportunityMonitoringView(null);
+check("A. clic Lu : toujours visible dans « À débloquer maintenant »", after9.items.some((v) => v.opportunity.opportunityId === OPP_TOP && v.verdict.status === "lu"));
+check("A. … et plus comptée comme non lue (cloche et compteur)", monitoringUnreadCounts().fresh === counts9.fresh - 1 && after9.readCount === before9.readCount + 1);
+
+markScopeRead("opportunite", null);
+check(
+  "C. Top 8 indépendant du statut lu : « Tout lire » ne change ni la liste ni son ordre",
+  JSON.stringify(topIds()) === JSON.stringify(idsBefore),
+  `${topIds().length} ligne(s)`,
+);
+check(
+  "C. le Top 8 = les 8 meilleures actions ouvertes, triées par score décroissant",
+  top8().every((v, i, a) => i === 0 || a[i - 1].score >= v.score) &&
+    top8().length === Math.min(8, opportunityMonitoringView(null, Number.MAX_SAFE_INTEGER).items.length),
+);
+
+const { treatItem } = await import(lib("monitoring-view"));
+treatItem("opportunite", OPP_TOP);
+check("B. clic Traité : disparaît du bloc actif", !opportunityMonitoringView(null, Number.MAX_SAFE_INTEGER).items.some((v) => v.opportunity.opportunityId === OPP_TOP));
+db.prepare("DELETE FROM action_state WHERE action_key LIKE ?").run(`opportunity:${OPP_TOP}:%`);
+db.prepare("DELETE FROM opportunity WHERE opportunity_id = ?").run(OPP_TOP);
+db.prepare("DELETE FROM monitoring_read WHERE item_id = ?").run(OPP_TOP);
+
+section("9 bis — Plancher 10 k€ et impact GMV borné (règle pure)");
+
+const { buildValueBlock } = await import(lib("opportunity-metrics"));
+const synth = (id, gmv, over = {}) => ({
+  opportunityId: id, gmv, milestoneStatus: "sla_devis", clientWaiting: false, isLegacy: false, latenessHours: 200, ...over,
+});
+const pool = buildValueBlock(
+  [
+    synth("G9999", 9_999),
+    synth("G10000", 10_000),
+    synth("G35000", 35_000),
+    synth("G953W", 953, { milestoneStatus: "client_attend", clientWaiting: true }),
+    synth("GNULL", null),
+  ],
+  Number.MAX_SAFE_INTEGER,
+);
+const ids = pool.map((v) => v.opportunity.opportunityId);
+check("D. 9 999 € : exclue", !ids.includes("G9999"));
+check("D. 10 000 € : incluse si actionnable", ids.includes("G10000"));
+check("D. 35 000 € : incluse quand son score la place dans le Top 8", buildValueBlock([synth("G35000", 35_000)]).length === 1);
+check("D. 953 € en attente client : exclue", !ids.includes("G953W"));
+check("D. GMV inconnue : exclue (lue comme 0 €)", !ids.includes("GNULL"));
+check(
+  "E. impact GMV jamais négatif : score ≥ urgence × 0,4 × ancienneté",
+  pool.every((v) => v.score >= 2.5 * 0.4 - 1e-9),
+  pool.map((v) => `${v.opportunity.opportunityId}=${v.score.toFixed(3)}`).join(" · "),
+);
+const real = opportunityMonitoringView(null, Number.MAX_SAFE_INTEGER).items;
+check("D. base réelle : aucune ligne sous 10 k€", real.every((v) => (v.opportunity.gmv ?? 0) >= 10_000), `${real.length} ligne(s)`);
+
+section("9 ter — Libellés et accords");
+
+const { monitoringSummary, markReadLabel } = await import(lib("monitoring-wording"));
+const pairs = [
+  [monitoringSummary("piste", { visibleCount: 8, changedCount: 3, readCount: 23, treatedCount: 0 }), "8 pistes à traiter · 3 mises à jour depuis votre dernière lecture · 23 déjà lues"],
+  [monitoringSummary("opportunite", { visibleCount: 8, changedCount: 4, readCount: 52, treatedCount: 17 }), "8 opportunités à traiter · 4 mises à jour depuis votre dernière lecture · 52 déjà lues · 17 traitées"],
+  [monitoringSummary("piste", { visibleCount: 1, changedCount: 1, readCount: 1, treatedCount: 1 }), "1 piste à traiter · 1 mise à jour depuis votre dernière lecture · 1 déjà lue · 1 traitée"],
+  [monitoringSummary("opportunite", { visibleCount: 0, changedCount: 0, readCount: 0, treatedCount: 0 }), "0 opportunité à traiter"],
+  [markReadLabel(13), "Marquer les 13 comme lues"],
+  [markReadLabel(1), "Marquer la dernière comme lue"],
+];
+for (const [got, want] of pairs) check(`G. « ${want} »`, got === want, got);
+check("G. le geste de lecture ne dit jamais « traiter »", !/trait/i.test(markReadLabel(13) + markReadLabel(1)));
+
+// --- 10 — Pistes et exceptions de suivi : même règle Lu / Traité -------------
+
+section("10 — Pistes : Lu garde l'action, Traité la retire");
+
+resetRead("piste");
+const LEAD_C = "TESTLECTURE_LEAD_C";
+db.prepare(
+  `INSERT INTO lead
+     (lead_id, name, owner, owner_raw, status, created_at, recall_date, operational_status,
+      lateness_hours, first_call_missed, is_legacy, first_seen_on, last_import_id)
+   VALUES (?, ?, ?, ?, 'A confirmer', ?, ?, 'a_traiter', 72, 0, 0, ?, 0)`,
+).run(LEAD_C, "Client Test Lecture C", "Commercial Test Lecture", "Commercial Test Lecture", now, `${today}T08:00:00.000Z`, today);
+const leadC = () => leadMonitoringView(null, ALL).items.find((i) => i.lead.leadId === LEAD_C);
+const unreadOf = (v) => v.activeCount - v.readCount - v.treatedCount;
+const leadsC0 = leadMonitoringView(null, ALL);
+check("piste active non lue : visible", leadC()?.verdict.status === "jamais_lu");
+markItemRead("piste", LEAD_C);
+check("clic Lu : toujours visible, marquée lue", leadC()?.verdict.status === "lu");
+check("… le compteur non lu diminue d'une unité, pas le nombre à traiter", unreadOf(leadMonitoringView(null, ALL)) === unreadOf(leadsC0) - 1 && leadMonitoringView(null, ALL).visibleCount === leadsC0.visibleCount);
+const { treatItem: treat10 } = await import(lib("monitoring-view"));
+check("clic Traité : accepté", treat10("piste", LEAD_C) === true);
+check("… la piste disparaît du bloc actif", leadC() == null);
+check("… et le nombre à traiter baisse d'une unité", leadMonitoringView(null, ALL).visibleCount === leadsC0.visibleCount - 1);
+db.prepare("DELETE FROM action_state WHERE action_key LIKE ?").run(`lead:${LEAD_C}:%`);
+db.prepare("DELETE FROM lead WHERE lead_id = ?").run(LEAD_C);
+db.prepare("DELETE FROM monitoring_read WHERE item_id = ?").run(LEAD_C);
+
+section("10 bis — Exceptions de suivi : Lu garde l'action, Traité la retire");
+
+resetRead("opportunite");
+const OPP_EX = "TESTLECTURE_OPP_EX"; // stand-by expiré : une exception actionnable
+db.prepare(
+  `INSERT INTO opportunity
+     (opportunity_id, name, owner, gmv, stage, is_signed, is_terminal, is_standby, is_active, standby_until,
+      milestone_status, milestone_is_legacy, client_waiting, milestone_lateness_hours, first_seen_on, last_import_id)
+   VALUES (?, ?, ?, ?, 'Examen devis', 0, 0, 0, 1, ?, 'standby_expire', 0, 0, 120, ?, 0)`,
+).run(OPP_EX, "Client Test Lecture Exception", "Commercial Test Lecture", 5_000, `${today.slice(0, 8)}01`, today);
+const exOf = () => opportunityMonitoringView(null, ALL, ALL).exceptions.find((e) => e.opportunity.opportunityId === OPP_EX);
+check("exception active non lue : visible (5 k€, hors du Top 8 mais bien une exception)", exOf()?.verdict.status === "jamais_lu");
+markItemRead("opportunite", OPP_EX);
+check("clic Lu : toujours visible, marquée lue", exOf()?.verdict.status === "lu");
+check("clic Traité : accepté", treat10("opportunite", OPP_EX) === true);
+check("… l'exception disparaît du bloc actif", exOf() == null);
+db.prepare("DELETE FROM action_state WHERE action_key LIKE ?").run(`opportunity:${OPP_EX}:%`);
+db.prepare("DELETE FROM opportunity WHERE opportunity_id = ?").run(OPP_EX);
+db.prepare("DELETE FROM monitoring_read WHERE item_id = ?").run(OPP_EX);
 
 // --- Nettoyage -----------------------------------------------------------------
 

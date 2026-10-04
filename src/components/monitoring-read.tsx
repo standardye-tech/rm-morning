@@ -4,15 +4,16 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 
 import type { FieldChange, MonitoringScope, ReadVerdict } from "@/lib/monitoring-read";
+import { markReadLabel } from "@/lib/monitoring-wording";
 import { formatEurShort, formatFrenchDate } from "@/lib/normalize";
 
 /**
  * Le geste « Tout lire », et la façon de montrer ce qui a bougé depuis.
  *
- * Composant client pour une seule raison : le bouton doit vider la liste sous
- * les yeux de l'utilisateur. `router.refresh()` recharge la page côté serveur —
- * les listes se reconstruisent avec l'état de lecture qui vient d'être écrit, et
- * l'écran passe au message « Tout est traité » sans navigation.
+ * Composant client pour une seule raison : le geste doit se voir aussitôt.
+ * `router.refresh()` recharge la page côté serveur — les listes se
+ * reconstruisent avec l'état de lecture qui vient d'être écrit : mêmes lignes,
+ * marquées lues, compteurs de non-lus à zéro.
  */
 
 const MONTHS = [
@@ -78,7 +79,8 @@ export function ToutLireButton({
    * Ce n'est pas le nombre d'éléments que le geste acquittera — il en réécrit
    * aussi la signature de ceux déjà lus, ce qui est sans effet visible. Un
    * bouton doit annoncer ce qu'il change pour l'utilisateur, pas ce qu'il écrit
-   * en base : « Tout lire (54) » à côté de « 0 à traiter » serait un contresens.
+   * en base : « Marquer les 54 comme lues » à côté de « 0 à traiter » serait un
+   * contresens. Ce nombre peut différer du nombre d'actions ouvertes.
    */
   count: number;
 }) {
@@ -109,7 +111,7 @@ export function ToutLireButton({
       }}
       className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-md border border-line px-3 py-1.5 text-xs text-ink-soft transition-colors hover:bg-canvas hover:text-ink disabled:opacity-50 md:min-h-0"
     >
-      {pending || sent ? "Lecture…" : `Tout lire (${count})`}
+      {pending || sent ? "Lecture…" : markReadLabel(count)}
     </button>
   );
 }
@@ -153,6 +155,15 @@ export function LireButton({ scope, itemId }: { scope: MonitoringScope; itemId: 
 }
 
 /**
+ * « Lu » tant que la ligne n'est pas lue ; ensuite une simple marque « Lue » :
+ * la ligne reste affichée tant que son action est ouverte (Lu ≠ Traité).
+ */
+export function ReadMark({ scope, itemId, verdict }: { scope: MonitoringScope; itemId: string; verdict: ReadVerdict }) {
+  if (verdict.status === "lu") return <span className="text-xs text-ink-faint">Lue</span>;
+  return <LireButton scope={scope} itemId={itemId} />;
+}
+
+/**
  * « Traité » : l'action de la ligne est gérée — distinct de « Lu ».
  *
  * « Lu » acquitte une notification (la ligne revient si un champ bouge) ;
@@ -186,56 +197,5 @@ export function TraiteButton({ scope, itemId }: { scope: MonitoringScope; itemId
     >
       {pending || sent ? "…" : "Traité"}
     </button>
-  );
-}
-
-/**
- * L'état « rien à traiter ».
- *
- * Le point du Lot A : le travail du Monitoring ne se termine jamais tout seul,
- * il faut donc que RM Morning sache dire qu'il est fait. Le message rappelle ce
- * qui a été lu et quand, pour que « vide » ne se confonde jamais avec « en
- * panne » ou « pas encore chargé ».
- */
-export function AllHandled({
-  readCount,
-  lastReadAt,
-  what,
-}: {
-  readCount: number;
-  lastReadAt: string | null;
-  what: string;
-}) {
-  return (
-    <div className="px-4 py-8 text-center md:px-6">
-      {/*
-        Une marque, pas une bannière. Le travail du Monitoring ne se termine
-        jamais de lui-même : atteindre zéro mérite d'être vu de loin, et une
-        ligne de texte vert se confondait avec un état vide ordinaire. Le ✓ est
-        celui que Morning emploie déjà pour « traité » et « fait » ; la pastille
-        reprend le rond des numéros du plan du jour. Rien de plus : un bandeau
-        pleine largeur ferait de l'absence de travail l'élément le plus lourd
-        de l'écran.
-      */}
-      <span
-        aria-hidden
-        className="mx-auto mb-2 flex h-8 w-8 items-center justify-center rounded-full bg-positive-soft text-sm text-positive"
-      >
-        ✓
-      </span>
-      <p className="text-[15px] font-medium text-positive">Tout est traité.</p>
-      <p className="mx-auto mt-1 max-w-md text-xs text-ink-faint">
-        {readCount > 0
-          ? `${readCount} ${what} lue(s)`
-          : `Aucune ${what.replace(/s$/, "")} en anomalie`}
-        {lastReadAt
-          ? ` · dernière lecture le ${new Date(lastReadAt).toLocaleString("fr-FR", {
-              dateStyle: "short",
-              timeStyle: "short",
-            })}`
-          : ""}
-        . Elles reviendront ici si une information change.
-      </p>
-    </div>
   );
 }

@@ -11,7 +11,8 @@ import type {
   TeamOpportunityMetrics,
 } from "@/lib/opportunity-metrics";
 import type { ExceptionEntry, OpportunityMonitoringView } from "@/lib/monitoring-view";
-import { AllHandled, ChangeLine, LireButton, ToutLireButton, TraiteButton } from "./monitoring-read";
+import { monitoringSummary } from "@/lib/monitoring-wording";
+import { ChangeLine, ReadMark, ToutLireButton, TraiteButton } from "./monitoring-read";
 import { Badge, Card, EmptyState, SectionTitle, Stat } from "./ui";
 
 const TONE: Record<MilestoneStatus, "neutral" | "positive" | "warning" | "danger"> = {
@@ -67,9 +68,9 @@ export function OpportunitySummary({ metrics }: { metrics: TeamOpportunityMetric
 /**
  * Bloc valeur — la raison d'être de C2, placé avant les exceptions.
  *
- * Filtré par l'état de lecture, comme les pistes : une opportunité lue et
- * inchangée disparaît, et revient dès qu'une information de décision bouge —
- * étape, GMV, mois de signature annoncé, jalon, stand-by.
+ * Les huit meilleures priorités manager encore à traiter. « Lu » ne retire
+ * pas une ligne (j'ai vu l'alerte) : la ligne reste, marquée lue, tant que son
+ * action est ouverte. Seul « Traité » (j'ai fait l'action) la fait sortir.
  */
 export function ValueBlock({
   view,
@@ -86,26 +87,17 @@ export function ValueBlock({
         title="À débloquer maintenant"
         aside={
           <div className="flex flex-wrap items-center gap-3">
-            <span>
-              {view.visibleCount} opportunité(s) à traiter
-              {view.changedCount > 0 ? ` · ${view.changedCount} modifiée(s) depuis la lecture` : ""}
-              {view.readCount > 0 ? ` · ${view.readCount} déjà lue(s)` : ""}
-              {view.treatedCount > 0 ? ` · ${view.treatedCount} traitée(s)` : ""}
-            </span>
+            <span>{monitoringSummary("opportunite", view)}</span>
             <ToutLireButton scope="opportunite" owner={owner} count={view.activeCount - view.readCount - view.treatedCount} />
           </div>
         }
       />
       {items.length === 0 ? (
-        view.activeCount > 0 || view.readCount > 0 ? (
-          <AllHandled
-            readCount={view.readCount}
-            lastReadAt={view.lastReadAt}
-            what="opportunités"
-          />
-        ) : (
-          <EmptyState>Aucun blocage actionnable identifié aujourd&apos;hui.</EmptyState>
-        )
+        <EmptyState>
+          {view.treatedCount > 0
+            ? "Tout est traité : aucune action de déblocage ouverte."
+            : "Aucun blocage actionnable identifié aujourd'hui."}
+        </EmptyState>
       ) : (
         <ul className="divide-y divide-line">
           {items.map(({ opportunity: o, action, verdict }) => (
@@ -114,7 +106,7 @@ export function ValueBlock({
                 <p className="text-[15px] font-medium"><SalesforceOpportunityLink opportunityId={o.opportunityId}>{o.client ?? o.opportunityId}</SalesforceOpportunityLink></p>
                 <div className="flex shrink-0 items-center gap-3">
                   <p className="tabular text-[15px] font-semibold">{formatEurShort(o.gmv)}</p>
-                  <LireButton scope="opportunite" itemId={o.opportunityId} />
+                  <ReadMark scope="opportunite" itemId={o.opportunityId} verdict={verdict} />
                   <TraiteButton scope="opportunite" itemId={o.opportunityId} />
                 </div>
               </div>
@@ -223,7 +215,11 @@ export function OpportunityOwnerTable({ owners }: { owners: OwnerOpportunityMetr
   );
 }
 
-/** Exceptions de suivi — secondaires, affichées après la valeur. */
+/**
+ * Exceptions de suivi — secondaires, affichées après la valeur. Ce sont des
+ * actions (bouton « Traité », même ActionKey que le bloc valeur) : une ligne
+ * lue reste affichée, seule une ligne traitée sort.
+ */
 export function ExceptionBlock({
   items,
   reactivable,
@@ -239,7 +235,7 @@ export function ExceptionBlock({
         aside={`${items.length} affichées`}
       />
       {items.length === 0 ? (
-        <EmptyState>Aucune exception de suivi à relire.</EmptyState>
+        <EmptyState>Aucune exception de suivi ouverte.</EmptyState>
       ) : (
         <ul className="divide-y divide-line">
           {items.map(({ opportunity: o, verdict }) => (
@@ -254,7 +250,7 @@ export function ExceptionBlock({
                 </div>
                 <div className="flex shrink-0 items-center gap-3">
                   <p className="tabular text-sm">{formatEurShort(o.gmv)}</p>
-                  <LireButton scope="opportunite" itemId={o.opportunityId} />
+                  <ReadMark scope="opportunite" itemId={o.opportunityId} verdict={verdict} />
                   <TraiteButton scope="opportunite" itemId={o.opportunityId} />
                 </div>
               </div>

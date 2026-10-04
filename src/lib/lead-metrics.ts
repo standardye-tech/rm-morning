@@ -106,7 +106,7 @@ function verdict(m: Omit<OwnerLeadMetrics, "state" | "stateReason">): {
       state: "action requise",
       stateReason:
         m.firstCallsMissed >= 3
-          ? `${m.firstCallsMissed} First Calls passés sans consignation`
+          ? `${m.firstCallsMissed} First Calls passés sans compte rendu`
           : `${live} exceptions nouvelles sur ${m.received} pistes reçues`,
     };
   }
@@ -115,7 +115,7 @@ function verdict(m: Omit<OwnerLeadMetrics, "state" | "stateReason">): {
       state: "à surveiller",
       stateReason:
         m.firstCallsMissed > 0
-          ? `${m.firstCallsMissed} First Call sans consignation`
+          ? `${m.firstCallsMissed} First Call passé sans compte rendu`
           : `${live} exceptions nouvelles`,
     };
   }
@@ -237,7 +237,7 @@ export function buildLeadTodo(
     const days = lead.latenessHours / 24;
 
     if (lead.firstCallMissed) {
-      candidates.push({ lead, priority: days <= 7 ? 5 : 4, reason: "First Call sans consignation" });
+      candidates.push({ lead, priority: days <= 7 ? 5 : 4, reason: "First Call passé sans compte rendu" });
     } else if (lead.operationalStatus === "a_traiter") {
       candidates.push({ lead, priority: 4.5, reason: "échéance dépassée" });
     } else if (lead.operationalStatus === "en_retard") {

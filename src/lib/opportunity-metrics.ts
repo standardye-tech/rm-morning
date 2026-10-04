@@ -356,9 +356,12 @@ export function buildValueBlock(
     }
     if (!action) continue;
 
-    // Impact : le montant compte, de façon progressive et plafonnée.
+    // Plancher : une très petite affaire ne consomme pas une des priorités.
     const gmv = o.gmv ?? 0;
-    const impact = gmv > 0 ? Math.min(1, Math.log10(gmv / 1000) / 3) : 0;
+    if (gmv < OPPORTUNITY_MONITORING.minValueGmv) continue;
+
+    // Impact : le montant compte, de façon progressive, bornée à [0, 1].
+    const impact = Math.max(0, Math.min(1, Math.log10(gmv / 1000) / 3));
     // Une affaire fraîchement en retard est plus récupérable qu'un dossier
     // abandonné depuis six mois : l'urgence décroît avec l'ancienneté extrême.
     const staleness = o.latenessHours > 24 * 180 ? 0.5 : 1;
