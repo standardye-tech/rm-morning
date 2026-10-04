@@ -92,6 +92,104 @@ section("MOTEUR — sujets, déduplication, plafond");
   check("ET sans aucun sujet -> aucune carte (jamais de remplissage)", composeCards([base({ momentum: null })]).length === 0);
 }
 
+section("MOTEUR — fusions sémantiques : une case = une action manager distincte");
+{
+  const W = "2026-10-05";
+  const pk = (id, reason) => `plan:${id}:${reason}:${W}:0`;
+  const plan = (id, client, reason, gmv = 200_000) => ({ opportunityId: id, client, gmv, reason, impact: gmv * 0.5, pMonthEnd: null, actionKey: pk(id, reason) });
+  const deal = (id, client, kind, urgent = true, gmv = 200_000) => ({ opportunityId: id, client, gmv, objective: { accelerer: "Accélérer", debloquer: "Débloquer", closer: "Closer" }[kind], kind, urgent });
+  const exit = (id, client, gmv = 200_000) => ({ opportunityId: id, client, gmv, gmvDelta: null, exitedM: true, enteredStandby: false });
+  const of = (input, id) => tasksOf(base(input)).filter((t) => t.opportunityId === id);
+
+  // Cas de production nommés.
+  const chanville = of({ plan: [plan("006CH", "Monsieur et Madame de CHANVILLE", "divergence")], bigDeals: [deal("006CH", "Monsieur et Madame de CHANVILLE", "accelerer")] }, "006CH");
+  check("Chanville (divergence + Accélérer ce mois) -> 1 tâche", chanville.length === 1, chanville.map((t) => t.label).join(" | "));
+  check("… ActionKey du Plan « divergence » conservée", chanville[0]?.actionKey === pk("006CH", "divergence") && chanville[0]?.source === "plan");
+  check("… formulation unique", /confirmer ce qui permet réellement de signer ce mois/.test(chanville[0]?.label ?? ""), chanville[0]?.label);
+
+  const boisdron = of({ plan: [plan("006BO", "Mme BOISDRON", "basculer", 109_000)], moves: [exit("006BO", "Mme BOISDRON", 109_000)] }, "006BO");
+  check("Mme Boisdron (basculer + sortie du mois) -> 1 tâche", boisdron.length === 1, boisdron.map((t) => t.label).join(" | "));
+  check("… ActionKey du Plan « basculer » conservée", boisdron[0]?.actionKey === pk("006BO", "basculer"));
+  check("… formulation unique", /comprendre la sortie du mois et vérifier si elle peut revenir/.test(boisdron[0]?.label ?? ""), boisdron[0]?.label);
+  check("… au tier le plus prioritaire des deux (Momentum)", boisdron[0]?.tier === 2);
+
+  const tatiana = of({ plan: [plan("006TP", "Tatiana PETROVA", "upside", 614_000)], bigDeals: [deal("006TP", "Tatiana PETROVA", "debloquer", true, 614_000)] }, "006TP");
+  check("Tatiana (upside + Débloquer) -> 2 tâches", tatiana.length === 2, tatiana.map((t) => t.label).join(" | "));
+  check(
+    "… deux formulations qui disent deux résultats différents",
+    tatiana.some((t) => /lever le blocage/.test(t.label)) && tatiana.some((t) => /Challenger la prévision/.test(t.label)),
+  );
+
+  const cyril = of({ plan: [plan("006CL", "Cyril LAGEL", "divergence")], bigDeals: [deal("006CL", "Cyril LAGEL", "debloquer")] }, "006CL");
+  check("Cyril Lagel (divergence + Débloquer) -> 2 tâches", cyril.length === 2, cyril.map((t) => t.label).join(" | "));
+  check("… « lever le blocage » et « revalider le mois »", cyril.some((t) => /lever le blocage/.test(t.label)) && cyril.some((t) => /Revalider le mois/.test(t.label)));
+
+  // Fixtures génériques : seules les deux paires sûres fusionnent.
+  check("générique : divergence + Accélérer NON urgent (pas ce mois) -> 2", of({ plan: [plan("X1", "X1", "divergence")], bigDeals: [deal("X1", "X1", "accelerer", false)] }, "X1").length === 2);
+  // 3e paire sûre : sécuriser + Accélérer urgent (cas historiques du 30/09).
+  for (const [id, client, gmv] of [["006AE", "Anas EL HIMDI", 112_000], ["006CLs", "Cyril LAGEL", 138_000], ["006CHs", "Monsieur et Madame DE CHANVILLE", 187_000]]) {
+    const t = of({ plan: [plan(id, client, "securiser", gmv)], bigDeals: [deal(id, client, "accelerer", true, gmv)] }, id);
+    check(
+      `${client} (sécuriser + Accélérer urgent) -> 1 tâche, ActionKey du Plan « sécuriser »`,
+      t.length === 1 && t[0].actionKey === pk(id, "securiser") && /obtenir le prochain jalon pour confirmer la signature ce mois/.test(t[0].label),
+      t.map((x) => x.label).join(" | "),
+    );
+  }
+  // 4e paire sûre : « bloqué » POUR IMMOBILITÉ SEULE + Accélérer (urgent ou non :
+  // un « bloqué » n'est jamais déclaré sur le mois, son « Accélérer » jamais urgent).
+  const bloque = (id, client, immobileOnly, gmv = 826_000) => ({ ...plan(id, client, "bloque", gmv), immobileOnly });
+  const falcon = of({ plan: [bloque("006FI", "Falcon Invest FRANCE", true)], bigDeals: [deal("006FI", "Falcon Invest FRANCE", "accelerer", false, 826_000)] }, "006FI");
+  check(
+    "Falcon (bloqué pour immobilité + Accélérer, hors prévision) -> 1 tâche, ActionKey du Plan « bloque »",
+    falcon.length === 1 && falcon[0].actionKey === pk("006FI", "bloque") && /identifier le frein et fixer le prochain jalon/.test(falcon[0].label),
+    falcon.map((x) => x.label).join(" | "),
+  );
+  check("générique : bloqué pour immobilité + Accélérer urgent -> 1", of({ plan: [bloque("X11", "X11", true)], bigDeals: [deal("X11", "X11", "accelerer", true)] }, "X11").length === 1);
+  check("générique : bloqué avec client actif (signal dur) + Accélérer -> 2", of({ plan: [bloque("X9", "X9", false)], bigDeals: [deal("X9", "X9", "accelerer", false)] }, "X9").length === 2);
+  check("générique : bloqué sans motif connu (champ absent) + Accélérer -> 2", of({ plan: [plan("X10", "X10", "bloque")], bigDeals: [deal("X10", "X10", "accelerer", false)] }, "X10").length === 2);
+  check("générique : bloqué pour immobilité + Closer -> 2", of({ plan: [bloque("X13", "X13", true)], bigDeals: [deal("X13", "X13", "closer", false)] }, "X13").length === 2);
+  check("générique : bloqué pour immobilité + Débloquer (blocage dur : client en attente, relance…) -> 2", of({ plan: [bloque("X12", "X12", true)], bigDeals: [deal("X12", "X12", "debloquer")] }, "X12").length === 2);
+  check("générique : sécuriser + Accélérer urgent -> 1", of({ plan: [plan("X2", "X2", "securiser")], bigDeals: [deal("X2", "X2", "accelerer")] }, "X2").length === 1);
+  check("générique : sécuriser + Accélérer NON urgent -> 2", of({ plan: [plan("X2b", "X2b", "securiser")], bigDeals: [deal("X2b", "X2b", "accelerer", false)] }, "X2b").length === 2);
+  check("générique : upside + Accélérer urgent -> 2", of({ plan: [plan("X2c", "X2c", "upside")], bigDeals: [deal("X2c", "X2c", "accelerer")] }, "X2c").length === 2);
+  check("générique : basculer + Accélérer urgent -> 2", of({ plan: [plan("X2d", "X2d", "basculer")], bigDeals: [deal("X2d", "X2d", "accelerer")] }, "X2d").length === 2);
+  check("générique : sécuriser + sortie du mois -> 2", of({ plan: [plan("X2e", "X2e", "securiser")], moves: [exit("X2e", "X2e")] }, "X2e").length === 2);
+  check("générique : sécuriser + Débloquer -> 2", of({ plan: [plan("X3", "X3", "securiser")], bigDeals: [deal("X3", "X3", "debloquer")] }, "X3").length === 2);
+  check("générique : basculer + Débloquer -> 2", of({ plan: [plan("X4", "X4", "basculer")], bigDeals: [deal("X4", "X4", "debloquer")] }, "X4").length === 2);
+  check("générique : upside + sortie du mois -> 2", of({ plan: [plan("X5", "X5", "upside")], moves: [exit("X5", "X5")] }, "X5").length === 2);
+  check(
+    "générique : basculer + BAISSE de GMV (pas une sortie) -> 2",
+    of({ plan: [plan("X6", "X6", "basculer")], moves: [{ opportunityId: "X6", client: "X6", gmv: 200_000, gmvDelta: -50_000, exitedM: true, enteredStandby: false }] }, "X6").length === 2,
+  );
+  check("générique : divergence + Accélérer d'une AUTRE affaire -> 2", tasksOf(base({ plan: [plan("X7", "X7", "divergence")], bigDeals: [deal("X8", "X8", "accelerer")] })).length === 2);
+
+  // Limite de 4 inchangée ; une fusion libère une place pour le sujet suivant.
+  const crowded = (withPair) => base({
+    level: "rouge",
+    plan: [plan("L1", "L1", "divergence", 900_000), plan("L2", "L2", "securiser", 800_000), plan("L3", "L3", "securiser", 700_000)],
+    bigDeals: [deal("L1", "L1", withPair ? "accelerer" : "closer", true, 900_000)],
+    reasons: [{ key: "pipe_faible", weight: "fort", label: "Pipe faible", detail: "200 k€" }],
+  });
+  const before = composeCards([crowded(false)])[0];
+  const after = composeCards([crowded(true)])[0];
+  check(`limite de ${WEEK_AGENDA.maxTasks} sujets inchangée`, before.tasks.length === WEEK_AGENDA.maxTasks && after.tasks.length === WEEK_AGENDA.maxTasks);
+  check(
+    "une fusion libère une place : le sujet suivant remonte",
+    !before.tasks.some((t) => t.source === "attention") && after.tasks.some((t) => t.source === "attention") &&
+      after.tasks.filter((t) => t.opportunityId === "L1").length === 1,
+    after.tasks.map((t) => t.source).join(","),
+  );
+
+  // Traiter une action distincte ne traite pas l'autre.
+  const [a, b] = tatiana;
+  const done = new Set([tatiana.find((t) => t.source === "gros_dossier").key]);
+  check(
+    "Tatiana : cocher « Débloquer » ne coche pas « Challenger la prévision »",
+    a.key !== b.key && (a.actionKey ?? a.key) !== (b.actionKey ?? b.key) && tatiana.filter((t) => !done.has(t.key)).length === 1 &&
+      tatiana.find((t) => !done.has(t.key))?.actionKey === pk("006TP", "upside"),
+  );
+}
+
 section("MOTEUR — compteurs : cocher fait baisser, ne fait pas remonter");
 {
   const input = base({

@@ -18,7 +18,9 @@
  * décrivent EXACTEMENT la même action (même ActionKey) ne produisent qu'un
  * sujet — la formulation la plus prioritaire l'emporte ; deux actions
  * différentes d'une même affaire restent deux cases, jamais une case qui en
- * fermerait deux. Au plus `WEEK_AGENDA.maxTasks` sujets par
+ * fermerait deux. Jamais de fusion sur la seule affaire : seuls quatre
+ * rapprochements SÉMANTIQUES sûrs, où les deux moteurs demandent le même geste,
+ * sont fusionnés dans la tâche du Plan (voir `tasksOf`). Au plus `WEEK_AGENDA.maxTasks` sujets par
  * carte, choisis sur TOUS les sujets de la semaine, traités compris : cocher un
  * sujet fait baisser le compteur, il ne fait pas remonter un cinquième.
  *
@@ -65,6 +67,8 @@ export type OwnerAgendaInput = {
     pMonthEnd: number | null;
     /** ActionKey du Plan du jour (`plan:…`) : la tâche EST cette action, partagée. */
     actionKey?: string;
+    /** « Bloqué » dont le SEUL motif est l'immobilité (aucun signal dur récent). */
+    immobileOnly?: boolean;
   }[];
   challengers: {
     opportunityId: string;
@@ -78,7 +82,16 @@ export type OwnerAgendaInput = {
      */
     actionKey?: string;
   }[];
-  bigDeals: { opportunityId: string; client: string; gmv: number; objective: string; urgent: boolean }[];
+  bigDeals: {
+    opportunityId: string;
+    client: string;
+    gmv: number;
+    /** Libellé de l'objectif (« Accélérer »…). */
+    objective: string;
+    /** Objectif brut (`BigDealObjective`), pour les rapprochements avec le Plan. */
+    kind?: string;
+    urgent: boolean;
+  }[];
 };
 
 // --- Sorties -----------------------------------------------------------------
@@ -149,13 +162,38 @@ const ATTENTION_TASK: Record<ReasonKey, string> = {
 
 const PLAN_TASK: Record<MorningReason, (client: string) => string> = {
   securiser: (c) => `Sécuriser ${c} sur le mois`,
-  divergence: (c) => `Challenger ${c}, annoncée ce mois mais peu probable`,
+  divergence: (c) => `Revalider le mois de ${c} : annoncée mais peu probable`,
   basculer: (c) => `Voir ce qu'il faut pour signer ${c} dès ce mois`,
   bloque: (c) => `Débloquer ${c}`,
-  upside: (c) => `Challenger ${c}, absente de sa prévision`,
+  upside: (c) => `Challenger la prévision : pourquoi ${c} n'y figure pas`,
 };
 
-/** Tous les sujets d'un ET, dédupliqués par affaire. */
+/**
+ * Tous les sujets d'un ET, dédupliqués par ACTION, jamais par affaire.
+ *
+ * Quatre rapprochements sémantiques seulement, où deux moteurs demandent le MÊME
+ * geste au manager ; le sujet secondaire est alors absorbé par la tâche du Plan,
+ * qui garde son ActionKey (état partagé) et prend le tier le plus prioritaire :
+ *
+ *   — Plan « divergence » + gros dossier « Accélérer » urgent (signature
+ *     déclarée ce mois) : obtenir un jalon qui confirme le mois, sinon remettre
+ *     la prévision en cause ;
+ *   — Plan « sécuriser » + gros dossier « Accélérer » urgent (annoncée sur M,
+ *     signature déclarée ce mois) : obtenir le prochain jalon daté qui sécurise
+ *     la signature sur le mois ;
+ *   — Plan « bloqué » POUR IMMOBILITÉ SEULE (aucun signal dur récent) + gros
+ *     dossier « Accélérer », urgent ou non : identifier le frein et fixer le
+ *     prochain jalon. Pas d'exigence d'urgence ici : un « Accélérer » n'est
+ *     urgent que déclaré sur le mois, et une affaire déclarée sur le mois n'est
+ *     jamais « bloqué » au Plan. Un « bloqué » qui porte un autre signal
+ *     (client actif, visite), ou un gros dossier « Débloquer » (blocage dur),
+ *     reste distinct ;
+ *   — Plan « basculer » + Momentum « sortie du mois » : le même déplacement
+ *     M → M+1 (la sortie est récente, l'affaire est aujourd'hui prévue en M+1).
+ *
+ * Tout le reste reste distinct, en cas de doute aussi : débloquer et challenger
+ * la prévision d'une même affaire sont deux décisions, donc deux cases.
+ */
 export function tasksOf(input: OwnerAgendaInput, rules = WEEK_AGENDA): AgendaTask[] {
   const o = input.owner;
   // Identité d'un sujet : son ActionKey partagée, sinon sa clé propre.
@@ -166,8 +204,21 @@ export function tasksOf(input: OwnerAgendaInput, rules = WEEK_AGENDA): AgendaTas
     if (!cur || t.tier < cur.tier || (t.tier === cur.tier && t.stake > cur.stake)) byAction.set(id, t);
   };
 
+  // Tâche du Plan par affaire : la cible des deux fusions sémantiques.
+  const planOf = new Map<string, { reason: MorningReason; id: string; immobileOnly: boolean }>();
+  const absorb = (opportunityId: string | null, reason: MorningReason, label: string, tier: number, stake: number): boolean => {
+    const p = opportunityId ? planOf.get(opportunityId) : undefined;
+    // « Bloqué » : seulement quand l'immobilité est son unique motif.
+    const ok = p && p.reason === reason && (reason !== "bloque" || p.immobileOnly);
+    const cur = p && ok ? byAction.get(p.id) : undefined;
+    if (!p || !cur) return false;
+    byAction.set(p.id, { ...cur, label, tier: Math.min(cur.tier, tier), stake: Math.max(cur.stake, stake) });
+    return true;
+  };
+
   for (const p of input.plan) {
     const risk = p.reason === "securiser" || p.reason === "divergence";
+    planOf.set(p.opportunityId, { reason: p.reason, id: p.actionKey ?? `${o}|plan|${p.opportunityId}`, immobileOnly: !!p.immobileOnly });
     add({
       key: `${o}|plan|${p.opportunityId}`,
       owner: o,
@@ -194,6 +245,8 @@ export function tasksOf(input: OwnerAgendaInput, rules = WEEK_AGENDA): AgendaTas
         actionKey: null,
       });
     } else if (m.exitedM && (m.gmv ?? 0) >= rules.minGmvExit) {
+      const merged = `${m.client} : comprendre la sortie du mois et vérifier si elle peut revenir (${kEur(m.gmv)})`;
+      if (absorb(m.opportunityId, "basculer", merged, TIER.momentum, m.gmv ?? 0)) continue;
       add({
         key: `${o}|sortie|${m.opportunityId ?? m.client}`,
         owner: o,
@@ -233,12 +286,26 @@ export function tasksOf(input: OwnerAgendaInput, rules = WEEK_AGENDA): AgendaTas
     });
   }
   for (const d of input.bigDeals) {
+    const tier = d.urgent ? TIER.gros_urgent : TIER.gros;
+    if (d.kind === "accelerer" && d.urgent) {
+      const gmv = kEur(d.gmv);
+      const stake = d.gmv * 0.3;
+      if (absorb(d.opportunityId, "divergence", `${d.client} : confirmer ce qui permet réellement de signer ce mois (${gmv})`, tier, stake)) continue;
+      if (absorb(d.opportunityId, "securiser", `Sécuriser ${d.client} : obtenir le prochain jalon pour confirmer la signature ce mois (${gmv})`, tier, stake)) continue;
+    }
+    if (d.kind === "accelerer") {
+      const merged = `Débloquer ${d.client} : identifier le frein et fixer le prochain jalon (${kEur(d.gmv)})`;
+      if (absorb(d.opportunityId, "bloque", merged, tier, d.gmv * 0.3)) continue;
+    }
     add({
       key: `${o}|gros|${d.opportunityId}`,
       owner: o,
-      label: `${d.objective} ${d.client} (${kEur(d.gmv)})`,
+      label:
+        d.kind === "debloquer"
+          ? `Débloquer ${d.client} : lever le blocage en cours (${kEur(d.gmv)})`
+          : `${d.objective} ${d.client} (${kEur(d.gmv)})`,
       source: "gros_dossier",
-      tier: d.urgent ? TIER.gros_urgent : TIER.gros,
+      tier,
       stake: d.gmv * 0.3,
       opportunityId: d.opportunityId,
       client: d.client,

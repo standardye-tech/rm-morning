@@ -128,6 +128,9 @@ export function buildWeekAgenda(now = new Date()): WeekAgendaView {
             impact: a.score,
             pMonthEnd: null,
             actionKey: a.key,
+            // « Bloqué » (C) n'entre au Plan que par l'immobilité ; sans signal
+            // dur récent, c'est son seul motif.
+            immobileOnly: a.reason === "bloque" && (a.hardSignals ?? []).length === 0,
           })),
         challengers: challengers
           .filter((c) => c.row.owner === v.salesperson)
@@ -141,7 +144,7 @@ export function buildWeekAgenda(now = new Date()): WeekAgendaView {
           })),
         bigDeals: week.bigDeals
           .filter((d) => d.owner === v.salesperson)
-          .map((d) => ({ opportunityId: d.opportunityId, client: d.client, gmv: d.gmv, objective: OBJECTIVE_LABEL[d.objective], urgent: d.urgent })),
+          .map((d) => ({ opportunityId: d.opportunityId, client: d.client, gmv: d.gmv, objective: OBJECTIVE_LABEL[d.objective], kind: d.objective, urgent: d.urgent })),
       };
     });
 

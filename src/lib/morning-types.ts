@@ -163,6 +163,12 @@ export type MorningAction = {
   stage: string | null;
   /** Indicateurs utiles, déjà formatés en langage métier. */
   facts: string[];
+  /**
+   * Natures des signaux durs récents de l'affaire (`hardSignals`). Donnée, sans
+   * effet sur le Plan : Ma semaine s'en sert pour savoir si un « bloqué » ne
+   * tient qu'à l'immobilité.
+   */
+  hardSignals?: ("message" | "visite")[];
   /** Toujours nul : le Plan ne porte plus de message (les Blocs 1 et 2 s'en chargent). */
   messageId: string | null;
   receivedAt: string | null;

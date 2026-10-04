@@ -192,6 +192,7 @@ export function buildMorningPlan(now = new Date()): MorningPlan {
       gmv: input.gmv,
       stage: row.stage,
       facts: verdict.reasons,
+      hardSignals: input.hard.map((h) => h.kind),
       messageId: null,
       receivedAt: null,
       opportunityId: id,
