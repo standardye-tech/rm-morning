@@ -114,6 +114,19 @@ export const ASK_LABEL: Record<MorningReason, string> = {
   divergence: "À challenger",
 };
 
+/**
+ * Action MANAGER d'une ligne du Plan, quand le badge ne suffit pas à la dire.
+ *
+ * Upside (D) : l'affaire est hors prévision. Le message client récent qui a pu
+ * la faire entrer est un SIGNAL, et sa réponse appartient au Bloc 2 ; l'action
+ * du Plan est de challenger le commercial sur sa prévision. Le signal reste en
+ * contexte, dans `detail`. Libellé seulement : ni la sélection ni la clé.
+ */
+export function planAsk(a: Pick<MorningAction, "reason" | "ownerFirstName">): string | null {
+  if (a.reason !== "upside") return null;
+  return `Challenger ${a.ownerFirstName ?? "le commercial"} : pourquoi cette affaire n'est pas dans sa prévision ?`;
+}
+
 /** Famille de la situation. C'est aussi le libellé de catégorie du journal. */
 export type PlanFamily = MorningReason;
 

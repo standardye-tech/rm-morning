@@ -24,6 +24,7 @@ const { triage, loadMorningEvents, acknowledgeEvent, ignoredSummary } = await im
   lib("morning-events")
 );
 const { buildMorningPlan, REASON_LABEL } = await import(lib("morning-priority"));
+const { planAsk } = await import(lib("morning-types"));
 
 let failures = 0;
 const check = (label, ok, detail = "") => {
@@ -288,6 +289,26 @@ const leaks = plan.actions.filter(
   (a) => FORBIDDEN.test(a.why) || FORBIDDEN.test(a.todo) || a.facts.some((f) => FORBIDDEN.test(f)),
 );
 check("aucun terme technique dans les libellés du plan", leaks.length === 0, `${leaks.length} fuite(s)`);
+
+// Upside : l'action est MANAGER (challenger la prévision). Le message client
+// récent n'est qu'un signal de contexte, jamais l'action affichée.
+const askUpside = planAsk({ reason: "upside", ownerFirstName: "Nicolas" });
+check(
+  "upside : l'action challenge la prévision du commercial",
+  askUpside === "Challenger Nicolas : pourquoi cette affaire n'est pas dans sa prévision ?",
+  askUpside ?? "aucune",
+);
+check(
+  "upside : aucun signal client dans l'action",
+  !/client actif|message client|visite/i.test(askUpside ?? ""),
+);
+check("hors upside : pas d'action supplémentaire", ["securiser", "basculer", "bloque", "divergence"].every((r) => planAsk({ reason: r, ownerFirstName: "Nicolas" }) === null));
+const upsideRows = plan.actions.filter((a) => a.reason === "upside");
+check(
+  "upside réels : action manager présente, signal resté dans le détail",
+  upsideRows.every((a) => planAsk(a)?.startsWith("Challenger ") && !/client actif|message client/i.test(planAsk(a))),
+  `${upsideRows.length} ligne(s) upside`,
+);
 
 db.close();
 console.log(`\n  ${failures === 0 ? "Tous les contrôles passent." : `${failures} contrôle(s) en échec.`}\n`);

@@ -5,6 +5,7 @@ import { useState, useTransition } from "react";
 import { Badge, Card, EmptyState, SectionTitle } from "@/components/ui";
 import {
   ASK_LABEL,
+  planAsk,
   received,
   type MorningAction,
   type MorningEvent,
@@ -546,9 +547,11 @@ export function TodayPlan({
                     <Badge tone={REASON_TONE[a.reason] ?? "neutral"}>{ASK_LABEL[a.reason]}</Badge>
                   </div>
                   {/*
-                    La justification ne dit que ce qui a compté au score : GMV,
-                    étape, signal, mouvement. Aucune phrase générée.
+                    L'action manager d'abord, quand le badge ne suffit pas ; puis
+                    la justification, qui ne dit que ce qui a compté au score :
+                    GMV, étape, signal, mouvement. Le signal reste du contexte.
                   */}
+                  {planAsk(a) ? <p className="mt-1 text-sm text-ink">{planAsk(a)}</p> : null}
                   <p className="mt-1 text-xs text-ink-soft">{a.detail}</p>
                 </div>
                 {/*
