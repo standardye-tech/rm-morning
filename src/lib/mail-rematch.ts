@@ -21,6 +21,7 @@ import { loadDirectory } from "./mail-directory";
 import type { MailMessage } from "./mail-rules";
 import { buildOpportunityIndex, matchMessage, type MatchableOpportunity } from "./mail-match";
 import { loadThreadLinks, rememberThread, senderMemory } from "./mail-thread-link";
+import { qualifyMessageSender } from "./sender-role";
 
 export type RematchSummary = {
   examined: number;
@@ -43,7 +44,13 @@ type SignalRow = {
   match_kind: string | null;
   lead_id: string | null;
   salesperson: string | null;
+  sender_role: string | null;
+  sender_role_reason: string | null;
+  scanner_v2: number | null;
 };
+
+/** Rôles posés à l'insertion d'après l'en-tête ou l'extrait, non rejouables ici. */
+const INSERT_ONLY_ROLES = new Set(["automatic", "newsletter", "internal"]);
 
 function loadMatchable(): MatchableOpportunity[] {
   return (
@@ -78,7 +85,8 @@ export function rematchSignals(): RematchSummary {
   const rows = db
     .prepare(
       `SELECT gmail_message_id, thread_id, sent_at, from_email, from_name, subject,
-              direction, opportunity_id, match_level, match_kind, lead_id, salesperson
+              direction, opportunity_id, match_level, match_kind, lead_id, salesperson,
+              sender_role, sender_role_reason, scanner_v2
          FROM mail_signal ORDER BY sent_at ASC`,
     )
     .all() as SignalRow[];
@@ -88,6 +96,15 @@ export function rematchSignals(): RematchSummary {
         SET opportunity_id = ?, match_level = ?, match_reason = ?, match_kind = ?, lead_id = ?
       WHERE gmail_message_id = ?`,
   );
+
+  // V2 — le rôle de l'expéditeur se recalcule avec l'annuaire à jour : une
+  // adresse vue pour la première fois devient « artisan » ou « client » dès que
+  // Salesforce la connaît. Le rattachement ne sert qu'à la concordance de nom.
+  const updateRole = db.prepare(
+    "UPDATE mail_signal SET sender_role = ?, sender_role_reason = ? WHERE gmail_message_id = ?",
+  );
+  const opportunityById = new Map(index.all.map((o) => [o.opportunityId, o]));
+  const opportunityClientEmails = new Set(index.byEmail.keys());
 
   const byLevel: Record<string, number> = { A: 0, B: 0, C: 0 };
   const byKind: Record<string, number> = {};
@@ -118,6 +135,25 @@ export function rematchSignals(): RematchSummary {
         senderMemory: senderMemory(r.from_email ?? ""),
         fromName: r.from_name,
       });
+
+      // Seuls les messages du scanner V2 portent un rôle : l'historique n'en
+      // reçoit pas, son triage reste celui d'avant le déploiement.
+      if (r.scanner_v2 === 1 && r.direction === "entrant" && !INSERT_ONLY_ROLES.has(r.sender_role ?? "")) {
+        const sender = qualifyMessageSender({
+          fromEmail: r.from_email ?? "",
+          fromName: r.from_name,
+          subject: r.subject,
+          internalDomain: INTERNAL_DOMAIN,
+          directory,
+          opportunityClientEmails,
+          dealOpportunity: match.opportunityId ? (opportunityById.get(match.opportunityId) ?? null) : null,
+        });
+        // Un rôle lu par le modèle (expéditeur inconnu) ne cède qu'à un fait.
+        const keepModel = r.sender_role_reason === "lu par le modèle" && !sender.certain;
+        if (!keepModel && (sender.role !== r.sender_role || sender.reason !== r.sender_role_reason)) {
+          updateRole.run(sender.role, sender.reason, r.gmail_message_id);
+        }
+      }
 
       byLevel[match.level] = (byLevel[match.level] ?? 0) + 1;
       byKind[match.kind] = (byKind[match.kind] ?? 0) + 1;

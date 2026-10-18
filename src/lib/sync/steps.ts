@@ -334,7 +334,10 @@ export function buildSteps(): SyncStep[] {
 
         // 3. Les nouvelles adresses de ce passage, résolues tout de suite : sans
         //    cela, un client identifiable resterait « affaire non identifiée »
-        //    pendant une journée entière.
+        //    pendant une journée entière. Depuis le scanner V2 (18/10/2026), la
+        //    synchronisation le fait déjà AVANT de classer (l'identité précède
+        //    l'intention) : ce filet ne rattrape plus que les adresses vues
+        //    pendant la classification elle-même.
         const fresh = addressesToResolve();
         const dir2 = fresh.length > 0 ? await refreshDirectory(fresh) : { resolved: 0, byKind: {} };
         if (fresh.length > 0) rematchSignals();

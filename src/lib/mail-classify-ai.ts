@@ -6,8 +6,10 @@
  *
  * Minimisation des données — c'est la partie qui compte :
  *
- *   ENVOYÉ  : objet, dernier message utile nettoyé (tronqué), au plus deux
- *             messages de contexte réduits à 400 caractères, stade Salesforce,
+ *   ENVOYÉ  : objet (contexte secondaire), CORPS nettoyé du dernier message
+ *             humain entrant (V2, ≤ 3 000 caractères, sans historique ni
+ *             signature), au plus deux extraits de contexte de 400 caractères,
+ *             rôle connu de l'expéditeur et sa preuve, stade Salesforce,
  *             confiance forecast si connue.
  *   JAMAIS  : fil complet, pièces jointes, signatures, historique, adresses
  *             e-mail, noms de clients, numéros de téléphone.
@@ -18,7 +20,9 @@
 
 import { recordAiCall, type AiOrigin } from "./ai-usage";
 import { acceptProof, selectInterestProof } from "./interest-proof";
-import type { Classification, ClassifiableMessage, SignalType } from "./mail-classify";
+import { messageBody, type Classification, type ClassifiableMessage, type SignalType } from "./mail-classify";
+import { COMMERCIAL_INTENTS, type CommercialIntent } from "./mail-intent";
+import type { SenderRole } from "./sender-role";
 
 /** Modèle visé : le plus petit qui sache lire une nuance commerciale. */
 export const AI_MODEL = "claude-haiku-4-5-20251001";
@@ -108,6 +112,17 @@ export type ThreadContext = {
   forecastConfidence?: number | null;
   /** Qui déclenche l'appel, pour le registre de consommation. Jamais envoyé au modèle. */
   origin?: AiOrigin;
+  /** V2 — message à classer (dernier message humain entrant utile). Défaut : le dernier du fil. */
+  targetId?: string | null;
+  /** V2 — rôle de l'expéditeur tel que le système l'a établi, et s'il est certain. */
+  senderRole?: SenderRole | null;
+  senderRoleCertain?: boolean;
+  senderRoleReason?: string | null;
+  /**
+   * Reprise d'un fil antérieur au déploiement V2 (aucun message V2 en attente) :
+   * escalade, bridage et lecture des règles HISTORIQUES.
+   */
+  legacy?: boolean;
 };
 
 export type ModelPayload = {
@@ -117,9 +132,15 @@ export type ModelPayload = {
   context: string[];
   stage: string | null;
   forecastConfidence: number | null;
+  senderRole: string;
 };
 
-const MAX_LAST = 1200;
+/**
+ * Taille du dernier message. Jusqu'au 18/10/2026, 1 200 caractères étaient
+ * prévus mais l'extrait Gmail n'en fournissait que ~200 : la phrase utile
+ * n'arrivait presque jamais. Le corps nettoyé est désormais lu, borné ici.
+ */
+const MAX_LAST = 3000;
 const MAX_CONTEXT = 400;
 
 /**
@@ -131,18 +152,32 @@ export function buildPayload(
   context: ThreadContext = {},
 ): ModelPayload {
   const ordered = [...messages].sort((a, b) => a.date.localeCompare(b.date));
-  const last = ordered[ordered.length - 1];
+  const found = context.targetId ? ordered.findIndex((m) => m.id === context.targetId) : -1;
+  const targetIndex = found >= 0 ? found : ordered.length - 1;
+  const last = ordered[targetIndex];
   // Au plus deux messages antérieurs, très courts : de quoi lever une
   // ambiguïté de chronologie, pas de quoi reconstituer la conversation.
-  const previous = ordered.slice(-3, -1);
+  const previous = ordered.slice(Math.max(0, targetIndex - 2), targetIndex);
+  const role = context.senderRole ?? "unknown";
 
   return {
     subject: cleanForModel(last.subject ?? "").slice(0, 200),
-    lastMessage: cleanForModel(last.snippet ?? "").slice(0, MAX_LAST),
+    // V2 : le corps nettoyé quand il a été lu, sinon l'extrait.
+    lastMessage: cleanForModel(messageBody(last)).slice(0, MAX_LAST),
     lastDirection: last.direction,
-    context: previous.map((m) => cleanForModel(m.snippet ?? "").slice(0, MAX_CONTEXT)),
+    context: previous.map((m) =>
+      context.legacy
+        ? cleanForModel(m.snippet ?? "").slice(0, MAX_CONTEXT)
+        : `${m.direction} : ${cleanForModel(m.snippet ?? "").slice(0, MAX_CONTEXT)}`,
+    ),
     stage: context.stage ?? null,
     forecastConfidence: context.forecastConfidence ?? null,
+    // Reprise historique : pas de rôle, la ligne n'est pas envoyée.
+    senderRole: context.legacy
+      ? ""
+      : role === "unknown"
+        ? "inconnu — à déterminer d'après le texte"
+        : `${role}${context.senderRoleCertain ? " (établi par le système, ne pas remettre en cause)" : " (probable)"}${context.senderRoleReason ? ` — ${context.senderRoleReason}` : ""}`,
   };
 }
 
@@ -150,8 +185,24 @@ export function buildPayload(
 
 export const SYSTEM_PROMPT = `Tu classes des échanges commerciaux d'un courtier en travaux de rénovation.
 
-Rends UNIQUEMENT un objet JSON, sans texte autour :
-{"signal_type": ..., "confidence": ..., "blocker": ..., "summary": ..., "reason": ..., "quote": ...}
+Rends UNIQUEMENT un objet JSON compact, sans texte autour ni bloc de code :
+{"sender_role": ..., "commercial_intent": ..., "needs_reply": ..., "prospect_evidence": ..., "signal_type": ..., "confidence": ..., "blocker": ..., "summary": ..., "reason": ..., "quote": ...}
+
+Tu reçois : le rôle de l'expéditeur tel que le système le connaît, l'étape Salesforce réelle de l'affaire, l'objet (contexte SECONDAIRE : il peut avoir été écrit par Renovation Man, ne le lis jamais comme la parole du client), le CORPS nettoyé du dernier message de l'expéditeur, et un bref contexte antérieur.
+
+sender_role vaut exactement l'une de ces valeurs : "customer", "prospect", "artisan", "supplier", "partner", "automatic", "unknown". Si le rôle t'est donné comme établi par le système, recopie-le tel quel. S'il est inconnu, déduis-le du texte : un artisan, un architecte, un bureau d'études, un fournisseur, un agent immobilier ou un démarcheur n'est JAMAIS un client, même dans le fil d'un client.
+
+commercial_intent vaut exactement l'une de ces valeurs :
+- "strong_progress" : le client ou prospect montre une intention forte d'avancer — validation, accord, volonté de signer, envoi ou annonce du devis signé, demande de contrat ou de procédure de signature, demande de prochaine étape, demande d'être rappelé par l'Expert Travaux pour avancer, demande ou acceptation d'un rendez-vous qui fait avancer le projet, validation d'un devis, d'un budget ou d'un principe, volonté de démarrer, pièces envoyées explicitement pour poursuivre, question bloquante juste avant signature.
+- "waiting_reply" : le client attend une réponse ou une action de Renovation Man (question, demande, document qui appelle une confirmation, relance), sans intention forte d'avancer.
+- "informational" : information, remerciement, accusé de réception, réflexion ou report, sans action attendue.
+- "negative" : refus, abandon, autre prestataire retenu.
+- "uncertain" : rien ne permet de trancher.
+Un message d'artisan, de fournisseur, de partenaire ou d'automate vaut "informational", quel que soit son ton.
+
+needs_reply vaut true quand le message appelle une réponse ou une action de Renovation Man (question, demande, créneau proposé à confirmer, document à valider), false sinon. Un message peut être "strong_progress" ET needs_reply true.
+
+prospect_evidence vaut true SEULEMENT si l'expéditeur est inconnu ET que le texte prouve à la fois qu'il parle de SON propre projet de travaux et qu'il demande une suite concrète (mise en relation, rappel, rendez-vous, devis, signature). « Nous faisons des travaux » seul ne suffit pas. false dans tous les autres cas.
 
 signal_type vaut exactement l'une de ces valeurs :
 - "signature"      : engagement réel ou dernière étape avant engagement (bon pour accord, validation explicite, demande de lien de signature, de facture d'acompte ou de RIB pour régler, dernière correction avant signature, choix explicite de nous retenir).
@@ -179,8 +230,9 @@ Règles impératives :
 
 export function buildUserMessage(payload: ModelPayload): string {
   const lines = [
-    `Objet : ${payload.subject}`,
-    `Dernier message (${payload.lastDirection}) : ${payload.lastMessage}`,
+    ...(payload.senderRole ? [`Rôle de l'expéditeur : ${payload.senderRole}`] : []),
+    `Objet (contexte secondaire) : ${payload.subject}`,
+    `Dernier message de l'expéditeur (${payload.lastDirection}) : ${payload.lastMessage}`,
   ];
   if (payload.context.length > 0) {
     lines.push(`Contexte antérieur bref : ${payload.context.join(" | ")}`);
@@ -195,6 +247,7 @@ export function buildUserMessage(payload: ModelPayload): string {
 // --- Appel ------------------------------------------------------------------
 
 const VALID: SignalType[] = ["signature", "positif_bloque", "risque", "negatif", "neutre"];
+const MODEL_ROLES: SenderRole[] = ["customer", "prospect", "artisan", "supplier", "partner", "automatic", "unknown"];
 
 const foldForMatch = (s: string) =>
   s
@@ -276,7 +329,10 @@ export async function classifyWithModelDetailed(
       },
       body: JSON.stringify({
         model: AI_MODEL,
-        max_tokens: 400,
+        // 500 et non 400 : la sortie structurée V2 porte quatre champs de plus,
+        // et une réponse tronquée est une « réponse illisible » (≈ 1 par
+        // synchro en production, semaine du 12/10/2026).
+        max_tokens: 500,
         // Classification, pas rédaction : on veut le même verdict à chaque
         // appel, sinon la mesure n'est pas reproductible.
         temperature: 0,
@@ -326,6 +382,10 @@ export async function classifyWithModelDetailed(
   const signalType = VALID.includes(parsed.signal_type as SignalType)
     ? (parsed.signal_type as SignalType)
     : "neutre";
+  const intent: CommercialIntent = COMMERCIAL_INTENTS.includes(parsed.commercial_intent as CommercialIntent)
+    ? (parsed.commercial_intent as CommercialIntent)
+    : "uncertain";
+  const proposedRole = MODEL_ROLES.includes(parsed.sender_role as SenderRole) ? (parsed.sender_role as SenderRole) : null;
   const ordered = [...messages].sort((a, b) => a.date.localeCompare(b.date));
   recordAiCall(AI_MODEL, origin, true, usage);
 
@@ -345,6 +405,12 @@ export async function classifyWithModelDetailed(
         acceptProof(verifyQuote(parsed.quote, `${payload.subject} ${payload.lastMessage}`))?.quote ??
         selectInterestProof(payload.lastMessage)?.quote ??
         null,
+      intent,
+      needsReply: parsed.needs_reply === true,
+      // Le rôle proposé n'est retenu que si le système ne le connaissait pas
+      // avec certitude : le modèle ne décide jamais une identité établie.
+      senderRole: context.senderRoleCertain ? (context.senderRole ?? null) : proposedRole,
+      prospectEvidence: parsed.prospect_evidence === true,
     },
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,

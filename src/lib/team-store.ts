@@ -51,6 +51,8 @@ type Row = {
   territory: string | null;
   active: number;
   updated_at: string;
+  /** JSON ; absent d'une base antérieure à la migration du 18/10/2026. */
+  mailboxes?: string;
 };
 
 /** Prénom par défaut d'un nom complet, quand l'interface n'en propose pas. */
@@ -60,12 +62,14 @@ function defaultFirstName(name: string): string {
 
 function toMember(row: Row): TeamMemberRecord {
   const aliases = JSON.parse(row.aliases) as string[];
+  const mailboxes = JSON.parse(row.mailboxes ?? "[]") as string[];
   return {
     key: row.member_key,
     name: row.name,
     firstName: row.first_name,
     ...(aliases.length > 0 ? { aliases } : {}),
     ...(row.territory === "idf" ? { territory: "idf" as const } : {}),
+    ...(mailboxes.length > 0 ? { mailboxes } : {}),
     active: row.active === 1,
     updatedAt: row.updated_at,
   };
@@ -82,8 +86,8 @@ function seedIfEmpty(): void {
 
   const inactive = new Set(TEAM_SEED_INACTIVE.map(normalizeKey));
   const insert = db.prepare(
-    `INSERT INTO team_member (member_key, name, first_name, aliases, territory, active, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO team_member (member_key, name, first_name, aliases, territory, active, updated_at, mailboxes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const now = new Date().toISOString();
   for (const member of TEAM) {
@@ -95,6 +99,7 @@ function seedIfEmpty(): void {
       member.territory ?? null,
       inactive.has(normalizeKey(member.name)) ? 0 : 1,
       now,
+      JSON.stringify(member.mailboxes ?? []),
     );
   }
 }
@@ -161,10 +166,13 @@ export function addTeamMember(input: {
       key,
     );
   } else {
+    // Boîtes mail : celles de la graine quand le commercial y figure. Sinon
+    // aucune — on n'invente jamais une adresse.
+    const seeded = TEAM.find((m) => normalizeKey(m.name) === key)?.mailboxes ?? [];
     db.prepare(
-      `INSERT INTO team_member (member_key, name, first_name, aliases, territory, active, updated_at)
-       VALUES (?, ?, ?, '[]', ?, 1, ?)`,
-    ).run(key, name, input.firstName?.trim() || defaultFirstName(name), input.territory ?? null, now);
+      `INSERT INTO team_member (member_key, name, first_name, aliases, territory, active, updated_at, mailboxes)
+       VALUES (?, ?, ?, '[]', ?, 1, ?, ?)`,
+    ).run(key, name, input.firstName?.trim() || defaultFirstName(name), input.territory ?? null, now, JSON.stringify(seeded));
   }
 
   revision++;

@@ -21,7 +21,8 @@
 import { actionsTreatedOn, treatAction } from "./action-state";
 import { parisDate } from "./business-time";
 import { getDb } from "./db";
-import { INTERNAL_DOMAIN } from "./mail-rules";
+import { GENERIC_INBOXES, INTERNAL_DOMAIN } from "./mail-rules";
+import { EXCLUDED_ROLES, type SenderRole } from "./sender-role";
 import {
   evaluateEligibility,
   isPureAcknowledgement,
@@ -58,6 +59,12 @@ type SignalRow = {
   /** Destinataires RM (D), JSON brut. Absent = ligne antérieure à cette donnée. */
   rm_to?: string | null;
   rm_cc?: string | null;
+  sender_role?: string | null;
+  sender_role_reason?: string | null;
+  intent?: string | null;
+  needs_reply?: number | null;
+  prospect_evidence?: number | null;
+  scanner_v2?: number | null;
   signal_type: string;
   blocker: string | null;
   summary: string | null;
@@ -307,6 +314,17 @@ type TriageRow = {
   quote?: string | null;
   /** Classifieur qui a produit `summary` : un modèle, ou les règles (gabarit). */
   classifier?: string | null;
+  /** V2 — rôle de l'expéditeur, intention du message, besoin de réponse, preuve prospect. */
+  sender_role?: string | null;
+  sender_role_reason?: string | null;
+  intent?: string | null;
+  needs_reply?: number | null;
+  prospect_evidence?: number | null;
+  /**
+   * 1 = message inséré par le scanner V2. Absent = message antérieur au
+   * déploiement : triage historique inchangé (décision du 18/10/2026).
+   */
+  scanner_v2?: number | null;
 };
 
 /**
@@ -318,6 +336,9 @@ type TriageRow = {
  */
 export function triage(row: TriageRow): Triage {
   const verdict = eligibilityOf(row);
+  // V2 — un message classé par le scanner V2 porte son intention : elle fait
+  // foi, sans la cascade de motifs historiques sur le résumé.
+  if (row.scanner_v2 === 1 && row.intent) return triageV2(row, verdict);
   const result = classify(row, verdict);
   // Expéditeur inconnu de Salesforce et aucune phrase du client : l'objet seul
   // (« Modification devis », « Demande de prix ») ne suffit pas à affirmer qu'un
@@ -380,7 +401,13 @@ function parseTeamNames(json: string | null | undefined): string[] | null {
 
 function eligibilityOf(row: TriageRow) {
   return evaluateEligibility(
-    { fromEmail: row.from_email ?? null, subject: row.subject, summary: row.summary },
+    // La phrase du client (citation) compte avec le résumé : « pourriez-vous me
+    // proposer un devis ? » d'un ancien client signale une NOUVELLE demande.
+    {
+      fromEmail: row.from_email ?? null,
+      subject: row.subject,
+      summary: row.scanner_v2 === 1 ? [row.summary, row.quote].filter(Boolean).join(" ") : row.summary,
+    },
     {
       matchKind: (row.match_kind ?? null) as EligibilityContext["matchKind"],
       externalStage: row.opportunity_stage ?? null,
@@ -391,9 +418,66 @@ function eligibilityOf(row: TriageRow) {
       ownerName: dealOwnerOf(row),
       rmTo: parseTeamNames(row.rm_to),
       rmCc: parseTeamNames(row.rm_cc),
+      senderRole: (row.sender_role ?? null) as SenderRole | null,
+      senderRoleReason: row.sender_role_reason ?? null,
+      scannerV2: row.scanner_v2 === 1,
     },
     INTERNAL_DOMAIN,
   );
+}
+
+/**
+ * Triage V2 (18/10/2026) : IDENTITÉ → INTENTION. L'éligibilité (rôle de
+ * l'expéditeur, état de l'affaire) a déjà tranché qui parle ; l'intention vient
+ * du classifieur, qui a lu le corps du message.
+ *
+ *   Bloc 1 (« chaud »)    intention forte d'avancer — signal commercial ;
+ *   Bloc 2 (« attente »)  le message appelle une réponse de RM.
+ *
+ * Un expéditeur inconnu (« incertain ») ne passe que sur preuve textuelle d'un
+ * projet personnel ET d'une demande d'avancer (`prospect_evidence`).
+ */
+function triageV2(row: TriageRow, eligibility: ReturnType<typeof eligibilityOf>): Triage {
+  if (row.direction !== "entrant") {
+    return { category: "ignore", reason: "", ignoredBecause: row.direction === "interne" ? "échange interne" : "message sortant" };
+  }
+  if (eligibility.verdict === "non") {
+    return { category: "hors_perimetre", reason: "", ignoredBecause: eligibility.reason };
+  }
+  if (eligibility.verdict === "incertain" && row.prospect_evidence !== 1) {
+    return {
+      category: "ignore",
+      reason: "",
+      ignoredBecause: "expéditeur non identifié comme client, sans preuve d'un projet personnel",
+    };
+  }
+  const needsReply = row.needs_reply === 1;
+  const words = client(row);
+  const asked = detectIntent({ subject: null, summary: words.summary || words.quote }).label;
+  switch (row.intent) {
+    case "strong_progress":
+      return {
+        category: "chaud",
+        reason:
+          row.signal_type === "signature"
+            ? "Prêt à signer ou dernière étape avant signature"
+            : asked && needsReply
+              ? `Souhaite avancer — ${asked}`
+              : "Souhaite avancer",
+        ignoredBecause: null,
+        confidence: "forte",
+      };
+    case "waiting_reply":
+      return { category: "attente", reason: asked ? `Demande ${asked}` : "Demande une réponse", ignoredBecause: null, confidence: "forte" };
+    case "negative":
+      return { category: "ignore", reason: "", ignoredBecause: "le client ne donne pas suite" };
+    case "informational":
+      return { category: "ignore", reason: "", ignoredBecause: "information, sans action attendue" };
+    default:
+      return needsReply
+        ? { category: "attente", reason: asked ? `Demande ${asked}` : "Demande une réponse", ignoredBecause: null, confidence: "moyenne" }
+        : { category: "ignore", reason: "", ignoredBecause: "aucune intention identifiable" };
+  }
 }
 
 /**
@@ -738,6 +822,7 @@ export function syncMorningEvents(now = new Date()): { seen: number; created: nu
       `SELECT m.gmail_message_id, m.thread_id, m.sent_at, m.direction, m.subject, m.summary,
               m.blocker, m.signal_type, m.from_email, m.match_kind, m.opportunity_id,
               m.rm_to, m.rm_cc, m.quote, m.classifier,
+              m.sender_role, m.sender_role_reason, m.intent, m.needs_reply, m.prospect_evidence, m.scanner_v2,
               d.opportunity_stage, d.lead_status, d.opportunity_owner AS ext_owner, d.lead_owner,
               o.stage, o.is_terminal, o.owner
          FROM mail_signal m
@@ -1001,12 +1086,35 @@ export function latestOutboundByThread(): Map<string, string> {
   const db = getDb();
   const rows = db
     .prepare(
-      `SELECT thread_id, MAX(sent_at) AS latest FROM mail_signal
-        WHERE direction = 'sortant' AND sent_at IS NOT NULL
-        GROUP BY thread_id`,
+      `SELECT thread_id, from_email, sent_at FROM mail_signal
+        WHERE direction = 'sortant' AND sent_at IS NOT NULL`,
     )
-    .all() as { thread_id: string; latest: string }[];
-  return new Map(rows.map((r) => [r.thread_id, r.latest]));
+    .all() as { thread_id: string; from_email: string | null; sent_at: string }[];
+  const latest = new Map<string, string>();
+  for (const r of rows) {
+    if (!isHumanReply(r.from_email)) continue;
+    if ((latest.get(r.thread_id) ?? "") < r.sent_at) latest.set(r.thread_id, r.sent_at);
+  }
+  return latest;
+}
+
+/**
+ * Une réponse RM SIGNIFICATIVE : écrite par une personne, pas par une boîte
+ * collective ni par un automate (accusé de réception de `contact@`, relance
+ * Salesforce, notification interne). V2, 18/10/2026.
+ *
+ * LIMITE ASSUMÉE : RM Morning ne voit que la boîte synchronisée (sami@). Un
+ * Expert Travaux qui répond depuis sa propre boîte, sans copie, reste invisible
+ * — sur la semaine du 11/10/2026, aucune réponse sortante d'ET n'y figurait.
+ * Le Bloc 2 dit donc « aucune réponse VISIBLE », jamais « aucune réponse ».
+ */
+const NON_HUMAN_OUTBOUND = /^(contact|sales|operations|chatter|info|noreply|no-reply|notifications?|compta|facturation)@/i;
+
+export function isHumanReply(fromEmail: string | null | undefined): boolean {
+  const email = (fromEmail ?? "").trim().toLowerCase();
+  if (!email) return true;
+  if (GENERIC_INBOXES.includes(email)) return false;
+  return !NON_HUMAN_OUTBOUND.test(email);
 }
 
 /**
@@ -1035,13 +1143,14 @@ export function isThreadStillWaiting(
  * fils. La règle est désormais UNIQUE pour les deux blocs :
  *
  *   1. seul compte le DERNIER message pertinent du client dans son fil (les
- *      notifications et les messages hors périmètre ne comptent pas). Si ce
- *      dernier message n'est ni chaud ni en attente — un remerciement, un « on
- *      réfléchit » —, le fil ne remonte plus : c'est le client qui a tourné la
- *      page ;
- *   2. aucune réponse RM (message sortant) ne lui est postérieure ;
- *   3. UNE ligne par client : l'affaire (rattachement A ou B) ou, à défaut,
- *      l'adresse de l'expéditeur. Son message le plus récent l'emporte.
+ *      notifications, les messages hors périmètre et — V2 — ceux des tiers du
+ *      fil ne comptent pas). Si ce dernier message n'est ni chaud ni en attente
+ *      — un remerciement, un « on réfléchit » —, le fil ne remonte plus : c'est
+ *      le client qui a tourné la page ;
+ *   2. Bloc 2 : aucune réponse RM HUMAINE ne lui est postérieure. Bloc 1 (V2) :
+ *      un signal chaud reste visible malgré une réponse, jusqu'à acquittement ;
+ *   3. UNE ligne par client et par bloc : l'affaire (rattachement A ou B) ou,
+ *      à défaut, l'adresse de l'expéditeur. Son message le plus récent l'emporte.
  *
  * Limite assumée : RM ne voit que la boîte synchronisée. Une réponse envoyée
  * depuis la boîte d'un commercial sans copie reste invisible — c'est pourquoi
@@ -1057,13 +1166,18 @@ type VisibilityRow = {
   opportunity_id: string | null;
   match_level: string | null;
   from_email: string | null;
+  /** V2 — rôle de l'expéditeur. Absent / null = ligne antérieure à V2. */
+  sender_role?: string | null;
+  /** 1 = message du scanner V2 ; sinon, règles de visibilité historiques. */
+  scanner_v2?: number | null;
 };
 
 export function visibleMorningMessageIds(): { hot: Set<string>; waiting: Set<string> } {
   const rows = getDb()
     .prepare(
       `SELECT m.gmail_message_id AS id, m.thread_id, m.sent_at, m.direction,
-              e.category, e.reason, m.opportunity_id, m.match_level, lower(m.from_email) AS from_email
+              e.category, e.reason, m.opportunity_id, m.match_level, lower(m.from_email) AS from_email,
+              m.sender_role, m.scanner_v2
          FROM mail_signal m
          LEFT JOIN morning_event e ON e.gmail_message_id = m.gmail_message_id`,
     )
@@ -1074,35 +1188,70 @@ export function visibleMorningMessageIds(): { hot: Set<string>; waiting: Set<str
 /** Cœur pur de `visibleMorningMessageIds`, contrôlable sans base. */
 export function selectVisible(rows: VisibilityRow[]): { hot: Set<string>; waiting: Set<string> } {
   const at = (r: VisibilityRow) => r.sent_at ?? "";
+  const isV2 = (r: VisibilityRow) => r.scanner_v2 === 1;
   const lastInbound = new Map<string, VisibilityRow>();
-  const lastOutbound = new Map<string, string>();
+  // Deux lectures de « réponse RM » : toute réponse sortante (règle historique,
+  // messages antérieurs au déploiement) et réponse HUMAINE seulement (V2) —
+  // l'accusé de réception de `contact@` ou une relance automatique ne répond à rien.
+  const lastOutboundAny = new Map<string, string>();
+  const lastOutboundHuman = new Map<string, string>();
   for (const r of rows) {
     if (r.direction === "sortant") {
-      if (r.sent_at && (lastOutbound.get(r.thread_id) ?? "") < r.sent_at) lastOutbound.set(r.thread_id, r.sent_at);
+      if (r.sent_at && (lastOutboundAny.get(r.thread_id) ?? "") < r.sent_at) lastOutboundAny.set(r.thread_id, r.sent_at);
+      if (r.sent_at && isHumanReply(r.from_email) && (lastOutboundHuman.get(r.thread_id) ?? "") < r.sent_at) {
+        lastOutboundHuman.set(r.thread_id, r.sent_at);
+      }
       continue;
     }
     if (r.direction !== "entrant") continue;
     // Un message hors périmètre ou automatique n'est pas la parole du client.
     if (r.category === "hors_perimetre" || r.reason === "message automatique") continue;
+    // V2 — un tiers du fil (artisan, fournisseur, automate…) qui répond après
+    // le client ne masque plus la demande du client : il n'est pas « le
+    // dernier message du client ».
+    if (isV2(r) && r.sender_role && EXCLUDED_ROLES.includes(r.sender_role as SenderRole)) continue;
     const cur = lastInbound.get(r.thread_id);
     if (!cur || at(r) > at(cur) || (at(r) === at(cur) && r.id > cur.id)) lastInbound.set(r.thread_id, r);
   }
 
-  const byClient = new Map<string, VisibilityRow>();
+  const clientOf = (r: VisibilityRow) =>
+    r.opportunity_id && (r.match_level === "A" || r.match_level === "B")
+      ? `opp:${r.opportunity_id}`
+      : `mail:${r.from_email ?? r.thread_id}`;
+  const keepLatest = (map: Map<string, VisibilityRow>, key: string, r: VisibilityRow) => {
+    const cur = map.get(key);
+    if (!cur || at(r) > at(cur)) map.set(key, r);
+  };
+
+  // Messages antérieurs au déploiement : règle HISTORIQUE inchangée — toute
+  // réponse sortante ferme les deux blocs, une seule ligne par client.
+  const legacyByClient = new Map<string, VisibilityRow>();
+  const candidates: VisibilityRow[] = [];
   for (const r of lastInbound.values()) {
     if (r.category !== "chaud" && r.category !== "attente") continue;
-    if (!isThreadStillWaiting(r.thread_id, r.sent_at, lastOutbound)) continue;
-    const key =
-      r.opportunity_id && (r.match_level === "A" || r.match_level === "B")
-        ? `opp:${r.opportunity_id}`
-        : `mail:${r.from_email ?? r.thread_id}`;
-    const cur = byClient.get(key);
-    if (!cur || at(r) > at(cur)) byClient.set(key, r);
+    if (!isV2(r)) {
+      if (!isThreadStillWaiting(r.thread_id, r.sent_at, lastOutboundAny)) continue;
+      keepLatest(legacyByClient, clientOf(r), r);
+      continue;
+    }
+    // DÉCISION MÉTIER (18/10/2026) : le Bloc 1 est un SIGNAL commercial, pas une
+    // attente. Une réponse RM postérieure ne le ferme pas : il reste visible
+    // jusqu'à ce que l'utilisateur le traite (acquittement). Le Bloc 2, lui,
+    // disparaît dès qu'une réponse humaine RM est visible après le message.
+    if (r.category === "attente" && !isThreadStillWaiting(r.thread_id, r.sent_at, lastOutboundHuman)) continue;
+    candidates.push(r);
   }
+
+  // Une ligne par client ET PAR BLOC (V2) : un client qui a écrit « on signe »
+  // dans un fil puis posé une question dans un autre apparaît en Bloc 1 ET en
+  // Bloc 2 — l'ancienne clé unique laissait la question, plus récente, masquer
+  // le signal de signature. Sur l'historique seul, le résultat est inchangé.
+  const byBlock = new Map<string, VisibilityRow>();
+  for (const r of [...legacyByClient.values(), ...candidates]) keepLatest(byBlock, `${r.category}:${clientOf(r)}`, r);
 
   const hot = new Set<string>();
   const waiting = new Set<string>();
-  for (const r of byClient.values()) (r.category === "chaud" ? hot : waiting).add(r.id);
+  for (const r of byBlock.values()) (r.category === "chaud" ? hot : waiting).add(r.id);
   return { hot, waiting };
 }
 

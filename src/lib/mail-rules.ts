@@ -9,31 +9,34 @@
  * exactement laquelle a écarté quoi. Une règle qui écarte à tort se corrige
  * ici, seule, sans toucher au reste du moteur.
  *
- * Fichier volontairement autonome (aucun import) : il doit rester exécutable
- * par le harnais de validation comme par l'application.
+ * Une seule dépendance, le périmètre d'équipe (`normalize.ts`, sans base) :
+ * le fichier reste exécutable par le harnais de validation comme par
+ * l'application.
  */
+
+import { activeTeamMembers } from "./normalize";
 
 /** Domaine interne de l'entreprise. */
 export const INTERNAL_DOMAIN = "renovationman.com";
 
 /**
- * Boîtes des commerciaux suivis. Un message qui ne touche aucune d'elles est
- * hors périmètre : on ne lit jamais leurs boîtes, mais on sait reconnaître
- * leur adresse quand elle apparaît en destinataire ou en copie.
+ * Boîtes des commerciaux suivis, adresse → nom d'équipe canonique.
+ *
+ * SOURCE UNIQUE : le périmètre commercial (`team_member`, chargé dans
+ * `normalize.ts` par `loadTeam()`), dont chaque membre ACTIF porte ses boîtes.
+ * Il n'existe plus de liste codée en dur ici : l'ancienne avait divergé de
+ * l'équipe (Vincent Da Silva, actif, absent — tous ses messages tombaient
+ * « hors périmètre », audit du 18/10/2026). Un message qui ne touche aucune de
+ * ces boîtes est hors périmètre : on ne lit jamais leurs boîtes, mais on sait
+ * reconnaître leur adresse quand elle apparaît en destinataire ou en copie.
  */
-export const TEAM_MAILBOXES: Record<string, string> = {
-  "anthony.ramaherison@renovationman.com": "Anthony Ramaherison",
-  "guillaume@renovationman.com": "Guillaume Fontaine",
-  "mathis.coulon@renovationman.com": "Mathis Coulon",
-  "daravith@renovationman.com": "Daravith Chan Fah",
-  "vincent.bouzy@renovationman.com": "Vincent Bouzy",
-  "jonathan.florville@renovationman.com": "Jonathan Florville",
-  "david.bernstein@renovationman.com": "David Bernstein",
-  "stephane.strat@renovationman.com": "Stéphane Strat",
-  "valentin@renovationman.com": "Valentin Marion",
-  "guillaume.huc@renovationman.com": "Guillaume Huc",
-  "sami@renovationman.com": "Sami Lazari",
-};
+export function teamMailboxes(): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const member of activeTeamMembers()) {
+    for (const address of member.mailboxes ?? []) map[address.trim().toLowerCase()] = member.name;
+  }
+  return map;
+}
 
 /**
  * Boîtes génériques de l'entreprise par lesquelles arrivent de vrais prospects.
@@ -47,12 +50,9 @@ export const TEAM_MAILBOXES: Record<string, string> = {
 export const GENERIC_INBOXES = ["contact@renovationman.com"];
 
 /**
- * Mahery Raza et Vincent Da Silva font partie de l'équipe suivie — dans
- * Salesforce, le forecast, les statistiques et le Morning Brief — mais leurs
- * échanges clients ne transitent pas encore par la boîte lue ici. Leur absence
- * de cette table est donc normale et attendue : ce n'est ni un oubli, ni un
- * défaut de configuration. Le jour où leurs messages apparaîtront, il suffira
- * d'ajouter leur adresse ci-dessus. Ne jamais inventer d'adresse.
+ * Un commercial sans boîte renseignée (Mahery Raza) n'a aucun message dans le
+ * périmètre : c'est attendu tant que ses échanges ne transitent pas par la
+ * boîte lue. Ne jamais inventer d'adresse — la renseigner dans le périmètre.
  */
 
 /** Expéditeurs et domaines dont aucun message n'a d'effet sur une signature. */
@@ -146,8 +146,9 @@ export function participants(message: MailMessage): string[] {
 /** Commerciaux de l'équipe présents dans le message. */
 export function teamMembersInvolved(message: MailMessage): string[] {
   const found = new Set<string>();
+  const mailboxes = teamMailboxes();
   for (const address of participants(message)) {
-    const member = TEAM_MAILBOXES[address];
+    const member = mailboxes[address];
     if (member) found.add(member);
   }
   return [...found];
@@ -165,8 +166,9 @@ export function teamMembersInvolved(message: MailMessage): string[] {
  */
 export function teamMembersInTo(message: MailMessage): string[] {
   const found = new Set<string>();
+  const mailboxes = teamMailboxes();
   for (const address of (message.to ?? []).map(lower)) {
-    const member = TEAM_MAILBOXES[address];
+    const member = mailboxes[address];
     if (member) found.add(member);
   }
   return [...found];
@@ -174,8 +176,9 @@ export function teamMembersInTo(message: MailMessage): string[] {
 
 export function teamMembersInCc(message: MailMessage): string[] {
   const found = new Set<string>();
+  const mailboxes = teamMailboxes();
   for (const address of (message.cc ?? []).map(lower)) {
-    const member = TEAM_MAILBOXES[address];
+    const member = mailboxes[address];
     if (member) found.add(member);
   }
   return [...found];
@@ -277,6 +280,14 @@ export const EXCLUSION_RULES: {
     id: "no-reply",
     label: "Expéditeur no-reply générique",
     test: (m) => /^(no[.\-_]?reply|donotreply|ne[.\-_]?pas[.\-_]?repondre)/i.test(localOf(m.from)),
+  },
+  {
+    id: "reponse-automatique",
+    label: "Réponse automatique, absence ou défi anti-spam (Mailinblack…)",
+    // Une machine qui répond à la place d'un humain : elle ne dit rien du
+    // projet, et un défi anti-spam rattaché par le fil masquait la vraie
+    // demande du client dans le Bloc 2 (audit du 18/10/2026).
+    test: (m) => isAutomaticReply(m),
   },
   {
     id: "notification-automatique",
@@ -387,6 +398,35 @@ export const EXCLUSION_RULES: {
       !COMMERCIAL_NOTIFICATION.test(`${m.subject} ${m.snippet}`),
   },
 ];
+
+/** Plateformes anti-spam qui répondent par un défi « cliquez pour délivrer ». */
+const ANTISPAM_DOMAIN = /(^|\.)(mailinblack\.com|spamenmoins\.com|altospam\.com)$/i;
+
+/** Objet d'une réponse générée par une messagerie, jamais par un humain. */
+const AUTO_REPLY_SUBJECT =
+  /^(r[ée]ponse automatique|automatic reply|auto(matic)?[- ]?reply|out of office|absence du bureau|absent du bureau|absence\s*:|accus[ée] de r[ée]ception automatique|autosvar|abwesenheit)/i;
+
+/** Corps d'un défi anti-spam ou d'un accusé de réception automatique. */
+const AUTO_REPLY_BODY =
+  /un clic pour d[ée]livrer votre e-?mail|je suis prot[ée]g[ée] par|veuillez confirmer que vous [êe]tes un humain|j'accuse bonne r[ée]ception de votre (courriel|message|e-?mail) qui sera trait[ée]|this is an automatic reply|ceci est une r[ée]ponse automatique/i;
+
+/**
+ * Réponse automatique : défi anti-spam, absence, accusé de réception généré.
+ * Exportée : le rôle d'expéditeur (`sender-role.ts`) s'en sert aussi.
+ */
+export function isAutomaticReply(m: { from: string; subject: string; snippet?: string }): boolean {
+  return (
+    ANTISPAM_DOMAIN.test(domainOf(m.from)) ||
+    AUTO_REPLY_SUBJECT.test((m.subject ?? "").trim()) ||
+    AUTO_REPLY_BODY.test(m.snippet ?? "")
+  );
+}
+
+/** Domaine sans enjeu commercial (newsletter, SaaS, presse). Exporté pour le rôle d'expéditeur. */
+export function isNoiseDomain(email: string): boolean {
+  const d = domainOf(email);
+  return NOISE_DOMAINS.some((n) => d === n || d.endsWith(`.${n}`));
+}
 
 /**
  * Applique le filtrage. Un message conservé porte la règle « conserve ».

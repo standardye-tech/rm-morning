@@ -136,7 +136,7 @@ export function nameTokens(value: string): string[] {
  * Patronyme retenu pour une opportunité : le contact s'il existe, sinon la partie
  * « personne » du nom d'opportunité, avant le tiret de prestation.
  */
-function personName(opportunity: MatchableOpportunity): string {
+export function personName(opportunity: MatchableOpportunity): string {
   if (opportunity.clientContact) return opportunity.clientContact;
   return (opportunity.name ?? "").split(/\s+[-–—]\s+/)[0];
 }
@@ -155,7 +155,7 @@ function personName(opportunity: MatchableOpportunity): string {
  *     et exige DEUX jetons communs (prénom et nom) ou un jeton de six lettres au
  *     moins. Un prénom seul ne suffit plus.
  */
-function nameAgrees(client: string, senderName: string, senderLocal: string): string | null {
+export function nameAgrees(client: string, senderName: string, senderLocal: string): string | null {
   const clientList = nameTokens(client);
   if (clientList.length === 0) return null;
   const senderTokens = new Set([

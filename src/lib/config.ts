@@ -24,6 +24,14 @@ export type TeamMember = {
    * absent, tout est dans le périmètre. Voir `territory.ts` pour le champ utilisé.
    */
   territory?: "idf";
+  /**
+   * Boîtes mail du commercial, telles qu'elles apparaissent en destinataire ou
+   * en copie dans la boîte lue par le scanner. Elles définissent le périmètre
+   * mail (voir `teamMailboxes()` dans `mail-rules.ts`) : un commercial actif
+   * sans boîte renseignée n'a aucun message dans le périmètre. Ne jamais
+   * inventer d'adresse.
+   */
+  mailboxes?: string[];
 };
 
 /**
@@ -35,20 +43,23 @@ export type TeamMember = {
  * Ajouter ou retirer un commercial se fait dans l'interface, pas ici.
  */
 export const TEAM: TeamMember[] = [
-  { name: "Anthony Ramaherison", firstName: "Anthony" },
+  { name: "Anthony Ramaherison", firstName: "Anthony", mailboxes: ["anthony.ramaherison@renovationman.com"] },
+  // Aucune boîte connue : ses échanges ne transitent pas par la boîte lue.
   { name: "Mahery Raza", firstName: "Mahery", aliases: ["Mahery RAZAFINDRAZAKA"] },
-  { name: "Guillaume Fontaine", firstName: "Guillaume F." },
-  { name: "Mathis Coulon", firstName: "Mathis" },
-  { name: "Daravith Chan Fah", firstName: "Daravith", aliases: ["Daravith CHAN-FAH"] },
-  { name: "Vincent Bouzy", firstName: "Vincent B." },
-  { name: "Jonathan Florville", firstName: "Jonathan" },
-  { name: "Vincent Da Silva", firstName: "Vincent D." },
-  { name: "David Bernstein", firstName: "David" },
-  { name: "Stéphane Strat", firstName: "Stéphane" },
+  { name: "Guillaume Fontaine", firstName: "Guillaume F.", mailboxes: ["guillaume@renovationman.com"] },
+  { name: "Mathis Coulon", firstName: "Mathis", mailboxes: ["mathis.coulon@renovationman.com"] },
+  { name: "Daravith Chan Fah", firstName: "Daravith", aliases: ["Daravith CHAN-FAH"], mailboxes: ["daravith@renovationman.com"] },
+  { name: "Vincent Bouzy", firstName: "Vincent B.", mailboxes: ["vincent.bouzy@renovationman.com"] },
+  { name: "Jonathan Florville", firstName: "Jonathan", mailboxes: ["jonathan.florville@renovationman.com"] },
+  // Absente de l'ancienne liste codée en dur jusqu'au 18/10/2026 : tous ses
+  // messages tombaient « hors périmètre » (audit du scanner mail).
+  { name: "Vincent Da Silva", firstName: "Vincent D.", mailboxes: ["vincent.dasilva@renovationman.com"] },
+  { name: "David Bernstein", firstName: "David", mailboxes: ["david.bernstein@renovationman.com"] },
+  { name: "Stéphane Strat", firstName: "Stéphane", mailboxes: ["stephane.strat@renovationman.com"] },
   // Porte une dizaine de dossiers bretons, qui relèvent d'un autre DR.
-  { name: "Valentin Marion", firstName: "Valentin", territory: "idf" },
-  { name: "Guillaume Huc", firstName: "Guillaume H." },
-  { name: "Sami Lazari", firstName: "Sami" },
+  { name: "Valentin Marion", firstName: "Valentin", territory: "idf", mailboxes: ["valentin@renovationman.com"] },
+  { name: "Guillaume Huc", firstName: "Guillaume H.", mailboxes: ["guillaume.huc@renovationman.com"] },
+  { name: "Sami Lazari", firstName: "Sami", mailboxes: ["sami@renovationman.com"] },
 ];
 
 /**
@@ -90,6 +101,33 @@ export const STAGE_ORDER: Record<string, number> = {
   Signature: 5,
   "Signé": 6,
 };
+
+/**
+ * Étapes APRÈS signature, ou de clôture : une affaire qui y figure n'est plus
+ * du pipe commercial (scanner mail, éligibilité Morning). Liste EXPLICITE et
+ * comparée en forme normalisée — jamais une regex de préfixe : `^sign`
+ * attrapait « Signature », étape OUVERTE juste avant la signature (audit du
+ * 18/10/2026). Une étape inconnue n'est pas réputée signée. La preuve de
+ * signature reste le signé officiel Travaux, pas l'étape Salesforce.
+ */
+export const POST_SIGNATURE_STAGES = [
+  // Les cinq étapes post-signature de l'org (relevé du 18/10/2026) — les
+  // étapes ouvertes sont Etude dossier, Examen estimation, Visite artisan,
+  // Examen devis et Signature.
+  "Signé",
+  "Chantier en cours",
+  "Chantier terminé",
+  "Travaux en cours",
+  "Réalisé",
+  "Réalisée",
+  "Fin du projet",
+  "Affaire perdue",
+  "Perdu",
+  "Annulé",
+  "Fermé",
+  "Closed Won",
+  "Closed Lost",
+];
 
 /** Rang à partir duquel une opportunité est dite « en phase avancée ». */
 export const ADVANCED_STAGE_RANK = 4; // Examen devis et au-delà

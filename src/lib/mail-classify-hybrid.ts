@@ -13,9 +13,12 @@
  *      décisions les plus lourdes, et les règles y sont à 100 % de précision.
  *      Si le modèle propose l'un des deux, sa promotion est ignorée.
  *
- *   2. ESCALADE ÉTROITE. Le modèle n'est appelé que là où les règles sont
- *      faibles : verdict `neutre`, ou confiance ≤ 0,6. Ailleurs, aucun appel,
- *      aucun coût, aucune donnée qui sort.
+ *   2. ESCALADE APRÈS IDENTITÉ (V2, 18/10/2026). Seuls les messages d'un
+ *      client, d'un prospect ou d'un inconnu crédible arrivent ici — les
+ *      exclusions certaines (artisan, fournisseur, automate…) sont faites
+ *      avant, sans appel. Le modèle est alors appelé sauf signature reconnue
+ *      par les règles. Un message par fil et par nouveau message entrant, au
+ *      plus (voir `classifyThreadForStore`).
  *
  *   3. REPLI SYSTÉMATIQUE. Toute défaillance du modèle — délai dépassé, JSON
  *      invalide, erreur API, quota, indisponibilité — rend la main aux règles.
@@ -23,7 +26,7 @@
  *      par l'indisponibilité d'un service tiers.
  */
 
-import { classifyThread, type Classification, type ClassifiableMessage } from "./mail-classify";
+import { classifyThread, messageBody, type Classification, type ClassifiableMessage } from "./mail-classify";
 import {
   classifyWithModelDetailed,
   fallbackLabel,
@@ -101,13 +104,40 @@ export async function classifyHybrid(
   context: ThreadContext = {},
   budget?: ModelBudget,
 ): Promise<HybridResult | null> {
-  const rules = classifyThread(messages);
+  const rules = classifyThread(messages, context.targetId, { legacy: context.legacy });
   if (!rules) return null;
 
-  const needsModel =
-    rules.signalType === "neutre" || rules.confidence <= ESCALATION_CONFIDENCE;
+  // V2 (18/10/2026) — ESCALADE ÉLARGIE. La synchronisation n'envoie ici que des
+  // messages dont l'expéditeur est client, prospect ou inconnu crédible : les
+  // artisans, fournisseurs, partenaires et automates ont été écartés avant, de
+  // façon déterministe. Seule une signature reconnue par les règles (précision
+  // de 100 % au corpus annoté) dispense donc du modèle. L'ancien seuil 0,6
+  // laissait un « risque » à 0,65 venu de l'OBJET bloquer l'analyse d'un
+  // « on signe ensemble » écrit dans le corps.
+  const needsModel = context.legacy
+    ? // Historique : escalade étroite d'avant V2 (neutre, ou confiance ≤ 0,6).
+      rules.signalType === "neutre" || rules.confidence <= ESCALATION_CONFIDENCE
+    : !(rules.signalType === "signature" && rules.confidence > ESCALATION_CONFIDENCE);
 
   if (!needsModel) {
+    return {
+      classification: { ...rules, classifier: "rules" },
+      source: "rules",
+      escalated: false,
+      clamped: false,
+      ...EMPTY,
+      fallbackReason: null,
+    };
+  }
+
+  // Message SANS TEXTE (ni objet, ni corps, ni extrait) : rien à lire. Le
+  // modèle n'y répond pas en JSON, l'échec est « provisoire » et le fil était
+  // repris à CHAQUE synchronisation pendant sept jours — constaté en production
+  // du 14 au 18/10/2026 (un même fil, quatre appels perdus). Verdict des règles,
+  // définitif, aucun appel.
+  const ordered = [...messages].sort((a, b) => a.date.localeCompare(b.date));
+  const classified = (context.targetId && ordered.find((m) => m.id === context.targetId)) || ordered[ordered.length - 1];
+  if (!`${classified.subject ?? ""} ${messageBody(classified)}`.trim()) {
     return {
       classification: { ...rules, classifier: "rules" },
       source: "rules",
@@ -195,10 +225,20 @@ async function callModel(
     if (budget) budget.verified = true;
 
     // Bridage : le modèle n'a pas autorité pour prononcer une signature ni
-    // une perte. Sa proposition est écartée, le verdict des règles reprend.
+    // une perte (`signalType`, consommé par le forecast) — le verdict des
+    // règles reprend sur ce seul champ. Sa lecture de l'INTENTION, du besoin
+    // de réponse et du rôle est conservée (V2) : c'est elle qui alimente les
+    // Blocs 1 et 2, et « je vous envoie le devis signé » doit y rester fort.
     if (call.classification.signalType === "signature" || call.classification.signalType === "negatif") {
       return {
-        classification: { ...rules, classifier: "rules" },
+        classification: context.legacy ? { ...rules, classifier: "rules" } : {
+          ...rules,
+          classifier: "rules",
+          intent: call.classification.intent,
+          needsReply: call.classification.needsReply,
+          senderRole: call.classification.senderRole,
+          prospectEvidence: call.classification.prospectEvidence,
+        },
         source: "rules",
         escalated: true,
         clamped: true,

@@ -7,7 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 
-import { DB_PATH } from "./config";
+import { DB_PATH, TEAM } from "./config";
 
 let instance: DatabaseSync | null = null;
 
@@ -903,7 +903,9 @@ CREATE TABLE IF NOT EXISTS team_member (
   -- restriction. Le champ utilisé est le code postal (voir territory.ts).
   territory    TEXT,
   active       INTEGER NOT NULL DEFAULT 1,
-  updated_at   TEXT NOT NULL
+  updated_at   TEXT NOT NULL,
+  -- Boîtes mail du commercial (JSON), source du périmètre du scanner mail.
+  mailboxes    TEXT NOT NULL DEFAULT '[]'
 );
 
 -- Commerciaux RENCONTRÉS dans les sources, en équipe ou non. Alimente la liste
@@ -1090,6 +1092,59 @@ function migrate(db: DatabaseSync): void {
   ] as [string, string][]) {
     if (signalColumns.length > 0 && !signalColumns.some((c) => c.name === name)) {
       db.exec(`ALTER TABLE mail_signal ADD COLUMN ${name} ${type}`);
+    }
+  }
+
+  // Scanner mail V2 (18/10/2026) — identité de l'EXPÉDITEUR et intention du
+  // MESSAGE, propres à chaque ligne : le fil donne le projet, jamais le rôle.
+  //   sender_role        customer | prospect | artisan | supplier | partner |
+  //                      internal | automatic | newsletter | unknown
+  //   sender_role_reason phrase courte et vérifiable (règle ou fait Salesforce)
+  //   intent             strong_progress | waiting_reply | informational |
+  //                      negative | uncertain | non_client — NULL = ligne
+  //                      antérieure à V2, triée par l'ancien chemin
+  //   needs_reply        1 = le message appelle une réponse de RM
+  //   prospect_evidence  1 = expéditeur inconnu, preuve textuelle d'un projet
+  //                      personnel ET d'une demande d'avancer
+  //   scanner_v2         1 = message inséré par le scanner V2. NULL = message
+  //                      antérieur au déploiement : son triage, sa visibilité
+  //                      et son signal restent EXACTEMENT ceux d'avant
+  //                      (décision du 18/10/2026 — aucun effet rétroactif).
+  for (const [name, type] of [
+    ["scanner_v2", "INTEGER"],
+    ["sender_role", "TEXT"],
+    ["sender_role_reason", "TEXT"],
+    ["intent", "TEXT"],
+    ["needs_reply", "INTEGER"],
+    ["prospect_evidence", "INTEGER"],
+  ] as [string, string][]) {
+    if (signalColumns.length > 0 && !signalColumns.some((c) => c.name === name)) {
+      db.exec(`ALTER TABLE mail_signal ADD COLUMN ${name} ${type}`);
+    }
+  }
+
+  // Scanner mail V2 — type d'enregistrement Salesforce de l'adresse (Contact et
+  // Piste) : « Client », « Artisan », « MOE », « Apporteur d'affaires ». C'est le
+  // rôle CANONIQUE d'un interlocuteur, bien plus sûr qu'un domaine.
+  const directoryColumns = db.prepare("PRAGMA table_info(mail_directory)").all() as { name: string }[];
+  for (const name of ["contact_record_type", "lead_record_type"]) {
+    if (directoryColumns.length > 0 && !directoryColumns.some((c) => c.name === name)) {
+      db.exec(`ALTER TABLE mail_directory ADD COLUMN ${name} TEXT`);
+    }
+  }
+
+  // Scanner mail V2 — boîtes mail des commerciaux, portées par le périmètre
+  // canonique (`team_member`) au lieu d'une liste codée en dur dans
+  // `mail-rules.ts`. Les lignes déjà amorcées reçoivent les boîtes de la graine
+  // (`TEAM` dans config.ts), par nom ; une boîte déjà renseignée n'est jamais écrasée.
+  const teamColumns = db.prepare("PRAGMA table_info(team_member)").all() as { name: string }[];
+  if (teamColumns.length > 0 && !teamColumns.some((c) => c.name === "mailboxes")) {
+    db.exec("ALTER TABLE team_member ADD COLUMN mailboxes TEXT NOT NULL DEFAULT '[]'");
+  }
+  if (teamColumns.length > 0) {
+    const fill = db.prepare("UPDATE team_member SET mailboxes = ? WHERE name = ? AND mailboxes = '[]'");
+    for (const member of TEAM) {
+      if (member.mailboxes && member.mailboxes.length > 0) fill.run(JSON.stringify(member.mailboxes), member.name);
     }
   }
 

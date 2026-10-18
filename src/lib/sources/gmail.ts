@@ -25,12 +25,18 @@ import {
   insertSignal,
   lastCompletedSync,
   markThreadAnalyzed,
+  markThreadAnalyzedUpTo,
   startSync,
+  threadRowsForClassification,
   threadsPendingClassification,
+  updateMessageClassification,
   updateThreadClassification,
   setThreadQuote,
 } from "../mail-store";
-import { extractQuoteFromMessage, messageBody } from "../mail-classify";
+import { classifyThread, extractQuoteFromMessage, messageBody } from "../mail-classify";
+import { cleanLatestInboundBody } from "../mail-body";
+import { EXCLUDED_ROLES, isCertainRole, qualifyMessageSender, type SenderRole } from "../sender-role";
+import { loadTeam } from "../team-store";
 import { selectInterestProof } from "../interest-proof";
 import {
   AI_BUDGET_REACHED,
@@ -53,7 +59,8 @@ import {
   teamMembersInvolved,
   type MailMessage,
 } from "../mail-rules";
-import { loadDirectory } from "../mail-directory";
+import { addressesToResolve, loadDirectory, refreshDirectory } from "../mail-directory";
+import { rematchSignals } from "../mail-rematch";
 import { loadThreadLinks, rememberThread, senderMemory } from "../mail-thread-link";
 import {
   buildOpportunityIndex,
@@ -180,12 +187,19 @@ type GmailListResponse = {
   nextPageToken?: string;
 };
 
+type GmailPayload = {
+  mimeType?: string;
+  headers?: { name: string; value: string }[];
+  body?: { data?: string; size?: number };
+  parts?: GmailPayload[];
+};
+
 type GmailMessageResponse = {
   id: string;
   threadId: string;
   internalDate?: string;
   snippet?: string;
-  payload?: { headers?: { name: string; value: string }[] };
+  payload?: GmailPayload;
 };
 
 /** Identifiants des messages d'une fenêtre. Pagine jusqu'au garde-fou. */
@@ -300,11 +314,38 @@ export async function fetchThreadMessages(threadId: string): Promise<Classifiabl
             : ("entrant" as const),
         subject: headers.get("subject") ?? "",
         snippet: m.snippet ?? "",
+        fromEmail: from,
       };
     })
     .sort((a, b) => a.date.localeCompare(b.date))
-    .slice(-3);
+    // Vingt et non trois (V2) : le message à classer est le dernier message
+    // HUMAIN entrant utile, qui peut précéder plusieurs réponses de tiers. Le
+    // modèle, lui, ne reçoit que ce message et ses deux prédécesseurs.
+    .slice(-20);
 }
+
+/**
+ * Corps nettoyé d'UN message (V2, 18/10/2026) : lu en mémoire pour le seul
+ * message classé, jamais stocké. `format=full` est couvert par le scope
+ * `gmail.readonly` ; la lecture reste strictement en lecture seule. Échec ou
+ * message sans texte : `null`, et le classifieur retombe sur l'extrait.
+ */
+export async function fetchMessageBody(messageId: string): Promise<string | null> {
+  try {
+    const data = await gmailGet<GmailMessageResponse>(`messages/${messageId}?format=full`);
+    return cleanLatestInboundBody(data.payload);
+  } catch {
+    return null;
+  }
+}
+
+/** Ce que la synchronisation sait de l'expéditeur du message à classer. */
+export type ClassificationTarget = {
+  messageId: string;
+  senderRole: SenderRole | null;
+  senderRoleCertain: boolean;
+  senderRoleReason: string | null;
+};
 
 /**
  * Classe un fil TEL QUE LA SYNCHRO LE FAIT : relecture Gmail en lecture seule
@@ -321,16 +362,35 @@ export async function classifyThreadForStore(
   stage: string | null,
   origin: AiOrigin = "synchro",
   budget?: ModelBudget,
+  target?: ClassificationTarget,
 ) {
   const thread = await fetchThreadMessages(threadId);
-  const result = await classifyHybrid(thread, { stage, origin }, budget);
+  // V2 — le corps du message classé, nettoyé, en mémoire seulement.
+  const targetId = target?.messageId ?? null;
+  const targetMessage = targetId ? thread.find((m) => m.id === targetId) : undefined;
+  if (targetMessage) targetMessage.body = await fetchMessageBody(targetMessage.id);
+  const result = await classifyHybrid(
+    thread,
+    {
+      stage,
+      origin,
+      targetId: targetMessage ? targetId : null,
+      // Sans cible : reprise d'un fil antérieur au déploiement (ou script de
+      // retraitement) — comportement historique, verdict de fil.
+      legacy: !target,
+      senderRole: target?.senderRole ?? null,
+      senderRoleCertain: target?.senderRoleCertain ?? false,
+      senderRoleReason: target?.senderRoleReason ?? null,
+    },
+    budget,
+  );
   if (!result) return null;
-  const lastInbound = thread.filter((m) => m.direction === "entrant").pop();
+  const quoted = targetMessage ?? thread.filter((m) => m.direction === "entrant").pop();
   const quote =
     result.source === "model"
       ? (result.classification.quote ?? null)
-      : lastInbound
-        ? extractQuoteFromMessage(lastInbound)
+      : quoted
+        ? extractQuoteFromMessage(quoted)
         : null;
   return {
     result,
@@ -344,8 +404,40 @@ export async function classifyThreadForStore(
       summary: result.classification.summary,
       classifier: result.classification.classifier,
       quote,
+      intent: result.classification.intent ?? null,
+      needsReply: result.classification.needsReply ?? false,
+      prospectEvidence: result.classification.prospectEvidence ?? false,
+      // Rôle lu par le modèle, retenu seulement pour un expéditeur inconnu.
+      senderRole:
+        target?.senderRole === "unknown" && result.classification.senderRole && result.classification.senderRole !== "unknown"
+          ? result.classification.senderRole
+          : null,
     },
   };
+}
+
+/**
+ * Le message à classer dans un fil (V2) : le dernier message ENTRANT dont
+ * l'expéditeur n'est pas exclu de façon certaine (client, prospect, inconnu).
+ * `null` = rien d'utile — seuls des tiers, des automates ou des échanges
+ * internes sont en attente : aucun appel n'est fait.
+ */
+export function pickClassificationTarget(
+  rows: { gmailMessageId: string; direction: string | null; senderRole: string | null; senderRoleReason: string | null }[],
+): ClassificationTarget | null {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const r = rows[i];
+    if (r.direction !== "entrant") continue;
+    const role = (r.senderRole ?? null) as SenderRole | null;
+    if (role && EXCLUDED_ROLES.includes(role)) continue;
+    return {
+      messageId: r.gmailMessageId,
+      senderRole: role,
+      senderRoleCertain: isCertainRole(role, r.senderRoleReason),
+      senderRoleReason: r.senderRoleReason,
+    };
+  }
+  return null;
 }
 
 /** Exécute une fonction sur chaque élément, quelques-uns à la fois. */
@@ -465,6 +557,11 @@ export type SyncReport = {
   aiBudgetSkipped: number;
   /** Fils classés par les règles après ouverture du coupe-circuit (erreur permanente). */
   aiHaltedSkipped: number;
+  /**
+   * V2 — fils en attente traités SANS appel : rien de neuf côté client (tiers,
+   * automate, échange interne, message client déjà analysé).
+   */
+  noCallThreads: number;
   classifyMs: number;
 };
 
@@ -588,6 +685,9 @@ export class GmailSource implements MailSource {
    */
   async sync(now = new Date()): Promise<SyncReport> {
     const startedAt = Date.now();
+    // Le périmètre canonique (boîtes des commerciaux) est chargé depuis la base
+    // avant tout filtrage : c'est lui que lit `teamMailboxes()`.
+    loadTeam();
     const { start, end, bootstrap } = nextWindow(now);
     const syncId = startSync(start.toISOString(), end.toISOString());
 
@@ -727,6 +827,22 @@ export class GmailSource implements MailSource {
           : fromDomain === INTERNAL_DOMAIN
             ? "sortant"
             : "entrant";
+        // V2 — QUI écrit, indépendamment de l'affaire du fil. L'affaire ne sert
+        // qu'à la concordance de nom ; un tiers du fil ne devient jamais client.
+        const sender =
+          direction === "entrant"
+            ? qualifyMessageSender({
+                fromEmail: message.from,
+                fromName,
+                subject: message.subject,
+                snippet: message.snippet,
+                bulk: message.bulk === true && !(message.listId ?? "").toLowerCase().includes(INTERNAL_DOMAIN),
+                internalDomain: INTERNAL_DOMAIN,
+                directory,
+                opportunityClientEmails: knownClientEmails,
+                dealOpportunity: opportunity ?? null,
+              })
+            : { role: "internal" as const, reason: "message de l'entreprise" };
         const isNew = insertSignal(
           {
             gmailMessageId: message.id,
@@ -743,6 +859,8 @@ export class GmailSource implements MailSource {
             salesperson: opportunity?.owner ?? teamMembers[0] ?? null,
             rmTo,
             rmCc,
+            senderRole: sender.role,
+            senderRoleReason: sender.reason,
           },
           syncId,
         );
@@ -767,9 +885,28 @@ export class GmailSource implements MailSource {
     // les fils portant un message entrant ou interne pas encore classifié avec
     // succès partent désormais à la classification, qu'ils viennent de ce
     // passage ou d'un passage interrompu avant sa classification.
+    //
+    // V2 (18/10/2026) — L'IDENTITÉ AVANT L'INTENTION. Les adresses vues pour la
+    // première fois dans ce passage sont résolues auprès de Salesforce AVANT la
+    // classification, et le rôle des expéditeurs recalculé : un artisan connu
+    // de Salesforce (type « Artisan ») ne part donc jamais au modèle. Un échec
+    // Salesforce ne bloque rien : les rôles restent ceux de l'insertion.
+    try {
+      const fresh = addressesToResolve();
+      if (fresh.length > 0) {
+        await refreshDirectory(fresh);
+        rematchSignals();
+      }
+    } catch (cause) {
+      // Type d'erreur SEUL : le message de la CLI Salesforce peut recopier la
+      // requête, donc les adresses e-mail résolues. Rien de tel dans un journal.
+      console.warn(`[gmail] annuaire non rafraîchi avant classification : ${cause instanceof Error ? cause.name : "erreur"}`);
+    }
+
     const pendingSince = new Date(now.getTime() - GMAIL_SYNC.pendingLookbackDays * 864e5).toISOString();
     const pending = threadsPendingClassification(pendingSince);
     const classifyStart = Date.now();
+    let noCallThreads = 0;
     // Motifs de repli du modèle, comptés par fil. Jusqu'au 24/09/2026 ils étaient
     // calculés puis jetés : un crédit API épuisé a ainsi fait basculer 98 % des
     // fils en `rules_fallback` pendant dix jours sans aucune trace.
@@ -782,13 +919,62 @@ export class GmailSource implements MailSource {
     let aiHaltedSkipped = 0;
     await mapLimited(pending, GMAIL_SYNC.classifyConcurrency, async ({ threadId, stage }) => {
       try {
-        const classified_ = await classifyThreadForStore(threadId, stage, "synchro", budget);
-        if (!classified_) {
+        // V2 — UNE analyse par fil et par lot de nouveaux messages : celle du
+        // dernier message humain entrant utile. Ce qui est en attente sans être
+        // utile — message d'un artisan, d'un fournisseur, d'un automate, ou
+        // échange interne — est marqué traité sans aucun appel.
+        const rows = threadRowsForClassification(threadId);
+        // Fil sans message V2 en attente : messages antérieurs au déploiement,
+        // repris EXACTEMENT comme avant (verdict de fil, sans intention V2).
+        if (!rows.some((r) => r.scannerV2 && !r.analyzedAt)) {
+          const legacy = await classifyThreadForStore(threadId, stage, "synchro", budget);
+          if (!legacy) {
+            markThreadAnalyzed(threadId);
+            return;
+          }
+          updateThreadClassification(threadId, legacy.stored, legacy.final);
+          classified += 1;
+          bySource[legacy.result.source] += 1;
+          if (legacy.result.fallbackReason === AI_BUDGET_REACHED) aiBudgetSkipped += 1;
+          else if (legacy.result.fallbackReason === AI_PROVIDER_HALTED) aiHaltedSkipped += 1;
+          else if (legacy.result.fallbackReason) {
+            modelFallbacks.set(legacy.result.fallbackReason, (modelFallbacks.get(legacy.result.fallbackReason) ?? 0) + 1);
+          }
+          if (legacy.result.clamped) clamped += 1;
+          inputTokens += legacy.result.inputTokens;
+          outputTokens += legacy.result.outputTokens;
+          return;
+        }
+        const target = pickClassificationTarget(rows.filter((r) => r.scannerV2));
+        const targetRow = target ? rows.find((r) => r.gmailMessageId === target.messageId) : undefined;
+        if (!target || !targetRow || targetRow.analyzedAt) {
+          // Rien de neuf à lire côté client. Les notifications internes
+          // gardent leur lecture par règles, sans modèle : elles nourrissent
+          // le signal d'affaire, jamais les Blocs.
+          const internal = [...rows].reverse().find((r) => r.direction === "interne" && !r.analyzedAt);
+          if (internal) {
+            const thread = await fetchThreadMessages(threadId);
+            const rules = classifyThread(thread, internal.gmailMessageId);
+            if (rules) {
+              updateMessageClassification(internal.gmailMessageId, threadId, {
+                ...rules,
+                classifier: "rules",
+                intent: "informational",
+                needsReply: false,
+              });
+            }
+          }
           markThreadAnalyzed(threadId);
+          noCallThreads += 1;
+          return;
+        }
+        const classified_ = await classifyThreadForStore(threadId, stage, "synchro", budget, target);
+        if (!classified_) {
+          markThreadAnalyzedUpTo(threadId, target.messageId);
           return;
         }
         const { result, stored, final } = classified_;
-        updateThreadClassification(threadId, stored, final);
+        updateMessageClassification(target.messageId, threadId, stored, final);
 
         classified += 1;
         bySource[result.source] += 1;
@@ -916,6 +1102,7 @@ export class GmailSource implements MailSource {
       aiCalls,
       aiBudgetSkipped,
       aiHaltedSkipped,
+      noCallThreads,
       classifyMs,
     };
   }

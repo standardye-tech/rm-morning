@@ -22,8 +22,17 @@
  * faux client chaud : Morning répond à « où aller chercher l'argent », et quinze
  * fausses pistes coûtent plus cher qu'un signal marginal manqué.
  *
- * Aucune dépendance : exécutable tel quel par le harnais de contrôle.
+ * Dépendances pures (config, rôle d'expéditeur) : exécutable tel quel par le
+ * harnais de contrôle.
+ *
+ * V2 (18/10/2026) — LE RÔLE DE L'EXPÉDITEUR PASSE EN PREMIER. Le rattachement
+ * (`matchKind`) dit de quel PROJET parle le message ; il ne prouve plus que
+ * l'expéditeur est le client. Un artisan, un architecte ou un fournisseur qui
+ * écrit dans le fil d'un client reste ce qu'il est (`sender-role.ts`).
  */
+
+import { POST_SIGNATURE_STAGES } from "./config";
+import { CLIENT_ROLES, EXCLUDED_ROLES, type SenderRole } from "./sender-role";
 
 export type EligibilityVerdict = "oui" | "non" | "incertain";
 
@@ -71,6 +80,20 @@ export type EligibilityContext = {
    */
   rmTo?: string[] | null;
   rmCc?: string[] | null;
+  /**
+   * Rôle de l'expéditeur (V2). `null` / absent = ligne antérieure à V2 : la
+   * logique historique s'applique, rien n'est exclu faute de rôle.
+   */
+  senderRole?: SenderRole | null;
+  /** Justification du rôle, pour le diagnostic. */
+  senderRoleReason?: string | null;
+  /**
+   * Message inséré par le scanner V2. Absent / faux = message antérieur au
+   * déploiement : l'éligibilité HISTORIQUE s'applique telle quelle (étapes par
+   * regex, affaire hors pipe = signée, aucune nouvelle demande) — décision du
+   * 18/10/2026, aucun effet rétroactif sur l'historique.
+   */
+  scannerV2?: boolean;
 };
 
 export type Eligibility = {
@@ -155,6 +178,39 @@ const COMPLIANCE_DOC =
 const NEW_PROJECT =
   /(nouveau projet|nouveau chantier|nouvelle maison|nouvel appartement|un autre bien|un deuxieme|une deuxieme|autre projet|autre chantier|nouveau devis pour|nouvelle demande de devis|nouvelle estimation pour)/;
 
+/**
+ * Nouvelle DEMANDE d'un ancien client dont l'affaire est perdue ou close : il
+ * redemande un devis, un rendez-vous, une proposition. Réservé aux affaires
+ * closes — sur une affaire signée, la même phrase vise un avenant de chantier.
+ */
+const NEW_REQUEST =
+  /(nouvelle piste|nouveau local|nouveau bien|nouveau logement|(pourriez|pouvez|pourrez)-?vous (me |nous )?(proposer|faire|envoyer|etablir) (un |une )?(nouveau |nouvelle )?(devis|estimation|proposition|chiffrage)|je reviens vers vous pour (mon|notre|un) (projet|nouveau))/;
+
+const POST_SIGNATURE = new Set(POST_SIGNATURE_STAGES.map((stage) => norm(stage)));
+
+/**
+ * L'étape Salesforce dit-elle l'affaire signée ou close ? Liste EXPLICITE, en
+ * forme normalisée : « Signature » est l'étape OUVERTE juste avant la
+ * signature, et la regex `^sign` qui la classait « signée » excluait les
+ * clients les plus chauds (audit du 18/10/2026). Étape inconnue = non signée.
+ */
+export function isPostSignatureStage(stage: string | null | undefined): boolean {
+  return POST_SIGNATURE.has(norm(stage));
+}
+
+/** Regex d'étape d'avant V2, pour les seuls messages antérieurs au déploiement. */
+const LEGACY_SIGNED_STAGE = /(^sign|chantier|travaux en cours|realis|fin du projet|perdue)/i;
+
+/** Rôle → famille d'exclusion, telle que le diagnostic la nomme. */
+const EXCLUDED_FAMILY: Record<string, string> = {
+  artisan: "artisan",
+  supplier: "fournisseur",
+  partner: "partenaire / prescripteur",
+  internal: "salarié RM",
+  automatic: "message automatique",
+  newsletter: "newsletter / envoi en masse",
+};
+
 /** Statuts de piste qui ne justifient aucune action commerciale. */
 const DEAD_LEAD = /(abandon|perdue|doublon|injoignable|hors zone|non qualifi)/;
 
@@ -182,6 +238,9 @@ export function evaluateEligibility(
   const domain = email.split("@")[1] ?? "";
   const text = `${norm(message.subject)} ${norm(message.summary)}`;
   const announcesNewProject = NEW_PROJECT.test(text);
+  const v2 = context.scannerV2 === true;
+  const role = v2 ? (context.senderRole ?? null) : null;
+  const clientRole = role != null && CLIENT_ROLES.includes(role);
 
   // --- E1. Un salarié n'est jamais un client.
   if (domain && domain === internalDomain) {
@@ -192,6 +251,17 @@ export function evaluateEligibility(
       verdict: "non",
       family: "message sortant",
       reason: "message sortant ou interne, jamais une action client",
+    };
+  }
+
+  // --- E0 (V2). Rôle d'expéditeur exclu de façon certaine : artisan,
+  //     fournisseur, partenaire, automate, newsletter. Avant toute lecture de
+  //     l'affaire du fil — c'est précisément elle qui trompait l'ancien étage.
+  if (role != null && EXCLUDED_ROLES.includes(role)) {
+    return {
+      verdict: "non",
+      family: EXCLUDED_FAMILY[role] ?? role,
+      reason: `${EXCLUDED_FAMILY[role] ?? role} — ${context.senderRoleReason ?? "rôle d'expéditeur"}`,
     };
   }
 
@@ -259,19 +329,39 @@ export function evaluateEligibility(
   // Une affaire signée ou close n'est plus du pipe, quel que soit le libellé que
   // le rattachement lui a donné. On la traite exactement comme une affaire hors
   // pipe : identifiée, mais sans chiffre à aller chercher.
-  const signedStage = /(^sign|chantier|travaux en cours|realis|fin du projet|perdue)/i.test(
-    norm(context.dealStage),
-  );
+  const signedStage = v2
+    ? isPostSignatureStage(context.dealStage)
+    : // Historique : regex d'avant V2, conservée pour les messages antérieurs.
+      LEGACY_SIGNED_STAGE.test(norm(context.dealStage));
   const dealIsDead = context.matchKind === "affaire_pipe" && (context.dealIsTerminal || signedStage);
 
   switch (dealIsDead ? "affaire_hors_pipe" : context.matchKind) {
-    // --- E3. Affaire du pipe : le cœur du périmètre.
+    // --- E3. Affaire du pipe : le cœur du périmètre — À CONDITION que
+    //     l'expéditeur soit le client. Un inconnu dans le fil d'un client n'est
+    //     pas le client : il reste « incertain » et ne passe que sur preuve.
     case "affaire_pipe":
+      if (role === "unknown") {
+        return {
+          verdict: "incertain",
+          family: "tiers possible dans un fil client",
+          reason: "expéditeur non identifié comme le client de l'affaire du fil",
+        };
+      }
       return { verdict: "oui", family: "client actif", reason: "affaire ouverte dans le pipe" };
 
-    // --- E4. Affaire déjà signée. Le client existe, mais son argent aussi : il
-    //     est acquis. Un suivi de chantier n'est pas une action commerciale.
+    // --- E4. Affaire hors du pipe suivi. Deux cas, que l'étape départage :
+    //     signée (chantier) — le client est acquis, un suivi n'est pas une
+    //     action commerciale ; OUVERTE mais absente du pipe — elle est hors du
+    //     périmètre suivi (autre commercial, autre territoire) : le pipe local
+    //     EST le périmètre, on ne le rouvre pas ici.
     case "affaire_hors_pipe":
+      if (v2 && !dealIsDead && context.externalStage && !isPostSignatureStage(context.externalStage)) {
+        return {
+          verdict: "non",
+          family: "affaire hors périmètre",
+          reason: `affaire ouverte d'un commercial hors du périmètre suivi (${context.externalStage ?? "étape inconnue"})`,
+        };
+      }
       if (announcesNewProject) {
         return {
           verdict: "oui",
@@ -287,7 +377,7 @@ export function evaluateEligibility(
 
     // --- E5. Affaire perdue ou terminée.
     case "affaire_fermee":
-      if (announcesNewProject) {
+      if (announcesNewProject || (v2 && NEW_REQUEST.test(text))) {
         return {
           verdict: "oui",
           family: "ancien client, nouveau projet",
@@ -322,6 +412,11 @@ export function evaluateEligibility(
     // --- E7. Contact Salesforce sans affaire : ni client actif, ni inconnu.
     //     Un domaine de métier tranche vers l'exclusion ; sinon on ne conclut pas.
     case "contact":
+      // V2 : un contact Salesforce de type Client est un client connu. Les
+      // artisans, MOE et apporteurs ont déjà été exclus par leur rôle (E0).
+      if (clientRole) {
+        return { verdict: "oui", family: "client connu", reason: "contact Salesforce de type Client" };
+      }
       if (TRADE_DOMAIN.test(email)) {
         return {
           verdict: "non",

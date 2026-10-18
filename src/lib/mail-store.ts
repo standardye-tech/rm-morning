@@ -28,6 +28,9 @@ export type MailSignalRow = {
   /** Commerciaux de l'équipe présents en `to` / `cc` — voir `mail-rules.ts`. */
   rmTo: string[];
   rmCc: string[];
+  /** V2 — rôle de l'expéditeur (`sender-role.ts`) et sa justification. */
+  senderRole?: string | null;
+  senderRoleReason?: string | null;
 };
 
 /**
@@ -42,8 +45,8 @@ export function insertSignal(signal: MailSignalRow, syncId: number): boolean {
          gmail_message_id, thread_id, sent_at, from_email, from_name, subject,
          direction, filter_rule, opportunity_id, match_level, match_reason,
          salesperson, signal_type, signal_confidence, blocker, summary,
-         classifier, analyzed_at, sync_id, rm_to, rm_cc
-       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         classifier, analyzed_at, sync_id, rm_to, rm_cc, sender_role, sender_role_reason, scanner_v2
+       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)
        ON CONFLICT (gmail_message_id) DO NOTHING`,
     )
     .run(
@@ -70,6 +73,8 @@ export function insertSignal(signal: MailSignalRow, syncId: number): boolean {
       syncId,
       JSON.stringify(signal.rmTo),
       JSON.stringify(signal.rmCc),
+      signal.senderRole ?? null,
+      signal.senderRoleReason ?? null,
     );
   return result.changes > 0;
 }
@@ -120,6 +125,124 @@ export function updateThreadClassification(
       ...(final ? [new Date().toISOString()] : []),
       threadId,
     );
+}
+
+/** Verdict d'UN message, tel que la synchronisation V2 le persiste. */
+export type MessageClassification = {
+  signalType: string;
+  confidence: number;
+  blocker: string | null;
+  summary: string;
+  classifier: string;
+  quote?: string | null;
+  intent?: string | null;
+  needsReply?: boolean;
+  prospectEvidence?: boolean;
+  /** Rôle lu par le modèle pour un expéditeur que le système ne connaissait pas. */
+  senderRole?: string | null;
+};
+
+/**
+ * V2 (18/10/2026) — LE VERDICT APPARTIENT AU MESSAGE. Il est écrit sur la seule
+ * ligne classée (le dernier message humain entrant utile du fil), jamais
+ * recopié sur les messages d'un architecte, d'un artisan ou d'un fournisseur du
+ * même fil : c'est ce qui faisait porter la phrase du client par un tiers.
+ *
+ * Verdict définitif (`final`) : les lignes du fil EN ATTENTE jusqu'à ce message
+ * inclus sont marquées analysées — dix messages d'un même fil arrivés ensemble
+ * coûtent une analyse, pas dix. Un repli provisoire (panne, budget) ne pose
+ * rien : le fil sera repris au passage suivant.
+ */
+export function updateMessageClassification(
+  messageId: string,
+  threadId: string,
+  classification: MessageClassification,
+  final = true,
+): void {
+  const db = getDb();
+  db.prepare(
+    `UPDATE mail_signal
+        SET signal_type = ?, signal_confidence = ?, blocker = ?, summary = ?, classifier = ?, quote = ?,
+            intent = ?, needs_reply = ?, prospect_evidence = ?${final ? ", analyzed_at = ?" : ""}
+            ${classification.senderRole ? ", sender_role = ?, sender_role_reason = 'lu par le modèle'" : ""}
+      WHERE gmail_message_id = ?`,
+  ).run(
+    classification.signalType,
+    classification.confidence,
+    classification.blocker,
+    classification.summary.slice(0, 200),
+    classification.classifier,
+    classification.quote == null ? null : classification.quote.slice(0, 160),
+    classification.intent ?? null,
+    classification.needsReply == null ? null : classification.needsReply ? 1 : 0,
+    classification.prospectEvidence ? 1 : 0,
+    ...(final ? [new Date().toISOString()] : []),
+    ...(classification.senderRole ? [classification.senderRole] : []),
+    messageId,
+  );
+  if (final) markThreadAnalyzedUpTo(threadId, messageId);
+}
+
+/**
+ * Pose `analyzed_at` sur les lignes en attente d'un fil jusqu'à ce message
+ * inclus (même date ou antérieures). Aucun appel : c'est l'état « traité ».
+ */
+export function markThreadAnalyzedUpTo(threadId: string, messageId: string): void {
+  getDb()
+    .prepare(
+      `UPDATE mail_signal SET analyzed_at = ?
+        WHERE thread_id = ? AND analyzed_at IS NULL
+          AND sent_at <= (SELECT sent_at FROM mail_signal WHERE gmail_message_id = ?)`,
+    )
+    .run(new Date().toISOString(), threadId, messageId);
+}
+
+/** Ligne candidate à la classification d'un fil (V2). */
+export type PendingThreadRow = {
+  gmailMessageId: string;
+  sentAt: string | null;
+  direction: string | null;
+  fromEmail: string | null;
+  senderRole: string | null;
+  senderRoleReason: string | null;
+  analyzedAt: string | null;
+  /** Inséré par le scanner V2 (sinon : message antérieur au déploiement). */
+  scannerV2: boolean;
+};
+
+/** Messages entrants et internes d'un fil, du plus ancien au plus récent. */
+export function threadRowsForClassification(threadId: string): PendingThreadRow[] {
+  return queryAll<{
+    gmail_message_id: string;
+    sent_at: string | null;
+    direction: string | null;
+    from_email: string | null;
+    sender_role: string | null;
+    sender_role_reason: string | null;
+    analyzed_at: string | null;
+    scanner_v2: number | null;
+  }>(
+    `SELECT gmail_message_id, sent_at, direction, from_email, sender_role, sender_role_reason, analyzed_at, scanner_v2
+       FROM mail_signal WHERE thread_id = ? AND direction <> 'sortant'
+      ORDER BY sent_at ASC, gmail_message_id ASC`,
+    threadId,
+  ).map((r) => ({
+    gmailMessageId: r.gmail_message_id,
+    sentAt: r.sent_at,
+    direction: r.direction,
+    fromEmail: r.from_email,
+    senderRole: r.sender_role,
+    senderRoleReason: r.sender_role_reason,
+    analyzedAt: r.analyzed_at,
+    scannerV2: r.scanner_v2 === 1,
+  }));
+}
+
+/** Met à jour le rôle d'un expéditeur sur ses lignes (relance du rattachement). */
+export function setSenderRole(messageId: string, role: string, reason: string): void {
+  getDb()
+    .prepare("UPDATE mail_signal SET sender_role = ?, sender_role_reason = ? WHERE gmail_message_id = ?")
+    .run(role, reason, messageId);
 }
 
 /**
@@ -235,6 +358,11 @@ export function latestSignalByOpportunity(): Map<string, OpportunityMailSignal> 
       WHERE opportunity_id IS NOT NULL
         AND match_level IN ('A','B')
         AND signal_type IS NOT NULL
+        -- V2 seulement (lignes antérieures inchangées) : un message non classé
+        -- ou écrit par un tiers du fil (artisan, fournisseur, automate…) ne
+        -- porte pas le signal de l'affaire.
+        AND (scanner_v2 IS NULL OR (signal_type <> 'non_classifie'
+             AND coalesce(sender_role, '') NOT IN ('artisan','supplier','partner','automatic','newsletter')))
       ORDER BY sent_at ASC`,
   );
 

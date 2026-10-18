@@ -22,6 +22,7 @@
 
 import { getDb } from "./db";
 import { INTERNAL_DOMAIN } from "./mail-rules";
+import { isPostSignatureStage } from "./morning-eligibility";
 import { matchTeamMember } from "./normalize";
 import { runSoql } from "./sources/api-salesforce";
 
@@ -59,6 +60,10 @@ export type DirectoryEntry = {
   leadStatus: string | null;
   contactId: string | null;
   contactName: string | null;
+  /** Type d'enregistrement Salesforce du Contact : Client, Artisan, MOE, Apporteur d'affaires. */
+  contactRecordType: string | null;
+  /** Type d'enregistrement Salesforce de la Piste retenue. */
+  leadRecordType: string | null;
   candidates: string[];
 };
 
@@ -70,9 +75,10 @@ type SfLead = {
   IsConverted: boolean;
   ConvertedOpportunityId: string | null;
   Owner?: { Name?: string };
+  RecordType?: { Name?: string } | null;
 };
 
-type SfContact = { Id: string; Email: string | null; Name: string | null };
+type SfContact = { Id: string; Email: string | null; Name: string | null; RecordType?: { Name?: string } | null };
 type SfRole = { OpportunityId: string; ContactId: string };
 type SfOpportunity = {
   Id: string;
@@ -138,12 +144,12 @@ export async function refreshDirectory(emails: string[]): Promise<DirectoryRefre
     const list = batch.map(quote).join(",");
     leads.push(
       ...(await runSoql<SfLead>(
-        `SELECT Id, Email, Name, Status, IsConverted, ConvertedOpportunityId, Owner.Name
+        `SELECT Id, Email, Name, Status, IsConverted, ConvertedOpportunityId, Owner.Name, RecordType.Name
            FROM Lead WHERE Email IN (${list})`,
       )),
     );
     contacts.push(
-      ...(await runSoql<SfContact>(`SELECT Id, Email, Name FROM Contact WHERE Email IN (${list})`)),
+      ...(await runSoql<SfContact>(`SELECT Id, Email, Name, RecordType.Name FROM Contact WHERE Email IN (${list})`)),
     );
   }
 
@@ -203,8 +209,8 @@ export async function refreshDirectory(emails: string[]): Promise<DirectoryRefre
        (email, resolved_kind, confidence, reason, opportunity_id, opportunity_name,
         opportunity_stage, opportunity_is_closed, opportunity_amount, opportunity_owner,
         lead_id, lead_name, lead_owner, lead_status, contact_id, contact_name,
-        candidates, first_seen_at, refreshed_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        candidates, first_seen_at, refreshed_at, contact_record_type, lead_record_type)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(email) DO UPDATE SET
        resolved_kind = excluded.resolved_kind, confidence = excluded.confidence,
        reason = excluded.reason, opportunity_id = excluded.opportunity_id,
@@ -215,7 +221,8 @@ export async function refreshDirectory(emails: string[]): Promise<DirectoryRefre
        lead_id = excluded.lead_id, lead_name = excluded.lead_name,
        lead_owner = excluded.lead_owner, lead_status = excluded.lead_status,
        contact_id = excluded.contact_id, contact_name = excluded.contact_name,
-       candidates = excluded.candidates, refreshed_at = excluded.refreshed_at`,
+       candidates = excluded.candidates, refreshed_at = excluded.refreshed_at,
+       contact_record_type = excluded.contact_record_type, lead_record_type = excluded.lead_record_type`,
   );
 
   db.exec("BEGIN");
@@ -249,6 +256,8 @@ export async function refreshDirectory(emails: string[]): Promise<DirectoryRefre
         JSON.stringify(entry.candidates),
         now,
         now,
+        entry.contactRecordType,
+        entry.leadRecordType,
       );
     }
     db.exec("COMMIT");
@@ -296,13 +305,19 @@ function resolve(
     leadStatus: null,
     contactId: null,
     contactName: null,
+    contactRecordType: null,
+    leadRecordType: null,
     candidates: [],
   };
 
   if (ctx.contact) {
     base.contactId = ctx.contact.Id;
     base.contactName = ctx.contact.Name;
+    base.contactRecordType = ctx.contact.RecordType?.Name ?? null;
   }
+  // Type de la piste la plus pertinente : ouverte d'abord, sinon la première.
+  const typedLead = ctx.leads.find((l) => !l.IsConverted) ?? ctx.leads[0];
+  base.leadRecordType = typedLead?.RecordType?.Name ?? null;
 
   // Toutes les opportunités atteignables, dédoublonnées.
   const reachable = new Set<string>();
@@ -347,10 +362,18 @@ function resolve(
     );
   }
   if (openOutside.length > 0) {
+    // Ouverte mais absente du pipe local : soit signée (en chantier), soit
+    // pré-signature chez un commercial hors du périmètre suivi. Les deux ne se
+    // confondent plus — l'audit du 18/10/2026 annonçait « affaire signée » pour
+    // une affaire en « Etude dossier ». L'éligibilité tranche sur l'étape.
+    const o = openOutside[0];
+    const signed = isPostSignatureStage(o.StageName);
     return attach(
-      openOutside[0],
+      o,
       "affaire_hors_pipe",
-      `affaire signée, hors pipe (${openOutside[0].StageName ?? "étape inconnue"})`,
+      signed
+        ? `affaire signée, hors pipe (${o.StageName ?? "étape inconnue"})`
+        : `affaire ouverte hors du pipe suivi (${o.StageName ?? "étape inconnue"}, ${o.Owner?.Name ?? "propriétaire inconnu"})`,
       openOutside,
     );
   }
@@ -423,6 +446,8 @@ export function loadDirectory(): Map<string, DirectoryEntry> {
       leadStatus: (r.lead_status as string | null) ?? null,
       contactId: (r.contact_id as string | null) ?? null,
       contactName: (r.contact_name as string | null) ?? null,
+      contactRecordType: (r.contact_record_type as string | null) ?? null,
+      leadRecordType: (r.lead_record_type as string | null) ?? null,
       candidates: JSON.parse(String(r.candidates ?? "[]")) as string[],
     });
   }

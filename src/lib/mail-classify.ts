@@ -22,6 +22,8 @@
  */
 
 import { selectInterestProof } from "./interest-proof";
+import { rulesIntent, rulesProspectEvidence, type CommercialIntent } from "./mail-intent";
+import type { SenderRole } from "./sender-role";
 export { QUOTE_MAX_LENGTH } from "./interest-proof";
 
 export type SignalType = "signature" | "positif_bloque" | "risque" | "negatif" | "neutre";
@@ -46,6 +48,17 @@ export type Classification = {
    * 160 caractères, jamais reformulée. Null quand rien ne s'y prête.
    */
   quote: string | null;
+  /**
+   * V2 — intention du MESSAGE (Bloc 1 = strong_progress, Bloc 2 = waiting_reply)
+   * et besoin de réponse. Distincts de `signalType`, qui reste la mesure de
+   * probabilité de signature consommée par le forecast.
+   */
+  intent?: CommercialIntent;
+  needsReply?: boolean;
+  /** Rôle proposé par le modèle, seulement quand le système ne le connaissait pas. */
+  senderRole?: SenderRole | null;
+  /** Expéditeur inconnu : preuve d'un projet personnel ET d'une demande d'avancer. */
+  prospectEvidence?: boolean;
 };
 
 /** Message minimal nécessaire à la classification. */
@@ -55,8 +68,15 @@ export type ClassifiableMessage = {
   date: string;
   direction: "entrant" | "sortant" | "interne";
   subject: string;
-  /** Extrait court. Jamais le corps complet. */
+  /** Extrait court fourni par Gmail. */
   snippet: string;
+  /**
+   * V2 — corps nettoyé du message (`mail-body.ts`), en mémoire seulement : lu
+   * pour le dernier message humain entrant, jamais stocké. Absent = extrait.
+   */
+  body?: string | null;
+  /** Expéditeur, pour choisir le dernier message humain utile du fil. */
+  fromEmail?: string;
 };
 
 // --- Motifs métier ---------------------------------------------------------
@@ -168,16 +188,28 @@ function score(base: number, hits: number): number {
  * Classe UN message. Le fil est traité par `classifyThread`, qui choisit le
  * message à classer.
  */
-export function classifyMessage(message: ClassifiableMessage): Classification {
+export function classifyMessage(message: ClassifiableMessage, options: { legacy?: boolean } = {}): Classification {
   const subject = decode(message.subject ?? "");
-  const body = withoutQuote(decode(message.snippet ?? ""));
+  const body = messageBody(message);
   const text = `${subject}\n${body}`;
+  // V2 — L'OBJET EST UN CONTEXTE, PAS UN VERDICT. Les marqueurs négatifs, de
+  // risque et d'obstacle ne lisent que ce que l'expéditeur a écrit : un objet
+  // repris d'un message de RM (« Retour suite à la demande de remise ») classait
+  // « risque » le client qui répondait « on signe ensemble » (audit du
+  // 18/10/2026). L'objet ne sert que si le corps est vide.
+  // Un message INTERNE (notification Salesforce, transfert d'un ET) porte son
+  // fait dans l'objet, écrit par l'équipe : il reste lu en entier.
+  // `legacy` : reprise d'un message antérieur au déploiement V2 — lecture
+  // historique, objet compris.
+  const written = !options.legacy && message.direction === "entrant" && body.trim() ? body : text;
 
-  const negative = found(text, NEGATIVE);
+  const negative = found(written, NEGATIVE);
   const signature = found(text, SIGNATURE);
-  const blocker = found(text, BLOCKER);
-  const risk = found(text, RISK);
+  const blocker = found(written, BLOCKER);
+  const risk = found(written, RISK);
   const pending = found(text, PENDING_POSITIVE);
+  const intent = rulesIntent(body, subject);
+  const prospectEvidence = rulesProspectEvidence(body);
 
   const make = (
     signalType: SignalType,
@@ -197,6 +229,10 @@ export function classifyMessage(message: ClassifiableMessage): Classification {
     // un client peut être classé « risque » et avoir écrit une phrase qui
     // engage. Sélection unique, partagée avec le rattrapage et le modèle.
     quote: selectInterestProof(body)?.quote ?? null,
+    // Une signature ou une perte reconnues par les règles fixent l'intention.
+    intent: signalType === "signature" ? "strong_progress" : signalType === "negatif" ? "negative" : intent.intent,
+    needsReply: signalType === "negatif" ? false : intent.needsReply,
+    prospectEvidence,
   });
 
   // 1. Perte explicite. Rien ne prime sur un abandon constaté.
@@ -268,8 +304,12 @@ export function classifyMessage(message: ClassifiableMessage): Classification {
  * Renvoie `null` si le fil est vide. L'ABSENCE de message ne produit JAMAIS de
  * classification : le silence n'est pas un signal.
  */
-/** Le texte utile d'un message : extrait décodé, sans la citation du fil antérieur. */
+/**
+ * Le texte utile d'un message : le corps nettoyé quand il a été lu (V2), sinon
+ * l'extrait décodé, sans la citation du fil antérieur.
+ */
 export function messageBody(message: ClassifiableMessage): string {
+  if (message.body && message.body.trim()) return message.body;
   return withoutQuote(decode(message.snippet ?? ""));
 }
 
@@ -278,8 +318,15 @@ export function extractQuoteFromMessage(message: ClassifiableMessage): string | 
   return selectInterestProof(messageBody(message))?.quote ?? null;
 }
 
-export function classifyThread(messages: ClassifiableMessage[]): Classification | null {
+export function classifyThread(
+  messages: ClassifiableMessage[],
+  targetId?: string | null,
+  options: { legacy?: boolean } = {},
+): Classification | null {
   if (messages.length === 0) return null;
   const ordered = [...messages].sort((a, b) => a.date.localeCompare(b.date));
-  return classifyMessage(ordered[ordered.length - 1]);
+  // V2 — le message classé est celui que la synchronisation désigne (le dernier
+  // message humain entrant utile) ; à défaut, le dernier du fil.
+  const target = (targetId && ordered.find((m) => m.id === targetId)) || ordered[ordered.length - 1];
+  return classifyMessage(target, options);
 }
